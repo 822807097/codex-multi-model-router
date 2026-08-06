@@ -153,7 +153,10 @@ const connectTls = (host, viaProxy) => (viaProxy ? tlsSocketViaProxy(host) : tls
 // 实测不生效（会另起一条直连 host:80 的连接），只能自己在 TLS socket 上裸写字节。
 function rawHttpsRequest(host, reqPath, viaProxy, headers, bodyStr) {
   return connectTls(host, viaProxy).then((socket) => new Promise((resolve, reject) => {
-    const lines = [`POST ${reqPath} HTTP/1.1`, `Host: ${host}`, 'Connection: close', 'content-type: application/json', `content-length: ${Buffer.byteLength(bodyStr)}`];
+    // content-length 只发一次：调用方 headers 已带则用它的，否则按 body 计算（重复会导致网关 400）
+    const hasCL = Object.keys(headers).some((k) => k.toLowerCase() === 'content-length');
+    const lines = [`POST ${reqPath} HTTP/1.1`, `Host: ${host}`, 'Connection: close', 'content-type: application/json'];
+    if (!hasCL) lines.push(`content-length: ${Buffer.byteLength(bodyStr)}`);
     for (const [k, v] of Object.entries(headers)) lines.push(`${k}: ${v}`);
     socket.write(lines.join('\r\n') + '\r\n\r\n' + bodyStr);
     let buf = Buffer.alloc(0);
@@ -601,10 +604,10 @@ const server = http.createServer(async (clientReq, clientRes) => {
       upstreamPath = target.prefix + '/chat/completions';
       flog(`CHAT ${model} | messages=${chatReq.messages.length} | tools=${tools ? tools.length : 0} | stream=false`);
     }
-    // 透传客户端头，但剔除 hop-by-hop / 认证 / 长度 / 压缩（压缩必须关，否则透传解压坏）
+    // 透传客户端头，但剔除 hop-by-hop / 认证 / 长度 / 压缩 / content-type（rawHttpsRequest 会统一加 content-type，透传会重复导致部分网关 400）
     const headers = {};
       for (const [k, v] of Object.entries(clientReq.headers)) {
-        if (['host', 'connection', 'authorization', 'content-length', 'accept-encoding'].includes(k.toLowerCase())) continue;
+        if (['host', 'connection', 'authorization', 'content-length', 'accept-encoding', 'content-type'].includes(k.toLowerCase())) continue;
         headers[k] = v;
       }
       headers['content-length'] = bodyBuf.length;
@@ -622,10 +625,12 @@ const server = http.createServer(async (clientReq, clientRes) => {
       // Chat 通道：非流式拿完整 Chat 响应 → 转 Responses → 自生成 SSE
       if (isChat) {
         const chatBody = Buffer.from(JSON.stringify(chatReq));
+        flog(`CHAT-BODY ${model} | ${chatBody.toString().slice(0, 300)}`);
         headers['content-length'] = chatBody.length;
         const r = await rawHttpsRequest(target.host, upstreamPath, target.viaProxy, headers, chatBody.toString());
         if (r.status !== 200) {
           log(`chat upstream error ${r.status}: ${r.bodyText.slice(0, 200)}`);
+          flog(`CHAT-ERR ${model} | status=${r.status} | toolsKeys=${JSON.stringify((chatReq.tools || []).slice(0,2).map(t => Object.keys(t)))} | ${r.bodyText.slice(0, 200)}`);
           if (!clientRes.headersSent) clientRes.writeHead(r.status || 502, { 'content-type': 'application/json' });
           clientRes.end(r.bodyText || JSON.stringify({ error: `chat upstream ${r.status}` }));
           return;
