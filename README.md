@@ -281,6 +281,24 @@ codex-router test
 | `DEEPSEEK_API_KEY` | DeepSeek API Key | - |
 | `BAILIAN_API_KEY` | 阿里云百炼 API Key | - |
 
+## 接入任意 OpenAI 兼容模型（GLM / Kimi / MiMo 等）
+
+路由是**通用**的：任何提供 OpenAI 兼容 `/chat/completions` 的供应商都能接入，不限于 DeepSeek/Qwen。只需两步：
+
+**1. 在 config.json 的 `targets` 加一条通道**（`wireApi: "chat"` 走通用 Chat 转换）：
+
+```json
+{ "match": "^glm-",   "name": "glm",  "host": "open.bigmodel.cn",      "prefix": "/api/paas/v4", "viaProxy": false, "vision": true,  "envKey": "ZHIPU_API_KEY", "wireApi": "chat" },
+{ "match": "^kimi-",  "name": "kimi", "host": "api.moonshot.cn",       "prefix": "/v1",          "viaProxy": false, "vision": true,  "envKey": "KIMI_API_KEY",  "wireApi": "chat" },
+{ "match": "^mimo-",  "name": "mimo", "host": "api.mimo.xiaomi.com",   "prefix": "/v1",          "viaProxy": false, "vision": false, "envKey": "MIMO_API_KEY",  "wireApi": "chat" }
+```
+
+**2. 在 models.json 加对应模型条目**（slug 与 `match` 对应，并设 `input_modalities`），并在环境变量里设置对应 `envKey`。
+
+- `match` 用模型 ID 前缀正则，命中即用该通道；未命中任何通道时回落到第一个通道（官方）
+- 文本模型设 `vision: false` 可启用视觉中继；原生视觉模型设 `vision: true`
+- 各供应商 endpoint/前缀以官方文档为准，上面仅为示例
+
 ## 网络与代理（v2rayN 可选）
 
 官方 GPT 通道（`chatgpt.com`）在**国内直连不通**，默认经本地代理（v2rayN 等）的 CONNECT 隧道出海（`viaProxy: true`）。
