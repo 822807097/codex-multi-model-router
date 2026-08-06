@@ -319,6 +319,10 @@ function responsesToChatMessages(input) {
     }
   }
   flushTools();
+  // 自主性提示：第三方模型在工具循环里容易“只描述不执行”，补一条系统提示督促其自主调用工具推进
+  if (cfg.chatConversion?.autonomy !== false) {
+    messages.push({ role: 'system', content: '重要：请自主使用可用工具持续推进任务直至完成；需要信息时直接调用工具获取，不要只描述计划而不调用工具。' });
+  }
   return messages;
 }
 // Responses tools → Chat tools（让模型知道有哪些工具可用，才会真正发 tool_calls 而不是只描述）
@@ -638,7 +642,9 @@ const server = http.createServer(async (clientReq, clientRes) => {
         let chatJson;
         try { chatJson = JSON.parse(r.bodyText); } catch { chatJson = null; }
         if (!chatJson) { if (!clientRes.headersSent) clientRes.writeHead(502, { 'content-type': 'application/json' }); clientRes.end(JSON.stringify({ error: 'chat upstream non-JSON' })); return; }
-        emitResponsesSse(clientRes, chatToResponses(chatJson, model));
+        const respObj = chatToResponses(chatJson, model);
+        flog(`CHAT-RESP ${model} | output=${respObj.output.map(o => o.type).join(',')}`);
+        emitResponsesSse(clientRes, respObj);
         return;
       }
       const socket = await connectTls(target.host, target.viaProxy);
