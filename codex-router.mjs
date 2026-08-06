@@ -307,6 +307,17 @@ function responsesToChatMessages(input) {
   flushTools();
   return messages;
 }
+// Responses tools → Chat tools（让模型知道有哪些工具可用，才会真正发 tool_calls 而不是只描述）
+function responsesToolsToChat(tools) {
+  if (!Array.isArray(tools)) return undefined;
+  const out = [];
+  for (const t of tools) {
+    if (!t) continue;
+    if (t.type === 'function' && t.function) out.push(t); // 已是 Chat 格式
+    else if (t.name) out.push({ type: 'function', function: { name: t.name, description: t.description || '', parameters: t.parameters || { type: 'object', properties: {} } } });
+  }
+  return out.length ? out : undefined;
+}
 // Chat 非流式响应 → Responses 格式
 function chatToResponses(chatJson, model) {
   const msg = chatJson.choices?.[0]?.message || {};
@@ -561,9 +572,11 @@ const server = http.createServer(async (clientReq, clientRes) => {
     let upstreamPath = target.prefix + url.replace(/^\/v1/, '');
     if (bodyObj && target.wireApi === 'chat') {
       chatReq = { model: bodyObj.model, messages: responsesToChatMessages(bodyObj.input), stream: false };
+      const tools = responsesToolsToChat(bodyObj.tools);
+      if (tools) chatReq.tools = tools;
       isChat = true;
       upstreamPath = target.prefix + '/chat/completions';
-      flog(`CHAT ${model} | messages=${chatReq.messages.length} | stream=false(non-streaming upstream)`);
+      flog(`CHAT ${model} | messages=${chatReq.messages.length} | tools=${tools ? tools.length : 0} | stream=false`);
     }
     try {
       // 透传客户端头，但剔除 hop-by-hop / 认证 / 长度 / 压缩（压缩必须关，否则透传解压坏）
