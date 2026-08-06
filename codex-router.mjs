@@ -77,6 +77,12 @@ const log = (...a) => console.log(`[${new Date().toISOString()}]`, ...a);
 const LOG_FILE = process.env.ROUTER_LOG || null;
 const flog = (m) => { if (LOG_FILE) { try { fs.appendFileSync(LOG_FILE, `[${new Date().toISOString()}] ${m}\n`); } catch { /* noop */ } } };
 
+// ---------- 进程级异常兕底（并发安全） ----------
+// 多任务并发时，任何漏网的异常/未决拒绝只记日志、不退出进程，避免路由整体崩溃。
+// 单个请求出错由桌面端自行重试，不影响其他并发任务。
+process.on('uncaughtException', (e) => { log('uncaughtException (kept alive):', e && e.message); });
+process.on('unhandledRejection', (e) => { log('unhandledRejection (kept alive):', e && e.message); });
+
 // ---------- 模型上下文窗口配置 ----------
 // config.json 的 modelContext 字段：路由启动时把上下文窗口/压缩阈值写回 models.json，
 // 让桌面端据此做滑动窗口/压缩，避免第三方模型每轮全量重发历史（卡思考根因）
@@ -557,6 +563,7 @@ const server = http.createServer(async (clientReq, clientRes) => {
       flog(`REQ ${model} | prev=${prevIdShort} | ${JSON.stringify(sample)}`);
     }
     const target = TARGETS.find((t) => t.match.test(model)) || TARGETS[0];
+    try {
     let bodyBuf = bodyBuf0;
     if (bodyObj && target.vision === false) {
       const stripped = await relayNonTextParts(bodyObj);
@@ -578,9 +585,8 @@ const server = http.createServer(async (clientReq, clientRes) => {
       upstreamPath = target.prefix + '/chat/completions';
       flog(`CHAT ${model} | messages=${chatReq.messages.length} | tools=${tools ? tools.length : 0} | stream=false`);
     }
-    try {
-      // 透传客户端头，但剔除 hop-by-hop / 认证 / 长度 / 压缩（压缩必须关，否则透传解压坏）
-      const headers = {};
+    // 透传客户端头，但剔除 hop-by-hop / 认证 / 长度 / 压缩（压缩必须关，否则透传解压坏）
+    const headers = {};
       for (const [k, v] of Object.entries(clientReq.headers)) {
         if (['host', 'connection', 'authorization', 'content-length', 'accept-encoding'].includes(k.toLowerCase())) continue;
         headers[k] = v;
