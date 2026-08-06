@@ -2,6 +2,7 @@
 node_modules/
 *.log
 package-lock.json
+scripts/router.log
 
 # 用户数据（绝不含密钥/登录态/模型目录）
 auth.json

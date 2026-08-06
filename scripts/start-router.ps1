@@ -31,4 +31,6 @@ foreach ($k in $keySet.Keys) {
 
 $router = Join-Path $PSScriptRoot '..\codex-router.mjs'
 if (-not (Test-Path $router)) { $router = Join-Path $PSScriptRoot 'codex-router.mjs' }
+# 诊断日志：记录请求形状，排查闪跳/上下文问题（见 codex-router.mjs 的 flog）
+$env:ROUTER_LOG = Join-Path $PSScriptRoot 'router.log'
 node $router
