@@ -5,7 +5,7 @@ Codex 桌面端本地多模型路由代理，让官方 GPT、DeepSeek、Qwen 等
 ## 特性
 
 - **多模型共存**：官方 GPT 系列、DeepSeek、Qwen 等模型同时出现在 Codex 桌面端选择器中，会话内可热切换
-- **Responses ↔ Chat 协议转换**：对 `wireApi: "chat"` 的腿，把 Codex 的 Responses 请求转成 Chat 格式发给 DeepSeek/Qwen（其 Chat API 更稳定），响应再转回 Responses，解决第三方模型“闪跳/从头重推”问题
+- **Responses ↔ Chat 协议转换**：对 `wireApi: "chat"` 的通道，把 Codex 的 Responses 请求转成 Chat 格式发给 DeepSeek/Qwen（其 Chat API 更稳定），响应再转回 Responses，解决第三方模型“闪跳/从头重推”问题
 - **工具调用转换**：自动转换 `tools` 定义与 `tool_calls`/`tool` 结果，让第三方模型真正执行工具而不是只描述
 - **视觉中继**：为不支持图片的文本模型（如 DeepSeek）提供“借眼”能力——收到图片时先调用视觉模型生成描述，注入上下文后转发
 - **无感更新**：`/_admin/shutdown` 优雅退出 + 新进程立即接管，更新路由不打断在跑任务
@@ -150,7 +150,7 @@ codex-router test
 [OK]  deepseek-v4-flash -> 回复: OK (1124ms)
 [OK]  qwen3.8-max -> 回复: OK (1776ms)
 [OK]  视觉中继 deepseek+图片 -> 回复: red
-[OK]  官方腿 -> 200 流式正常
+[OK]  官方通道 -> 200 流式正常
 总结: 全部通过
 ```
 
@@ -241,7 +241,7 @@ codex-router test
 
 **顶层**
 - `port`：路由监听端口（默认 15730）
-- `proxy`：本地代理地址（官方腿 CONNECT 隧道用）
+- `proxy`：本地代理地址（官方通道 CONNECT 隧道用）
 - `paths`：auth.json / models.json 路径（null = 使用 CODEX_HOME 默认位置）
 - `oauth`：ChatGPT OAuth client_id 和 token 刷新提前量（秒）
 
@@ -250,8 +250,8 @@ codex-router test
 - `host`：上游域名
 - `prefix`：上游路径前缀（请求路径 `/v1/responses` 会去掉 `/v1` 后拼到 `prefix` 后）
 - `viaProxy`：`true` = 经本地代理 CONNECT 隧道（国内连 chatgpt.com 需要）
-- `vision`：`false` = 该腿是文本模型，收到图片时走视觉中继；`true` = 原样透传
-- `envKey`：该腿 API key 所在的环境变量名（官方腿不用，走 auth.json）
+- `vision`：`false` = 该通道是文本模型，收到图片时走视觉中继；`true` = 原样透传
+- `envKey`：该通道 API key 所在的环境变量名（官方通道不用，走 auth.json）
 - `wireApi`：`"chat"` = 做 Responses→Chat 协议转换（推荐第三方模型，解决闪跳）；默认/不填 = 原样转发 Responses
 
 **supportsResponses** — 精确声明哪些模型原生支持 Responses 协议（`previous_response_id`），在 `/models` 端点声明能力
@@ -283,9 +283,9 @@ codex-router test
 
 ## 网络与代理（v2rayN 可选）
 
-官方 GPT 腿（`chatgpt.com`）在**国内直连不通**，默认经本地代理（v2rayN 等）的 CONNECT 隧道出海（`viaProxy: true`）。
+官方 GPT 通道（`chatgpt.com`）在**国内直连不通**，默认经本地代理（v2rayN 等）的 CONNECT 隧道出海（`viaProxy: true`）。
 
-**如果你不用代理客户端**（如在海外、或有其他直连方式），把 openai 腿的 `viaProxy` 设为 `false` 即可直连：
+**如果你不用代理客户端**（如在海外、或有其他直连方式），把 openai 通道的 `viaProxy` 设为 `false` 即可直连：
 
 ```json
 {
@@ -300,7 +300,7 @@ codex-router test
 
 - `viaProxy: true`：经 `proxy.host:proxy.port`（默认 127.0.0.1:10808）CONNECT 隧道，适合国内 + v2rayN
 - `viaProxy: false`：直连上游，适合海外/有直连条件
-- 第三方腿（deepseek/qwen）国内可直连，默认 `viaProxy: false`
+- 第三方通道（deepseek/qwen）国内可直连，默认 `viaProxy: false`
 
 代理端口可在 config.json 的 `proxy` 字段或环境变量 `V2RAY_HOST`/`V2RAY_PORT` 调整。
 
@@ -318,13 +318,13 @@ codex-router test
 
 视觉中继依赖视觉模型的图片理解能力。对截图类图片（报错截图、UI 图）效果最好，因为提示词让它重点提取文字/代码/界面元素。
 
-### 官方腿 429
+### 官方通道 429
 
 OpenAI 官方额度用尽，链路正常，等额度重置或升级套餐。
 
 ### 第三方模型“闪跳”（从头重推/重复执行工具）
 
-Codex 桌面端对第三方模型每轮重发全量历史，若上游 Responses 支持不完善，模型会“看不懂”历史而从头重推。解决：给该腿设 `wireApi: "chat"`，路由转成 Chat 格式（丢弃 reasoning、正确映射 tool_calls/tool），模型即可连贯续接。
+Codex 桌面端对第三方模型每轮重发全量历史，若上游 Responses 支持不完善，模型会“看不懂”历史而从头重推。解决：给该通道设 `wireApi: "chat"`，路由转成 Chat 格式（丢弃 reasoning、正确映射 tool_calls/tool），模型即可连贯续接。
 
 ### 第三方模型不执行工具、只描述计划
 
@@ -344,9 +344,9 @@ Chat 请求必须带 `tools` 定义模型才会发 `tool_calls`。路由已自�
 
 ## 技术细节
 
-- **TLS 隧道**：官方腿经本地代理 HTTP CONNECT 隧道出海，裸写 HTTP/1.1 请求（Node `http.request` 的 `createConnection` 实测不生效）
+- **TLS 隧道**：官方通道经本地代理 HTTP CONNECT 隧道出海，裸写 HTTP/1.1 请求（Node `http.request` 的 `createConnection` 实测不生效）
 - **Chunked 解码**：上游 chunked 响应透传时必须先解包，否则 Node `ServerResponse` 会再套一层 chunked 封装，客户端解析直接坏掉（SSE 尤甚）
-- **Responses↔Chat 转换**：`wireApi: "chat"` 的腿非流式拿完整 Chat 响应，再由路由自生成规范 Responses SSE（保证 `response.completed` 一定发出，避免“stream closed before completion”）
+- **Responses↔Chat 转换**：`wireApi: "chat"` 的通道非流式拿完整 Chat 响应，再由路由自生成规范 Responses SSE（保证 `response.completed` 一定发出，避免“stream closed before completion”）
 - **无感更新**：`server.close()` 立即释放监听端口但保留已有连接；`closeIdleConnections()` 关空闲连接让 close 完成，在跑任务自然结束
 - **并发安全**：`uncaughtException`/`unhandledRejection` 进程级兕底只记日志不退出；token 刷新 single-flight 防竞态
 - **原子写入**：`auth.json`、`models.json` 修改均先写 tmp 再 rename，避免桌面端并发读到半写文件
