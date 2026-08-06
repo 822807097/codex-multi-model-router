@@ -5,10 +5,15 @@ Codex 桌面端本地多模型路由代理，让官方 GPT、DeepSeek、Qwen 等
 ## 特性
 
 - **多模型共存**：官方 GPT 系列、DeepSeek、Qwen 等模型同时出现在 Codex 桌面端选择器中，会话内可热切换
-- **视觉中继**：为不支持图片的文本模型（如 DeepSeek）提供"借眼"能力——收到图片时先调用视觉模型生成描述，注入上下文后转发
+- **Responses ↔ Chat 协议转换**：对 `wireApi: "chat"` 的腿，把 Codex 的 Responses 请求转成 Chat 格式发给 DeepSeek/Qwen（其 Chat API 更稳定），响应再转回 Responses，解决第三方模型“闪跳/从头重推”问题
+- **工具调用转换**：自动转换 `tools` 定义与 `tool_calls`/`tool` 结果，让第三方模型真正执行工具而不是只描述
+- **视觉中继**：为不支持图片的文本模型（如 DeepSeek）提供“借眼”能力——收到图片时先调用视觉模型生成描述，注入上下文后转发
+- **无感更新**：`/_admin/shutdown` 优雅退出 + 新进程立即接管，更新路由不打断在跑任务
+- **并发安全**：Node 事件循环 + 每请求独立状态 + 进程级异常兕底，多任务并发不崩溃
+- **1M 上下文**：`modelContext` 配置写回 models.json，支持 DeepSeek-V4-Flash 1M 上下文窗口
 - **零依赖**：纯 Node.js 实现，无需任何 npm 包，Node >= 18 即可运行
 - **密钥安全**：API Key 全部通过环境变量注入，配置文件无明文
-- **官方登录态复用**：自动读取 Codex 桌面端 auth.json，临期自动 refresh，无需二次登录
+- **官方登录态复用**：自动读取 Codex 桌面端 auth.json，临期自动 refresh（single-flight 防并发竞态），无需二次登录
 - **一键运维**：提供启动/停止/重启/状态/测试/恢复官方配置/恢复自定义配置 7 个脚本
 
 ## 演示
@@ -191,7 +196,8 @@ codex-router test
       "prefix": "",
       "viaProxy": false,
       "vision": false,
-      "envKey": "DEEPSEEK_API_KEY"
+      "envKey": "DEEPSEEK_API_KEY",
+      "wireApi": "chat"
     },
     {
       "match": "^qwen",
@@ -200,9 +206,19 @@ codex-router test
       "prefix": "/compatible-mode/v1",
       "viaProxy": false,
       "vision": true,
-      "envKey": "BAILIAN_API_KEY"
+      "envKey": "BAILIAN_API_KEY",
+      "wireApi": "chat"
     }
   ],
+  "supportsResponses": {
+    "slugs": ["deepseek-v4-flash", "qwen3.8-max"]
+  },
+  "modelContext": {
+    "enabled": true,
+    "contextWindow": 1048576,
+    "autoCompactTokenLimit": 1000000,
+    "slugs": ["deepseek-v4-flash", "deepseek-v4-pro", "qwen3.8-max"]
+  },
   "visionRelay": {
     "host": "token-plan.cn-beijing.maas.aliyuncs.com",
     "prefix": "/compatible-mode/v1",
@@ -229,6 +245,14 @@ codex-router test
 - `viaProxy`：`true` = 经本地代理 CONNECT 隧道（国内连 chatgpt.com 需要）
 - `vision`：`false` = 该腿是文本模型，收到图片时走视觉中继；`true` = 原样透传
 - `envKey`：该腿 API key 所在的环境变量名（官方腿不用，走 auth.json）
+- `wireApi`：`"chat"` = 做 Responses→Chat 协议转换（推荐第三方模型，解决闪跳）；默认/不填 = 原样转发 Responses
+
+**supportsResponses** — 精确声明哪些模型原生支持 Responses 协议（`previous_response_id`），在 `/models` 端点声明能力
+
+**modelContext** — 路由启动时写回 models.json 的上下文窗口配置
+- `contextWindow`/`max_context_window`：上下文窗口（DeepSeek-V4-Flash 支持 1M）
+- `autoCompactTokenLimit`：超过即触发桌面端压缩
+- `slugs`：作用的模型列表
 
 **visionRelay** — 视觉中继配置
 - 文本模型（`vision: false`）收到 `input_image` 时，调用这里配置的视觉模型生成描述
@@ -268,6 +292,22 @@ codex-router test
 
 OpenAI 官方额度用尽，链路正常，等额度重置或升级套餐。
 
+### 第三方模型“闪跳”（从头重推/重复执行工具）
+
+Codex 桌面端对第三方模型每轮重发全量历史，若上游 Responses 支持不完善，模型会“看不懂”历史而从头重推。解决：给该腿设 `wireApi: "chat"`，路由转成 Chat 格式（丢弃 reasoning、正确映射 tool_calls/tool），模型即可连贯续接。
+
+### 第三方模型不执行工具、只描述计划
+
+Chat 请求必须带 `tools` 定义模型才会发 `tool_calls`。路由已自动转换 `tools`；若仍不执行，检查桌面端是否发送了 tools 字段。
+
+### 子代理并行（collaboration）不可用
+
+子代理并行是 Codex 桌面端对**官方模型**开放的运行时编排特性，第三方模型被标记 `unsupported call`。模型会自动降级为单代理并行 shell，属正常行为（cc-switch/Codex++ 同样如此）。
+
+### 更新路由会打断在跑任务吗
+
+不会。`restart-router.ps1` 先 `POST /_admin/shutdown` 让旧进程释放端口并排空在跑任务，新进程立即接管新请求；在跑的流式任务在旧进程上自然结束。
+
 ### 改完环境变量 key 后不生效
 
 路由进程启动时才读取环境变量，必须执行 `restart-router.ps1` 后再跑 `test-router.ps1` 验证。
@@ -276,6 +316,9 @@ OpenAI 官方额度用尽，链路正常，等额度重置或升级套餐。
 
 - **TLS 隧道**：官方腿经本地代理 HTTP CONNECT 隧道出海，裸写 HTTP/1.1 请求（Node `http.request` 的 `createConnection` 实测不生效）
 - **Chunked 解码**：上游 chunked 响应透传时必须先解包，否则 Node `ServerResponse` 会再套一层 chunked 封装，客户端解析直接坏掉（SSE 尤甚）
+- **Responses↔Chat 转换**：`wireApi: "chat"` 的腿非流式拿完整 Chat 响应，再由路由自生成规范 Responses SSE（保证 `response.completed` 一定发出，避免“stream closed before completion”）
+- **无感更新**：`server.close()` 立即释放监听端口但保留已有连接；`closeIdleConnections()` 关空闲连接让 close 完成，在跑任务自然结束
+- **并发安全**：`uncaughtException`/`unhandledRejection` 进程级兕底只记日志不退出；token 刷新 single-flight 防竞态
 - **原子写入**：`auth.json`、`models.json` 修改均先写 tmp 再 rename，避免桌面端并发读到半写文件
 - **Token 自动刷新**：access_token 距过期不足 30 秒时自动 refresh 并原子写回 auth.json
 
