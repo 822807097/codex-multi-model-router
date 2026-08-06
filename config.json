@@ -29,7 +29,8 @@
       "prefix": "",
       "viaProxy": false,
       "vision": false,
-      "envKey": "DEEPSEEK_API_KEY"
+      "envKey": "DEEPSEEK_API_KEY",
+      "wireApi": "chat"
     },
     {
       "match": "^qwen",
@@ -38,17 +39,10 @@
       "prefix": "/compatible-mode/v1",
       "viaProxy": false,
       "vision": true,
-      "envKey": "bjrts_aliyun_bailian_key"
+      "envKey": "BAILIAN_API_KEY",
+      "wireApi": "chat"
     }
   ],
-  "sessionManagement": {
-    "_comment": "路由层会话状态管理：拦截 previous_response_id，从缓存拼接完整 input 全量发给上游，解决第三方模型每轮重新执行工具（闪跳）。官方腿不受影响；useRedis 为预留项（未实现，恒用内存）",
-    "enabled": true,
-    "useRedis": false,
-    "ttl": 86400000,
-    "cleanupInterval": 3600000,
-    "slugs": ["deepseek-v4-flash", "deepseek-v4-pro", "qwen3.8-max"]
-  },
   "supportsResponses": {
     "_comment": "精确声明哪些模型原生支持 Responses 协议（previous_response_id）。DeepSeek-V4-Pro 尚未支持，不在此列",
     "slugs": ["deepseek-v4-flash", "qwen3.8-max"]
@@ -64,7 +58,7 @@
     "host": "token-plan.cn-beijing.maas.aliyuncs.com",
     "prefix": "/compatible-mode/v1",
     "model": "qwen3.8-max",
-    "envKey": "bjrts_aliyun_bailian_key",
+    "envKey": "BAILIAN_API_KEY",
     "prompt": "Describe this image concisely (2-4 sentences) for a coding assistant that cannot see it. Focus on text/UI elements/code/error messages if present.",
     "maxTokens": 300
   }
