@@ -388,7 +388,14 @@ const server = http.createServer(async (clientReq, clientRes) => {
   if (clientReq.method === 'GET' && (url === '/models' || url === '/v1/models')) {
     try {
       const catalog = JSON.parse(fs.readFileSync(CATALOG_PATH, 'utf8'));
-      const data = catalog.models.map((m) => ({ id: m.slug, object: 'model', created: 0, owned_by: 'local-router' }));
+      const data = catalog.models.map((m) => {
+        const base = { id: m.slug, object: 'model', created: 0, owned_by: 'local-router' };
+        // 声明能力：让桌面端知道第三方模型支持 previous_response_id，避免降级重建历史
+        if (m.slug && !/^(gpt-|codex-|o\d)/.test(m.slug)) {
+          base.capabilities = { previous_response_id: true, streaming: true };
+        }
+        return base;
+      });
       clientRes.writeHead(200, { 'content-type': 'application/json' });
       clientRes.end(JSON.stringify({ object: 'list', data }));
     } catch (e) {
