@@ -198,21 +198,18 @@ async function relayNonTextParts(body) {
     if (!Array.isArray(parts)) return parts;
     const next = [];
     for (const p of parts) {
-      // 文本类 part 原样保留
-      if (p && (p.type === 'input_text' || p.type === 'text' || p.type === 'output_text')) { next.push(p); continue; }
+      // 只转换 input_image；其余（文本/字符串/工具结果/未知类型）一律原样保留，
+      // 避免毁掉 shell/插件的工具输出导致模型重跑（闪跳根因）
+      if (!(p && p.type === 'input_image')) { next.push(p); continue; }
       stripped++;
-      if (p && p.type === 'input_image') {
-        const url = typeof p.image_url === 'string' ? p.image_url : p.image_url?.url;
-        try {
-          const desc = await captionImage(url);
-          log(`vision relay: captioned image (${desc.length} chars)`);
-          next.push({ type: 'input_text', text: `[image description: ${desc}]` });
-        } catch (e) {
-          log('vision relay failed:', e.message);
-          next.push({ type: 'input_text', text: '[image omitted: vision relay failed]' }); // 降级：不阻断请求
-        }
-      } else {
-        next.push({ type: 'input_text', text: '[file/video attachment omitted: not supported by this text-only model]' });
+      const url = typeof p.image_url === 'string' ? p.image_url : p.image_url?.url;
+      try {
+        const desc = await captionImage(url);
+        log(`vision relay: captioned image (${desc.length} chars)`);
+        next.push({ type: 'input_text', text: `[image description: ${desc}]` });
+      } catch (e) {
+        log('vision relay failed:', e.message);
+        next.push({ type: 'input_text', text: '[image omitted: vision relay failed]' }); // 降级：不阻断请求
       }
     }
     return next;
