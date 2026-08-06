@@ -73,6 +73,34 @@ const TARGETS = (cfg.targets || []).flatMap((t) => {
 const VISION_RELAY = cfg.visionRelay || { host: 'token-plan.cn-beijing.maas.aliyuncs.com', prefix: '/compatible-mode/v1', model: 'qwen3.8-max', envKey: 'BAILIAN_API_KEY' };
 
 const log = (...a) => console.log(`[${new Date().toISOString()}]`, ...a);
+// 诊断日志（可选）：ROUTER_LOG 指向文件时记录请求形状，用于排查闪跳/上下文问题
+const LOG_FILE = process.env.ROUTER_LOG || null;
+const flog = (m) => { if (LOG_FILE) { try { fs.appendFileSync(LOG_FILE, `[${new Date().toISOString()}] ${m}\n`); } catch { /* noop */ } } };
+
+// ---------- 模型上下文窗口配置 ----------
+// config.json 的 modelContext 字段：路由启动时把上下文窗口/压缩阈值写回 models.json，
+// 让桌面端据此做滑动窗口/压缩，避免第三方模型每轮全量重发历史（卡思考根因）
+function applyModelContext() {
+  const mc = cfg.modelContext;
+  if (!mc || mc.enabled === false) return;
+  try {
+    const cat = JSON.parse(fs.readFileSync(CATALOG_PATH, 'utf8'));
+    let changed = false;
+    const slugs = mc.slugs || [];
+    for (const m of cat.models || []) {
+      if (slugs.length && !slugs.includes(m.slug)) continue;
+      if (mc.contextWindow && m.context_window !== mc.contextWindow) { m.context_window = mc.contextWindow; m.max_context_window = mc.contextWindow; changed = true; }
+      if (mc.autoCompactTokenLimit !== undefined && m.auto_compact_token_limit !== mc.autoCompactTokenLimit) { m.auto_compact_token_limit = mc.autoCompactTokenLimit; changed = true; }
+    }
+    if (changed) {
+      const tmp = CATALOG_PATH + '.tmp';
+      fs.writeFileSync(tmp, JSON.stringify(cat, null, 2));
+      fs.renameSync(tmp, CATALOG_PATH);
+      log('modelContext: 已写回 models.json');
+    }
+  } catch (e) { log('modelContext: 应用失败', e.message); }
+}
+applyModelContext();
 
 // ---------- TLS 连接：直连 或 经本地代理 HTTP CONNECT 隧道 ----------
 function tlsSocketDirect(host) {
@@ -382,6 +410,12 @@ const server = http.createServer(async (clientReq, clientRes) => {
     let bodyObj = null;
     let model = '';
     try { bodyObj = JSON.parse(bodyBuf0.toString()); model = bodyObj.model || ''; } catch { /* 非 JSON 按默认腿走 */ }
+    // 诊断：记录请求形状（历史条数/各角色计数/是否带 previous_response_id），排查闪跳
+    if (bodyObj && Array.isArray(bodyObj.input)) {
+      const cnt = {};
+      for (const it of bodyObj.input) { const k = it?.role || it?.type || '?'; cnt[k] = (cnt[k] || 0) + 1; }
+      flog(`${model} | input=${bodyObj.input.length} | prev=${bodyObj.previous_response_id ? 'yes' : 'no'} | ${Object.entries(cnt).map(([k, v]) => `${k}:${v}`).join(' ')}`);
+    }
     const target = TARGETS.find((t) => t.match.test(model)) || TARGETS[0];
     let bodyBuf = bodyBuf0;
     if (bodyObj && target.vision === false) {

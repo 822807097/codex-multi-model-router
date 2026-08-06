@@ -41,6 +41,13 @@
       "envKey": "BAILIAN_API_KEY"
     }
   ],
+  "modelContext": {
+    "_comment": "路由启动时写回 models.json，让桌面端做滑动窗口/压缩，避免第三方模型每轮全量重发历史",
+    "enabled": true,
+    "contextWindow": 131072,
+    "autoCompactTokenLimit": 120000,
+    "slugs": ["deepseek-v4-flash", "deepseek-v4-pro", "qwen3.8-max"]
+  },
   "visionRelay": {
     "host": "token-plan.cn-beijing.maas.aliyuncs.com",
     "prefix": "/compatible-mode/v1",
