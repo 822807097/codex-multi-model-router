@@ -1,0 +1,52 @@
+{
+  "_comment": "路由配置文件：修改后执行 restart-router.ps1 生效",
+  "port": 15730,
+  "proxy": {
+    "host": "127.0.0.1",
+    "port": 10808
+  },
+  "paths": {
+    "auth": null,
+    "catalog": null
+  },
+  "oauth": {
+    "client_id": "app_EMoamEEZ73f0CkXaXp7hrann",
+    "refresh_skew_seconds": 30
+  },
+  "targets": [
+    {
+      "match": "^(gpt-|codex-|o\\d|computer-use)",
+      "name": "openai",
+      "host": "chatgpt.com",
+      "prefix": "/backend-api/codex",
+      "viaProxy": true,
+      "vision": true
+    },
+    {
+      "match": "^deepseek-",
+      "name": "deepseek",
+      "host": "api.deepseek.com",
+      "prefix": "",
+      "viaProxy": false,
+      "vision": false,
+      "envKey": "DEEPSEEK_API_KEY"
+    },
+    {
+      "match": "^qwen",
+      "name": "bailian",
+      "host": "token-plan.cn-beijing.maas.aliyuncs.com",
+      "prefix": "/compatible-mode/v1",
+      "viaProxy": false,
+      "vision": true,
+      "envKey": "BAILIAN_API_KEY"
+    }
+  ],
+  "visionRelay": {
+    "host": "token-plan.cn-beijing.maas.aliyuncs.com",
+    "prefix": "/compatible-mode/v1",
+    "model": "qwen3.8-max",
+    "envKey": "BAILIAN_API_KEY",
+    "prompt": "Describe this image concisely (2-4 sentences) for a coding assistant that cannot see it. Focus on text/UI elements/code/error messages if present.",
+    "maxTokens": 300
+  }
+}
