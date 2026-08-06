@@ -35,7 +35,6 @@ import tls from 'node:tls';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { Transform } from 'node:stream';
 
@@ -102,138 +101,6 @@ function applyModelContext() {
   } catch (e) { log('modelContext: 应用失败', e.message); }
 }
 applyModelContext();
-
-// ---------- 会话状态管理（Responses API 轮次衔接） ----------
-// 问题：桌面端对第三方模型可能不带 previous_response_id，或上游服务端缓存不可靠，
-// 导致每轮重新执行工具调用（闪跳）。方案：由路由自己维护 responseId → 完整 input 历史。
-//   收到 previous_response_id → 从缓存取历史 + 增量 input → 全量发给上游（去掉 prev id）
-//   上游响应 → 用路由生成的 responseId 缓存并回写给桌面端，下轮继续用该 id 衔接
-// 仅对 sessionManagement.slugs 里的非官方模型生效；官方腿（gpt-*/codex-*）原样转发。
-// 注意：每轮新响应都会缓存一份「截至该轮的完整 input」，内存随会话长度增长，
-// 由 TTL 定时清理 + SESSION_MAX 上限兜底。
-const SESSION_CFG = cfg.sessionManagement || { enabled: false };
-const SESSION_TTL = Number(SESSION_CFG.ttl) || 24 * 60 * 60 * 1000;
-const SESSION_CLEANUP_MS = Number(SESSION_CFG.cleanupInterval) || 60 * 60 * 1000;
-const SESSION_SLUGS = Array.isArray(SESSION_CFG.slugs) ? SESSION_CFG.slugs : [];
-const SESSION_MAX = 2000;
-const sessions = new Map(); // responseId → { input: 完整input数组, createdAt, model }
-
-// 是否对本请求做会话管理：开关开启、命中模型列表、且非官方腿
-function sessionApplies(model, target) {
-  return SESSION_CFG.enabled !== false && !!target && target.name !== 'openai'
-    && (SESSION_SLUGS.length === 0 || SESSION_SLUGS.includes(model));
-}
-
-// 请求侧：命中 previous_response_id 时拼接完整历史，并去掉 prev id（上游无需/不可靠状态）。
-// 返回 null = 不处理会话；否则返回 { prevId, merged }（merged = 缓存命中并拼接）
-function sessionPrepare(bodyObj, model, target) {
-  if (!bodyObj || !sessionApplies(model, target)) return null;
-  const prevId = bodyObj.previous_response_id;
-  if (!prevId) return { prevId: null, merged: false };
-  const s = sessions.get(prevId);
-  if (s) {
-    bodyObj.input = [...(Array.isArray(s.input) ? s.input : []), ...(Array.isArray(bodyObj.input) ? bodyObj.input : [])];
-    delete bodyObj.previous_response_id; // 全量发给上游，不再依赖上游状态
-    flog(`session: HIT ${prevId} (${s.model}) -> full input=${bodyObj.input.length}`);
-    log(`session hit: ${prevId} -> full input ${bodyObj.input.length} items`);
-    return { prevId, merged: true };
-  }
-  // 降级：缓存未命中（路由重启/过期），用当前 input 直接发，不报错；
-  // 同时去掉 prev id（桌面端带的是路由生成的 id，上游不认识），避免上游报错
-  delete bodyObj.previous_response_id;
-  flog(`session: MISS ${prevId} -> fallback to current input`);
-  log(`session miss: ${prevId} -> fallback to current input`);
-  return { prevId, merged: false };
-}
-
-function sessionStore(model, input, responseId) {
-  input = Array.isArray(input) ? input : [];
-  if (sessions.size >= SESSION_MAX) sessions.clear(); // 上限兜底：满了整体清空
-  sessions.set(responseId, { input: structuredClone(input), createdAt: Date.now(), model }); // 深拷贝快照，避免后续请求改动污染历史
-  flog(`session: STORE ${responseId} (${model}, input=${input.length})`);
-  log(`session stored: ${responseId} (${model}, input=${input.length})`);
-}
-
-// 非流式：整包 JSON 响应，改写 id/previous_response_id 并缓存会话
-function sessionJsonTransform(model, ourId, input, prevId) {
-  const bufs = [];
-  return new Transform({
-    transform(c, _e, cb) { bufs.push(c); cb(); },
-    flush(cb) {
-      let out = Buffer.concat(bufs);
-      try {
-        const obj = JSON.parse(out.toString('utf8'));
-        if (obj && typeof obj === 'object' && !obj.error) {
-          obj.id = ourId;
-          if (prevId) obj.previous_response_id = prevId;
-          sessionStore(model, input, ourId);
-          out = Buffer.from(JSON.stringify(obj));
-        }
-      } catch { /* 上游非 JSON：原样透传 */ }
-      this.push(out);
-      cb();
-    }
-  });
-}
-
-// 流式（SSE）：逐事件改写 response_id / response.created|completed 的 id，流结束缓存会话
-function sessionSseTransform(model, ourId, input, prevId) {
-  let buf = Buffer.alloc(0);
-  let sawId = false; // 只有真正收到响应对象才缓存，错误流不缓存
-  const rewriteEvent = (evText) => evText.split('\n').map((line) => {
-    const hadCR = line.endsWith('\r');
-    const s = hadCR ? line.slice(0, -1) : line;
-    if (!s.startsWith('data:')) return line;
-    const payload = s.slice(5).trim();
-    if (!payload || !payload.startsWith('{')) return line;
-    try {
-      const obj = JSON.parse(payload);
-      let changed = false;
-      if (obj && typeof obj === 'object') {
-        if (obj.response_id) { obj.response_id = ourId; changed = true; }
-        if ((obj.type === 'response.created' || obj.type === 'response.completed') && obj.id) {
-          obj.id = ourId; sawId = true; changed = true;
-        }
-        if (prevId && obj.previous_response_id !== undefined && obj.previous_response_id !== prevId) {
-          obj.previous_response_id = prevId; changed = true;
-        }
-      }
-      if (changed) return 'data:' + JSON.stringify(obj) + (hadCR ? '\r' : '');
-    } catch { /* 非 JSON data 行原样保留 */ }
-    return line;
-  }).join('\n');
-
-  return new Transform({
-    transform(chunk, _e, cb) {
-      buf = Buffer.concat([buf, chunk]);
-      let idx;
-      while ((idx = buf.indexOf('\n\n')) !== -1) {
-        const ev = buf.subarray(0, idx + 2).toString('utf8');
-        buf = buf.subarray(idx + 2);
-        this.push(rewriteEvent(ev));
-      }
-      cb();
-    },
-    flush(cb) {
-      if (buf.length) this.push(rewriteEvent(buf.toString('utf8')));
-      if (sawId) sessionStore(model, input, ourId);
-      cb();
-    }
-  });
-}
-
-// 定期清理过期会话（TTL 之外的一律删除）
-if (SESSION_CFG.enabled !== false) {
-  setInterval(() => {
-    const cutoff = Date.now() - SESSION_TTL;
-    let removed = 0;
-    for (const [id, s] of sessions) {
-      if (s.createdAt < cutoff) { sessions.delete(id); removed++; }
-    }
-    if (removed) log(`session cleanup: removed ${removed} expired`);
-  }, SESSION_CLEANUP_MS).unref();
-  log(`session mgmt: enabled | ttl=${SESSION_TTL}ms | cleanup=${SESSION_CLEANUP_MS}ms | slugs=[${SESSION_SLUGS.join(',') || '*non-openai'}]${SESSION_CFG.useRedis ? ' | useRedis 未实现，采用内存方案' : ''}`);
-}
 
 // ---------- TLS 连接：直连 或 经本地代理 HTTP CONNECT 隧道 ----------
 function tlsSocketDirect(host) {
@@ -401,6 +268,88 @@ async function relayNonTextParts(body) {
   return stripped;
 }
 
+// ---------- Responses ↔ Chat 协议转换 ----------
+// 为什么需要：DeepSeek/Qwen 的 Chat API 久经考验，而 Responses 格式（含 reasoning/
+// custom_tool_call 等 Codex 特有字段）处理不完善，导致模型“看不懂”历史、从头重推（闪跳）。
+// cc-switch/Codex++ 正是转成 Chat 格式才稳定。故对 wireApi='chat' 的腿做转换。
+function extractText(content) {
+  if (typeof content === 'string') return content;
+  if (Array.isArray(content)) return content.map((c) => (c && (c.text || c.output_text || ''))).join('');
+  return '';
+}
+// Responses input → Chat messages
+function responsesToChatMessages(input) {
+  const messages = [];
+  let pendingToolCalls = [];
+  const flushTools = () => {
+    if (pendingToolCalls.length) { messages.push({ role: 'assistant', content: '', tool_calls: pendingToolCalls }); pendingToolCalls = []; }
+  };
+  for (const item of input || []) {
+    if (!item) continue;
+    const t = item.type;
+    if (item.role === 'user' || item.role === 'developer' || item.role === 'system') {
+      const text = extractText(item.content);
+      if (text) messages.push({ role: item.role === 'developer' ? 'system' : item.role, content: text });
+    } else if (item.role === 'assistant') {
+      const text = extractText(item.content);
+      if (text) messages.push({ role: 'assistant', content: text });
+    } else if (t === 'reasoning') {
+      // Chat 无对应物，丢弃（保持历史干净）
+    } else if (t === 'function_call') {
+      pendingToolCalls.push({ id: item.call_id, type: 'function', function: { name: item.name, arguments: item.arguments || '{}' } });
+    } else if (t === 'custom_tool_call') {
+      pendingToolCalls.push({ id: item.call_id, type: 'function', function: { name: item.name || 'custom', arguments: item.input || '{}' } });
+    } else if (t === 'function_call_output' || t === 'custom_tool_call_output') {
+      flushTools();
+      messages.push({ role: 'tool', tool_call_id: item.call_id, content: extractText(item.output) });
+    }
+  }
+  flushTools();
+  return messages;
+}
+// Chat 非流式响应 → Responses 格式
+function chatToResponses(chatJson, model) {
+  const msg = chatJson.choices?.[0]?.message || {};
+  const output = [];
+  for (const tc of msg.tool_calls || []) output.push({ type: 'function_call', call_id: tc.id, name: tc.function?.name, arguments: tc.function?.arguments });
+  if (msg.content) output.push({ type: 'message', role: 'assistant', content: [{ type: 'output_text', text: msg.content }] });
+  return { id: 'resp_' + crypto.randomUUID(), object: 'response', model, status: 'completed', output };
+}
+// Chat SSE → Responses SSE（桌面端期望 response.created / output_text.delta / completed）
+function chatSseToResponsesSse(model) {
+  let buf = Buffer.alloc(0);
+  let started = false;
+  let fullText = '';
+  const respId = 'resp_' + crypto.randomUUID();
+  const emit = (obj) => 'data: ' + JSON.stringify(obj) + '\n\n';
+  return new Transform({
+    transform(chunk, _e, cb) {
+      buf = Buffer.concat([buf, chunk]);
+      let idx;
+      while ((idx = buf.indexOf('\n')) !== -1) {
+        const line = buf.subarray(0, idx).toString('utf8').replace(/\r$/, '');
+        buf = buf.subarray(idx + 1);
+        if (!line.startsWith('data:')) continue;
+        const payload = line.slice(5).trim();
+        if (payload === '[DONE]') continue;
+        try {
+          const ev = JSON.parse(payload);
+          const delta = ev.choices?.[0]?.delta || {};
+          if (!started) { started = true; this.push(emit({ type: 'response.created', response: { id: respId, object: 'response', model, status: 'in_progress', output: [] } })); }
+          if (delta.content) { fullText += delta.content; this.push(emit({ type: 'response.output_text.delta', item_id: respId, delta: delta.content })); }
+        } catch { /* 忽略非 JSON 行 */ }
+      }
+      cb();
+    },
+    flush(cb) {
+      if (!started) this.push(emit({ type: 'response.created', response: { id: respId, object: 'response', model, status: 'in_progress', output: [] } }));
+      this.push(emit({ type: 'response.completed', response: { id: respId, object: 'response', model, status: 'completed', output: [{ type: 'message', role: 'assistant', content: [{ type: 'output_text', text: fullText }] }] } }));
+      this.push('data: [DONE]\n\n');
+      cb();
+    }
+  });
+}
+
 // ---------- ChatGPT 登录态：读 auth.json，临期自动 refresh 并原子写回 ----------
 function jwtExp(token) {
   try {
@@ -448,7 +397,7 @@ async function doRefresh() {
 }
 
 // ---------- 在已建立的 TLS socket 上裸写 HTTP/1.1 请求并流式回传响应 ----------
-function rawHttpRequest(socket, host, reqPath, method, headers, bodyBuf, clientRes, tag, sessTransform) {
+function rawHttpRequest(socket, host, reqPath, method, headers, bodyBuf, clientRes, tag, respTransform) {
   const headLines = [`${method} ${reqPath} HTTP/1.1`, `Host: ${host}`, 'Connection: close'];
   for (const [k, v] of Object.entries(headers)) headLines.push(`${k}: ${v}`);
   socket.write(headLines.join('\r\n') + '\r\n\r\n');
@@ -484,20 +433,21 @@ function rawHttpRequest(socket, host, reqPath, method, headers, bodyBuf, clientR
     log(`${tag} -> ${status}`);
     const chunked = /chunked/i.test(String(outHeaders['transfer-encoding'] || ''));
     if (chunked) { delete outHeaders['transfer-encoding']; delete outHeaders['content-length']; }
+    // 有响应转换（Chat→Responses）时，响应头改为 SSE 流式 JSON，长度类头剔除
+    if (respTransform) { delete outHeaders['content-length']; outHeaders['content-type'] = 'text/event-stream'; outHeaders['cache-control'] = 'no-cache'; }
     try { clientRes.writeHead(status, outHeaders); } catch { /* 客户端已断开 */ }
-    // 会话管理：响应体经改写管道（重写 response id + 缓存会话）后再交给客户端
     if (chunked) {
       const t = new DechunkTransform();
       if (rest.length) t.write(rest);
       socket.pipe(t);
-      t.on('error', () => clientRes.destroy());
-      if (sessTransform) { t.pipe(sessTransform); sessTransform.pipe(clientRes); sessTransform.on('error', () => clientRes.destroy()); }
+      if (respTransform) { t.pipe(respTransform); respTransform.pipe(clientRes); respTransform.on('error', () => clientRes.destroy()); }
       else t.pipe(clientRes);
-    } else if (sessTransform) {
-      if (rest.length) sessTransform.write(rest);
-      socket.pipe(sessTransform);
-      sessTransform.pipe(clientRes);
-      sessTransform.on('error', () => clientRes.destroy());
+      t.on('error', () => clientRes.destroy());
+    } else if (respTransform) {
+      if (rest.length) respTransform.write(rest);
+      socket.pipe(respTransform);
+      respTransform.pipe(clientRes);
+      respTransform.on('error', () => clientRes.destroy());
     } else {
       if (rest.length) clientRes.write(rest);
       socket.pipe(clientRes);
@@ -532,10 +482,8 @@ const server = http.createServer(async (clientReq, clientRes) => {
         const base = { id: m.slug, object: 'model', created: 0, owned_by: 'local-router' };
         // 按模型精确声明能力：只有原生支持 Responses 协议的模型才声明 previous_response_id
         // DeepSeek-V4-Flash / Qwen3.8-Max 原生支持；DeepSeek-V4-Pro 尚未支持
-        // 声明 previous_response_id 支持的模型 = 原生支持（supportsResponses）+ 路由会话管理
-        // 覆盖（sessionManagement.slugs：由路由层保证状态衔接，桌面端可放心使用）
-        const sr = new Set([...(cfg.supportsResponses?.slugs || []), ...SESSION_SLUGS]);
-        if (sr.has(m.slug)) {
+        const sr = cfg.supportsResponses?.slugs || [];
+        if (sr.includes(m.slug)) {
           base.capabilities = { previous_response_id: true, streaming: true };
         }
         return base;
@@ -565,33 +513,40 @@ const server = http.createServer(async (clientReq, clientRes) => {
     if (bodyObj && Array.isArray(bodyObj.input)) {
       const cnt = {};
       for (const it of bodyObj.input) { const k = it?.role || it?.type || '?'; cnt[k] = (cnt[k] || 0) + 1; }
-      flog(`${model} | input=${bodyObj.input.length} | prev=${bodyObj.previous_response_id ? 'yes' : 'no'} | ${Object.entries(cnt).map(([k, v]) => `${k}:${v}`).join(' ')}`);
+      const hasPrev = !!bodyObj.previous_response_id;
+      const prevIdShort = hasPrev ? bodyObj.previous_response_id.substring(0, 20) + '...' : 'no';
+      // 详细日志：记录请求体关键结构（脱敏）
+      const sample = {
+        model: bodyObj.model,
+        stream: bodyObj.stream,
+        previous_response_id: hasPrev ? bodyObj.previous_response_id : undefined,
+        input_length: bodyObj.input.length,
+        input_first: bodyObj.input[0] ? { role: bodyObj.input[0].role, type: bodyObj.input[0].type, content_type: Array.isArray(bodyObj.input[0].content) ? bodyObj.input[0].content.map(c => c.type).join(',') : typeof bodyObj.input[0].content } : null,
+        input_last: bodyObj.input[bodyObj.input.length - 1] ? { role: bodyObj.input[bodyObj.input.length - 1].role, type: bodyObj.input[bodyObj.input.length - 1].type } : null,
+        role_counts: cnt
+      };
+      flog(`REQ ${model} | prev=${prevIdShort} | ${JSON.stringify(sample)}`);
     }
     const target = TARGETS.find((t) => t.match.test(model)) || TARGETS[0];
-    // 会话管理：收到 previous_response_id 时拼接完整历史并去掉 prev id（上游无需状态）；
-    // 官方腿（gpt-*/codex-*）不处理，保持原样转发
-    const sessInfo = sessionPrepare(bodyObj, model, target);
-    const ourId = sessInfo ? 'resp_' + crypto.randomUUID() : null;
     let bodyBuf = bodyBuf0;
-    let stripped = 0;
-    let sessTransform = null;
-    let sessInput = null;
     if (bodyObj && target.vision === false) {
-      stripped = await relayNonTextParts(bodyObj); // 先中继，保证快照/序列化的是最终请求体
+      const stripped = await relayNonTextParts(bodyObj);
+      if (stripped > 0) {
+        bodyBuf = Buffer.from(JSON.stringify(bodyObj));
+        log(`${model}: relayed/stripped ${stripped} non-text part(s) for text-only model`);
+      }
     }
-    if (bodyObj && sessInfo) {
-      // 发给上游的完整 input（含合并历史/中继替换）；sessionStore 内部会深拷贝快照
-      sessInput = bodyObj.input;
-      bodyBuf = Buffer.from(JSON.stringify(bodyObj));
-      const streamReq = bodyObj.stream === true;
-      sessTransform = streamReq
-        ? sessionSseTransform(model, ourId, sessInput, sessInfo.prevId)
-        : sessionJsonTransform(model, ourId, sessInput, sessInfo.prevId);
-    } else if (stripped > 0) {
-      bodyBuf = Buffer.from(JSON.stringify(bodyObj));
+    // Chat 转换模式：wireApi='chat' 的腿把 Responses 请求转成 Chat，响应再转回 Responses
+    let respTransform = null;
+    let upstreamPath = target.prefix + url.replace(/^\/v1/, '');
+    if (bodyObj && target.wireApi === 'chat') {
+      const stream = bodyObj.stream === true;
+      const chatReq = { model: bodyObj.model, messages: responsesToChatMessages(bodyObj.input), stream };
+      bodyBuf = Buffer.from(JSON.stringify(chatReq));
+      upstreamPath = target.prefix + '/chat/completions';
+      if (stream) respTransform = chatSseToResponsesSse(bodyObj.model);
+      flog(`CHAT ${model} | messages=${chatReq.messages.length} | stream=${stream}`);
     }
-    if (stripped > 0) log(`${model}: relayed/stripped ${stripped} non-text part(s) for text-only model`);
-    const upstreamPath = target.prefix + url.replace(/^\/v1/, '');
     try {
       // 透传客户端头，但剔除 hop-by-hop / 认证 / 长度 / 压缩（压缩必须关，否则透传解压坏）
       const headers = {};
@@ -613,7 +568,7 @@ const server = http.createServer(async (clientReq, clientRes) => {
       }
       const socket = await connectTls(target.host, target.viaProxy);
       clientRes.on('close', () => socket.destroy()); // 客户端断开即掐上游
-      rawHttpRequest(socket, target.host, upstreamPath, clientReq.method, headers, bodyBuf, clientRes, `${model || '?'} -> ${target.name}`, sessTransform);
+      rawHttpRequest(socket, target.host, upstreamPath, clientReq.method, headers, bodyBuf, clientRes, `${model || '?'} -> ${target.name}`, respTransform);
     } catch (e) {
       log(`route error [${target.name}]`, e.message);
       if (!clientRes.headersSent) clientRes.writeHead(502, { 'content-type': 'application/json' });
@@ -629,6 +584,3 @@ server.listen(PORT, '127.0.0.1', () => {
   log(`  targets: ${TARGETS.map((t) => t.name).join(', ')}`);
   log(`  vision relay: ${VISION_RELAY.model} @ ${VISION_RELAY.host}`);
 });
-
-// 导出会话管理函数（仅便于本地单测，正常运行不受影响）
-export { sessions, sessionApplies, sessionPrepare, sessionStore, sessionJsonTransform, sessionSseTransform };
