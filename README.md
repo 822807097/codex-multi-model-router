@@ -67,9 +67,9 @@ BAILIAN_API_KEY=sk-xxx
 
 **注意**：自定义模型必须包含 `input_modalities: ["text", "image"]` 才能在桌面端发图（前端门控）。
 
-### 3. 配置文件
+### 3. 配置文件（Codex 接入路由）
 
-编辑 `~/.codex/config.toml`：
+编辑 `~/.codex/config.toml`（不存在则新建）：
 
 ```toml
 model = "gpt-5.6-terra"
@@ -83,6 +83,13 @@ wire_api = "responses"
 requires_openai_auth = true   # 门控钥匙：让桌面端按官方身份放行自定义模型
 supports_websockets = false
 ```
+
+**字段说明**：
+- `model_provider = "router"`：把默认供应商指向路由
+- `base_url`：路由监听地址（与 config.json 的 `port` 一致）
+- `wire_api = "responses"`：桌面端以 Responses API 与路由通信
+- `requires_openai_auth = true`：**关键**，桌面端选择器显示自定义模型的前提（门控钥匙）
+- `model_catalog_json`：模型目录，决定选择器里有哪些模型
 
 **关键**：`requires_openai_auth = true` 是桌面端选择器显示自定义模型的前提。
 
@@ -273,6 +280,29 @@ codex-router test
 | `V2RAY_PORT` | 代理端口 | `config.json:proxy.port` 或 `10808` |
 | `DEEPSEEK_API_KEY` | DeepSeek API Key | - |
 | `BAILIAN_API_KEY` | 阿里云百炼 API Key | - |
+
+## 网络与代理（v2rayN 可选）
+
+官方 GPT 腿（`chatgpt.com`）在**国内直连不通**，默认经本地代理（v2rayN 等）的 CONNECT 隧道出海（`viaProxy: true`）。
+
+**如果你不用代理客户端**（如在海外、或有其他直连方式），把 openai 腿的 `viaProxy` 设为 `false` 即可直连：
+
+```json
+{
+  "match": "^(gpt-|codex-|o\\d|computer-use)",
+  "name": "openai",
+  "host": "chatgpt.com",
+  "prefix": "/backend-api/codex",
+  "viaProxy": false,   // 不用代理，直连
+  "vision": true
+}
+```
+
+- `viaProxy: true`：经 `proxy.host:proxy.port`（默认 127.0.0.1:10808）CONNECT 隧道，适合国内 + v2rayN
+- `viaProxy: false`：直连上游，适合海外/有直连条件
+- 第三方腿（deepseek/qwen）国内可直连，默认 `viaProxy: false`
+
+代理端口可在 config.json 的 `proxy` 字段或环境变量 `V2RAY_HOST`/`V2RAY_PORT` 调整。
 
 ## 常见问题
 
