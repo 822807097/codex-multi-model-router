@@ -178,7 +178,12 @@ function httpsJson(host, reqPath, viaProxy, headers, bodyObj) {
 }
 
 // ---------- 视觉中继实现 ----------
+// 图片描述缓存：同一张图（同 url/dataURL）只调一次视觉模型，后续轮次直接复用，
+// 避免长会话每轮重复描述历史截图导致“一直思考”
+const captionCache = new Map();
+const CAPTION_CACHE_MAX = 200;
 async function captionImage(imageUrl) {
+  if (captionCache.has(imageUrl)) return captionCache.get(imageUrl);
   const key = process.env[VISION_RELAY.envKey];
   if (!key) throw new Error(`VISION_RELAY 环境变量 ${VISION_RELAY.envKey} 未设置`);
   const body = JSON.stringify({
@@ -192,7 +197,10 @@ async function captionImage(imageUrl) {
   const r = await rawHttpsRequest(VISION_RELAY.host, `${VISION_RELAY.prefix}/chat/completions`, false, { authorization: `Bearer ${key}` }, body);
   const j = JSON.parse(r.bodyText);
   if (r.status !== 200 || !j.choices?.[0]?.message?.content) throw new Error(`vision relay HTTP ${r.status}`);
-  return j.choices[0].message.content;
+  const desc = j.choices[0].message.content;
+  if (captionCache.size >= CAPTION_CACHE_MAX) captionCache.clear(); // 简单淘汰：满了清空
+  captionCache.set(imageUrl, desc);
+  return desc;
 }
 // 遍历 Responses API 的 input，对中继目标模型不可见的非文本 part 做替换：
 //   1. user 消息的 content（用户直接贴图）
