@@ -390,8 +390,10 @@ const server = http.createServer(async (clientReq, clientRes) => {
       const catalog = JSON.parse(fs.readFileSync(CATALOG_PATH, 'utf8'));
       const data = catalog.models.map((m) => {
         const base = { id: m.slug, object: 'model', created: 0, owned_by: 'local-router' };
-        // 声明能力：让桌面端知道第三方模型支持 previous_response_id，避免降级重建历史
-        if (m.slug && !/^(gpt-|codex-|o\d)/.test(m.slug)) {
+        // 按模型精确声明能力：只有原生支持 Responses 协议的模型才声明 previous_response_id
+        // DeepSeek-V4-Flash / Qwen3.8-Max 原生支持；DeepSeek-V4-Pro 尚未支持
+        const sr = cfg.supportsResponses?.slugs || [];
+        if (sr.includes(m.slug)) {
           base.capabilities = { previous_response_id: true, streaming: true };
         }
         return base;
