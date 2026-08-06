@@ -503,6 +503,13 @@ function rawHttpRequest(socket, host, reqPath, method, headers, bodyBuf, clientR
 // ---------- 主服务 ----------
 const server = http.createServer(async (clientReq, clientRes) => {
   const url = clientReq.url || '/';
+  // 无感更新控制端点：旧进程释放端口但继续服务完在跑任务，新进程立即接管新请求
+  if (url === '/_admin/shutdown' && clientReq.method === 'POST') {
+    clientRes.writeHead(200, { 'content-type': 'application/json' });
+    clientRes.end(JSON.stringify({ ok: true }));
+    gracefulExit();
+    return;
+  }
   // 健康检查
   if (clientReq.method === 'GET' && (url === '/healthz' || url === '/v1/healthz')) {
     clientRes.writeHead(200, { 'content-type': 'application/json' });
@@ -638,3 +645,17 @@ server.listen(PORT, '127.0.0.1', () => {
   log(`  targets: ${TARGETS.map((t) => t.name).join(', ')}`);
   log(`  vision relay: ${VISION_RELAY.model} @ ${VISION_RELAY.host}`);
 });
+
+// ---------- 无感更新：优雅退出 ----------
+// server.close() 会立即释放监听端口（新进程可马上接管），但保留已有连接直到结束。
+// closeIdleConnections() 关掉空闲 keep-alive 连接，让 close 能完成；在跑的流式任务自然结束。
+let shuttingDown = false;
+function gracefulExit() {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  log('graceful shutdown: 释放端口，排空在跑任务');
+  try { server.closeIdleConnections(); } catch { /* 旧版 Node 无此方法 */ }
+  server.close(() => { log('在跑任务已排空，退出'); process.exit(0); });
+  // 安全阀：最多等 10 分钟，避免超长任务挂住旧进程
+  setTimeout(() => { log('drain timeout, force exit'); process.exit(0); }, 10 * 60 * 1000).unref();
+}
