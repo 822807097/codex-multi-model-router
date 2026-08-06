@@ -1,0 +1,33 @@
+{
+  "name": "codex-multi-model-router",
+  "version": "1.0.0",
+  "description": "Codex 桌面端本地多模型路由代理，支持官方 GPT、DeepSeek、Qwen 共存 + 视觉中继",
+  "type": "module",
+  "main": "codex-router.mjs",
+  "bin": {
+    "codex-router": "codex-router.mjs"
+  },
+  "scripts": {
+    "start": "bash scripts/start-router.sh",
+    "stop": "bash scripts/stop-router.sh",
+    "restart": "bash scripts/restart-router.sh",
+    "status": "bash scripts/status-router.sh",
+    "test": "bash scripts/test-router.sh",
+    "restore:official": "bash scripts/restore-official.sh",
+    "restore:custom": "bash scripts/restore-custom.sh"
+  },
+  "keywords": [
+    "codex",
+    "openai",
+    "deepseek",
+    "qwen",
+    "router",
+    "proxy",
+    "vision-relay"
+  ],
+  "author": "",
+  "license": "MIT",
+  "engines": {
+    "node": ">=18"
+  }
+}
