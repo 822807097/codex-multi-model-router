@@ -61,7 +61,11 @@ const REFRESH_SKEW_SECONDS = cfg.oauth?.refresh_skew_seconds || 30;
 // match: 正则字符串 | host: 上游域名 | prefix: 路径前缀
 // viaProxy: true=经本地代理 CONNECT 隧道 | vision: false=文本模型走视觉中继
 // envKey: API key 所在环境变量名（官方腿不用，走 auth.json）
-const TARGETS = (cfg.targets || []).map((t) => ({ ...t, match: new RegExp(t.match) }));
+// 容错：单条 match 正则非法时跳过该腿并告警，不让整个路由启动即崩
+const TARGETS = (cfg.targets || []).flatMap((t) => {
+  try { return [{ ...t, match: new RegExp(t.match) }]; }
+  catch (e) { console.error(`[config] 忽略非法 match 正则: ${t.match} (${e.message})`); return []; }
+});
 
 // ---------- 视觉中继配置 ----------
 // 文本模型 (vision:false) 收到 input_image 时，调用这里配置的视觉模型生成描述
@@ -94,7 +98,10 @@ function tlsSocketViaProxy(host) {
           socket.destroy();
           return;
         }
-        const t = tls.connect({ socket, servername: host }, () => resolve(t));
+        const t = tls.connect({ socket, servername: host }, () => {
+          socket.setTimeout(0); // CONNECT 已建立，清除空闲超时，避免长流/长思考被掐断
+          resolve(t);
+        });
         t.on('error', reject);
       }
     };
@@ -196,23 +203,20 @@ async function relayNonTextParts(body) {
   let stripped = 0;
   const relayParts = async (parts) => {
     if (!Array.isArray(parts)) return parts;
-    const next = [];
-    for (const p of parts) {
-      // 只转换 input_image；其余（文本/字符串/工具结果/未知类型）一律原样保留，
-      // 避免毁掉 shell/插件的工具输出导致模型重跑（闪跳根因）
-      if (!(p && p.type === 'input_image')) { next.push(p); continue; }
+    // 并行中继多图，降低多图会话延迟；只转换 input_image，其余原样保留
+    return Promise.all(parts.map(async (p) => {
+      if (!(p && p.type === 'input_image')) return p;
       stripped++;
       const url = typeof p.image_url === 'string' ? p.image_url : p.image_url?.url;
       try {
         const desc = await captionImage(url);
         log(`vision relay: captioned image (${desc.length} chars)`);
-        next.push({ type: 'input_text', text: `[image description: ${desc}]` });
+        return { type: 'input_text', text: `[image description: ${desc}]` };
       } catch (e) {
         log('vision relay failed:', e.message);
-        next.push({ type: 'input_text', text: '[image omitted: vision relay failed]' }); // 降级：不阻断请求
+        return { type: 'input_text', text: '[image omitted: vision relay failed]' }; // 降级：不阻断请求
       }
-    }
-    return next;
+    }));
   };
   for (const msg of body.input) {
     if (!msg) continue;
@@ -237,6 +241,8 @@ function jwtExp(token) {
   } catch { return null; }
 }
 function readAuth() { return JSON.parse(fs.readFileSync(AUTH_PATH, 'utf8')); }
+// single-flight：并发请求同时临期时只真正 refresh 一次，避免 refresh_token 轮换竞态写坏 auth.json
+let refreshInFlight = null;
 async function getOpenAiAuth() {
   const data = readAuth();
   const tokens = data.tokens || {};
@@ -246,6 +252,14 @@ async function getOpenAiAuth() {
     return { token: tokens.access_token, accountId: tokens.account_id };
   }
   if (!tokens.refresh_token) throw new Error('access_token 已过期且无 refresh_token，请在桌面端重新登录');
+  if (!refreshInFlight) {
+    refreshInFlight = doRefresh().finally(() => { refreshInFlight = null; });
+  }
+  return refreshInFlight;
+}
+async function doRefresh() {
+  const data = readAuth(); // 重新读，拿最新 refresh_token
+  const tokens = data.tokens || {};
   log('openai: access_token 临期，执行 refresh');
   const r = await httpsJson('auth.openai.com', '/oauth/token', true, {}, {
     client_id: CLIENT_ID, grant_type: 'refresh_token', refresh_token: tokens.refresh_token,
