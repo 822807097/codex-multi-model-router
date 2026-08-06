@@ -35,12 +35,15 @@ import tls from 'node:tls';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { Transform } from 'node:stream';
 
 // ---------- 加载配置 ----------
 // config.json 与 codex-router.mjs 同目录，包含所有可修改参数
 // 环境变量优先级高于 config.json（PORT/PROXY 等）
-const CONFIG_PATH = path.join(path.dirname(new URL(import.meta.url).pathname), 'config.json');
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+const CONFIG_PATH = path.join(__dirname, 'config.json');
 const cfg = JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf8'));
 
 const PORT = Number(process.env.ROUTER_PORT || cfg.port || 15730);
