@@ -315,6 +315,24 @@ function chatToResponses(chatJson, model) {
   if (msg.content) output.push({ type: 'message', role: 'assistant', content: [{ type: 'output_text', text: msg.content }] });
   return { id: 'resp_' + crypto.randomUUID(), object: 'response', model, status: 'completed', output };
 }
+// 从完整 Responses 对象生成规范 SSE 流（保证 response.completed 一定发出，避免桌面端报
+// “stream closed before response.completed”）。牺牲逐 token 流式换取可靠性。
+function emitResponsesSse(clientRes, resp) {
+  const send = (o) => { try { clientRes.write('data: ' + JSON.stringify(o) + '\n\n'); } catch { /* noop */ } };
+  try { clientRes.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache' }); } catch { return; }
+  send({ type: 'response.created', response: { ...resp, status: 'in_progress', output: [] } });
+  for (const item of resp.output || []) {
+    send({ type: 'response.output_item.added', output_index: 0, item });
+    if (item.type === 'message') {
+      const text = (item.content || []).map((c) => c.text || '').join('');
+      // 分块发 delta，模拟流式
+      for (let i = 0; i < text.length; i += 200) send({ type: 'response.output_text.delta', item_id: item.id || resp.id, delta: text.slice(i, i + 200) });
+    }
+    send({ type: 'response.output_item.done', item });
+  }
+  send({ type: 'response.completed', response: resp });
+  try { clientRes.write('data: [DONE]\n\n'); clientRes.end(); } catch { /* noop */ }
+}
 // Chat SSE → Responses SSE（桌面端期望 response.created / output_text.delta / completed）
 function chatSseToResponsesSse(model) {
   let buf = Buffer.alloc(0);
@@ -536,16 +554,16 @@ const server = http.createServer(async (clientReq, clientRes) => {
         log(`${model}: relayed/stripped ${stripped} non-text part(s) for text-only model`);
       }
     }
-    // Chat 转换模式：wireApi='chat' 的腿把 Responses 请求转成 Chat，响应再转回 Responses
-    let respTransform = null;
+    // Chat 转换模式：wireApi='chat' 的腿把 Responses 请求转成 Chat（非流式拿完整响应），
+    // 再由路由自生成规范 Responses SSE，保证 completed 事件可靠发出
+    let isChat = false;
+    let chatReq = null;
     let upstreamPath = target.prefix + url.replace(/^\/v1/, '');
     if (bodyObj && target.wireApi === 'chat') {
-      const stream = bodyObj.stream === true;
-      const chatReq = { model: bodyObj.model, messages: responsesToChatMessages(bodyObj.input), stream };
-      bodyBuf = Buffer.from(JSON.stringify(chatReq));
+      chatReq = { model: bodyObj.model, messages: responsesToChatMessages(bodyObj.input), stream: false };
+      isChat = true;
       upstreamPath = target.prefix + '/chat/completions';
-      if (stream) respTransform = chatSseToResponsesSse(bodyObj.model);
-      flog(`CHAT ${model} | messages=${chatReq.messages.length} | stream=${stream}`);
+      flog(`CHAT ${model} | messages=${chatReq.messages.length} | stream=false(non-streaming upstream)`);
     }
     try {
       // 透传客户端头，但剔除 hop-by-hop / 认证 / 长度 / 压缩（压缩必须关，否则透传解压坏）
@@ -566,9 +584,26 @@ const server = http.createServer(async (clientReq, clientRes) => {
         if (!key) throw new Error(`环境变量 ${target.envKey} 未设置`);
         headers.authorization = `Bearer ${key}`;
       }
+      // Chat 腿：非流式拿完整 Chat 响应 → 转 Responses → 自生成 SSE
+      if (isChat) {
+        const chatBody = Buffer.from(JSON.stringify(chatReq));
+        headers['content-length'] = chatBody.length;
+        const r = await rawHttpsRequest(target.host, upstreamPath, target.viaProxy, headers, chatBody.toString());
+        if (r.status !== 200) {
+          log(`chat upstream error ${r.status}: ${r.bodyText.slice(0, 200)}`);
+          if (!clientRes.headersSent) clientRes.writeHead(r.status || 502, { 'content-type': 'application/json' });
+          clientRes.end(r.bodyText || JSON.stringify({ error: `chat upstream ${r.status}` }));
+          return;
+        }
+        let chatJson;
+        try { chatJson = JSON.parse(r.bodyText); } catch { chatJson = null; }
+        if (!chatJson) { if (!clientRes.headersSent) clientRes.writeHead(502, { 'content-type': 'application/json' }); clientRes.end(JSON.stringify({ error: 'chat upstream non-JSON' })); return; }
+        emitResponsesSse(clientRes, chatToResponses(chatJson, model));
+        return;
+      }
       const socket = await connectTls(target.host, target.viaProxy);
       clientRes.on('close', () => socket.destroy()); // 客户端断开即掐上游
-      rawHttpRequest(socket, target.host, upstreamPath, clientReq.method, headers, bodyBuf, clientRes, `${model || '?'} -> ${target.name}`, respTransform);
+      rawHttpRequest(socket, target.host, upstreamPath, clientReq.method, headers, bodyBuf, clientRes, `${model || '?'} -> ${target.name}`);
     } catch (e) {
       log(`route error [${target.name}]`, e.message);
       if (!clientRes.headersSent) clientRes.writeHead(502, { 'content-type': 'application/json' });
