@@ -45,14 +45,21 @@
   ],
   "supportsResponses": {
     "_comment": "精确声明哪些模型原生支持 Responses 协议（previous_response_id）。DeepSeek-V4-Pro 尚未支持，不在此列",
-    "slugs": ["deepseek-v4-flash", "qwen3.8-max"]
+    "slugs": [
+      "deepseek-v4-flash",
+      "qwen3.8-max"
+    ]
   },
   "modelContext": {
     "_comment": "路由启动时写回 models.json，让桌面端做滑动窗口/压缩，避免第三方模型每轮全量重发历史",
     "enabled": true,
-    "contextWindow": 524288,
-    "autoCompactTokenLimit": 500000,
-    "slugs": ["deepseek-v4-flash", "deepseek-v4-pro", "qwen3.8-max"]
+    "contextWindow": 1048576,
+    "autoCompactTokenLimit": 1000000,
+    "slugs": [
+      "deepseek-v4-flash",
+      "deepseek-v4-pro",
+      "qwen3.8-max"
+    ]
   },
   "visionRelay": {
     "host": "token-plan.cn-beijing.maas.aliyuncs.com",
