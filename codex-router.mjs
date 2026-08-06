@@ -26,8 +26,8 @@
 //   CODEX_AUTH_PATH     覆盖 auth.json 路径
 //   CODEX_CATALOG_PATH  覆盖 models.json 路径（/v1/models 端点读取它）
 //   ROUTER_PORT         监听端口（默认 15730）
-//   V2RAY_PORT          本地代理混合端口（默认 10808，仅 viaProxy 的腿使用）
-//   各腿 key 见下方 TARGETS 的 envKey 字段
+//   V2RAY_PORT          本地代理混合端口（默认 10808，仅 viaProxy 的通道使用）
+//   各通道 key 见下方 TARGETS 的 envKey 字段
 // ============================================================================
 import http from 'node:http';
 import net from 'node:net';
@@ -60,8 +60,8 @@ const REFRESH_SKEW_SECONDS = cfg.oauth?.refresh_skew_seconds || 30;
 // 路由规则：按请求体 model 字段匹配，命中第一条即用之
 // match: 正则字符串 | host: 上游域名 | prefix: 路径前缀
 // viaProxy: true=经本地代理 CONNECT 隧道 | vision: false=文本模型走视觉中继
-// envKey: API key 所在环境变量名（官方腿不用，走 auth.json）
-// 容错：单条 match 正则非法时跳过该腿并告警，不让整个路由启动即崩
+// envKey: API key 所在环境变量名（官方通道不用，走 auth.json）
+// 容错：单条 match 正则非法时跳过该通道并告警，不让整个路由启动即崩
 const TARGETS = (cfg.targets || []).flatMap((t) => {
   try { return [{ ...t, match: new RegExp(t.match) }]; }
   catch (e) { console.error(`[config] 忽略非法 match 正则: ${t.match} (${e.message})`); return []; }
@@ -109,6 +109,7 @@ function applyModelContext() {
 applyModelContext();
 
 // ---------- TLS 连接：直连 或 经本地代理 HTTP CONNECT 隧道 ----------
+// 直连：直接与上游 443 端口建立 TLS（海外/有直连条件时用）
 function tlsSocketDirect(host) {
   return new Promise((resolve, reject) => {
     const s = tls.connect(443, host, { servername: host }, () => resolve(s));
@@ -144,6 +145,7 @@ function tlsSocketViaProxy(host) {
     socket.setTimeout(15000, () => { reject(new Error(`CONNECT ${host} timeout`)); socket.destroy(); });
   });
 }
+// 统一入口：按 viaProxy 选择直连或代理隧道
 const connectTls = (host, viaProxy) => (viaProxy ? tlsSocketViaProxy(host) : tlsSocketDirect(host));
 
 // ---------- 一次性 HTTPS 请求（裸写 HTTP/1.1，返回 status+bodyText） ----------
@@ -205,6 +207,7 @@ class DechunkTransform extends Transform {
   }
   _flush(cb) { if (this._size > 0 && this._buf.length) this.push(this._buf.subarray(0, this._size)); cb(); }
 }
+// 一次性 HTTPS 请求并解析 JSON 响应（用于 oauth refresh、视觉中继等控制类调用）
 function httpsJson(host, reqPath, viaProxy, headers, bodyObj) {
   return rawHttpsRequest(host, reqPath, viaProxy, headers, JSON.stringify(bodyObj)).then(({ status, bodyText }) => {
     try { return { status, json: JSON.parse(bodyText) }; } catch { return { status, json: null, raw: bodyText }; }
@@ -216,6 +219,7 @@ function httpsJson(host, reqPath, viaProxy, headers, bodyObj) {
 // 避免长会话每轮重复描述历史截图导致“一直思考”
 const captionCache = new Map();
 const CAPTION_CACHE_MAX = 200;
+// 调用视觉模型为单张图片生成文字描述（带缓存，同图只调一次）
 async function captionImage(imageUrl) {
   if (captionCache.has(imageUrl)) return captionCache.get(imageUrl);
   const key = process.env[VISION_RELAY.envKey];
@@ -277,7 +281,8 @@ async function relayNonTextParts(body) {
 // ---------- Responses ↔ Chat 协议转换 ----------
 // 为什么需要：DeepSeek/Qwen 的 Chat API 久经考验，而 Responses 格式（含 reasoning/
 // custom_tool_call 等 Codex 特有字段）处理不完善，导致模型“看不懂”历史、从头重推（闪跳）。
-// cc-switch/Codex++ 正是转成 Chat 格式才稳定。故对 wireApi='chat' 的腿做转换。
+// cc-switch/Codex++ 正是转成 Chat 格式才稳定。故对 wireApi='chat' 的通道做转换。
+// 从 Responses 的 content（字符串或 part 数组）中提取纯文本
 function extractText(content) {
   if (typeof content === 'string') return content;
   if (Array.isArray(content)) return content.map((c) => (c && (c.text || c.output_text || ''))).join('');
@@ -350,7 +355,8 @@ function emitResponsesSse(clientRes, resp) {
   send({ type: 'response.completed', response: resp });
   try { clientRes.write('data: [DONE]\n\n'); clientRes.end(); } catch { /* noop */ }
 }
-// Chat SSE → Responses SSE（桌面端期望 response.created / output_text.delta / completed）
+// （保留）Chat 流式 SSE → Responses SSE 转换器。当前 chat 通道走非流式+自生成 SSE，
+// 此转换器暂不启用，留作将来需要真正逐 token 流式时启用。
 function chatSseToResponsesSse(model) {
   let buf = Buffer.alloc(0);
   let started = false;
@@ -386,6 +392,7 @@ function chatSseToResponsesSse(model) {
 }
 
 // ---------- ChatGPT 登录态：读 auth.json，临期自动 refresh 并原子写回 ----------
+// 解析 JWT 的 exp（过期时间戳），用于判断 access_token 是否临期
 function jwtExp(token) {
   try {
     let p = token.split('.')[1];
@@ -393,6 +400,7 @@ function jwtExp(token) {
     return JSON.parse(Buffer.from(p, 'base64url').toString()).exp || null;
   } catch { return null; }
 }
+// 读取 auth.json（桌面端 ChatGPT 登录态）
 function readAuth() { return JSON.parse(fs.readFileSync(AUTH_PATH, 'utf8')); }
 // single-flight：并发请求同时临期时只真正 refresh 一次，避免 refresh_token 轮换竞态写坏 auth.json
 let refreshInFlight = null;
@@ -410,6 +418,7 @@ async function getOpenAiAuth() {
   }
   return refreshInFlight;
 }
+// 实际执行 refresh：用 refresh_token 换新 access_token 并原子写回 auth.json
 async function doRefresh() {
   const data = readAuth(); // 重新读，拿最新 refresh_token
   const tokens = data.tokens || {};
@@ -543,14 +552,14 @@ const server = http.createServer(async (clientReq, clientRes) => {
     clientRes.end(JSON.stringify({ error: 'not found' }));
     return;
   }
-  // 收齐请求体 → 按 model 选腿 → 必要时视觉中继 → 换认证头 → 裸写转发
+  // 收齐请求体 → 按 model 选通道 → 必要时视觉中继 → 换认证头 → 裸写转发
   const chunks = [];
   clientReq.on('data', (c) => chunks.push(c));
   clientReq.on('end', async () => {
     const bodyBuf0 = Buffer.concat(chunks);
     let bodyObj = null;
     let model = '';
-    try { bodyObj = JSON.parse(bodyBuf0.toString()); model = bodyObj.model || ''; } catch { /* 非 JSON 按默认腿走 */ }
+    try { bodyObj = JSON.parse(bodyBuf0.toString()); model = bodyObj.model || ''; } catch { /* 非 JSON 按默认通道走 */ }
     // 诊断：记录请求形状（历史条数/各角色计数/是否带 previous_response_id），排查闪跳
     if (bodyObj && Array.isArray(bodyObj.input)) {
       const cnt = {};
@@ -579,7 +588,7 @@ const server = http.createServer(async (clientReq, clientRes) => {
         log(`${model}: relayed/stripped ${stripped} non-text part(s) for text-only model`);
       }
     }
-    // Chat 转换模式：wireApi='chat' 的腿把 Responses 请求转成 Chat（非流式拿完整响应），
+    // Chat 转换模式：wireApi='chat' 的通道把 Responses 请求转成 Chat（非流式拿完整响应），
     // 再由路由自生成规范 Responses SSE，保证 completed 事件可靠发出
     let isChat = false;
     let chatReq = null;
@@ -601,7 +610,7 @@ const server = http.createServer(async (clientReq, clientRes) => {
       headers['content-length'] = bodyBuf.length;
       headers['accept-encoding'] = 'identity';
       if (target.name === 'openai') {
-        // 官方腿：用桌面端登录态（自动 refresh），客户端带来的 Bearer 被覆盖
+        // 官方通道：用桌面端登录态（自动 refresh），客户端带来的 Bearer 被覆盖
         const auth = await getOpenAiAuth();
         headers.authorization = `Bearer ${auth.token}`;
         if (auth.accountId) headers['ChatGPT-Account-ID'] = auth.accountId;
@@ -610,7 +619,7 @@ const server = http.createServer(async (clientReq, clientRes) => {
         if (!key) throw new Error(`环境变量 ${target.envKey} 未设置`);
         headers.authorization = `Bearer ${key}`;
       }
-      // Chat 腿：非流式拿完整 Chat 响应 → 转 Responses → 自生成 SSE
+      // Chat 通道：非流式拿完整 Chat 响应 → 转 Responses → 自生成 SSE
       if (isChat) {
         const chatBody = Buffer.from(JSON.stringify(chatReq));
         headers['content-length'] = chatBody.length;
