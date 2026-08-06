@@ -187,17 +187,19 @@ async function captionImage(imageUrl) {
   if (r.status !== 200 || !j.choices?.[0]?.message?.content) throw new Error(`vision relay HTTP ${r.status}`);
   return j.choices[0].message.content;
 }
-// 遍历 Responses API 的 input，仅对 user 角色的非文本 part 进行中继替换
-// （assistant 角色的历史消息不应被修改，否则会把描述注入到错误的上下文位置）
+// 遍历 Responses API 的 input，对中继目标模型不可见的非文本 part 做替换：
+//   1. user 消息的 content（用户直接贴图）
+//   2. function_call_output 的 output（浏览器/电脑操作插件回传的截图）
+// 注意：assistant 角色的历史消息不修改，避免把描述注入错误的上下文位置
 async function relayNonTextParts(body) {
   if (!body || !Array.isArray(body.input)) return 0;
   let stripped = 0;
-  for (const msg of body.input) {
-    // 关键修复：只对 user 角色的消息做中继，避免污染 assistant 历史
-    if (!msg || !Array.isArray(msg.content) || msg.role !== 'user') continue;
+  const relayParts = async (parts) => {
+    if (!Array.isArray(parts)) return parts;
     const next = [];
-    for (const p of msg.content) {
-      if (p && (p.type === 'input_text' || p.type === 'text')) { next.push(p); continue; }
+    for (const p of parts) {
+      // 文本类 part 原样保留
+      if (p && (p.type === 'input_text' || p.type === 'text' || p.type === 'output_text')) { next.push(p); continue; }
       stripped++;
       if (p && p.type === 'input_image') {
         const url = typeof p.image_url === 'string' ? p.image_url : p.image_url?.url;
@@ -213,7 +215,18 @@ async function relayNonTextParts(body) {
         next.push({ type: 'input_text', text: '[file/video attachment omitted: not supported by this text-only model]' });
       }
     }
-    msg.content = next;
+    return next;
+  };
+  for (const msg of body.input) {
+    if (!msg) continue;
+    // 用户消息里的贴图
+    if (msg.role === 'user' && Array.isArray(msg.content)) {
+      msg.content = await relayParts(msg.content);
+    }
+    // 工具/插件回传的截图（browser、computer-use 等插件的屏幕截图走这里）
+    if (Array.isArray(msg.output)) {
+      msg.output = await relayParts(msg.output);
+    }
   }
   return stripped;
 }
