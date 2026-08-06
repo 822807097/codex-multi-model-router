@@ -1,5 +1,4 @@
 {
-  "_comment": "models.json 模板：复制到你的 CODEX_HOME/models.json 并按需增改。官方 GPT 条目请勿手工编造——可从 Codex 桌面端缓存 models_cache.json 复制，或参考 openai/codex 仓库 models-manager/models.json。自定义条目必须包含以下必填字段，否则桌面端会整体拒绝该文件。",
   "models": [
     {
       "slug": "deepseek-v4-flash",
@@ -8,19 +7,38 @@
       "visibility": "list",
       "supported_in_api": true,
       "priority": 10,
-      "input_modalities": ["text", "image"],
+      "input_modalities": [
+        "text",
+        "image"
+      ],
       "default_reasoning_level": "high",
       "supported_reasoning_levels": [
-        { "effort": "low", "description": "Fast responses with lighter reasoning" },
-        { "effort": "high", "description": "Extra high reasoning depth for complex problems" },
-        { "effort": "max", "description": "Maximum reasoning depth for the hardest problems" }
+        {
+          "effort": "low",
+          "description": "Fast responses with lighter reasoning"
+        },
+        {
+          "effort": "high",
+          "description": "Extra high reasoning depth for complex problems"
+        },
+        {
+          "effort": "max",
+          "description": "Maximum reasoning depth for the hardest problems"
+        }
       ],
       "shell_type": "shell_command",
       "support_verbosity": true,
-      "truncation_policy": { "mode": "tokens", "limit": 10000 },
+      "truncation_policy": {
+        "mode": "tokens",
+        "limit": 10000
+      },
       "supports_parallel_tool_calls": true,
       "experimental_supported_tools": [],
-      "base_instructions": "You are Codex, a coding assistant. Answer concisely and verify your work."
+      "base_instructions": "You are Codex, a coding assistant. Answer concisely and verify your work.",
+      "context_window": 131072,
+      "max_context_window": 131072,
+      "effective_context_window_percent": 95,
+      "auto_compact_token_limit": 120000
     },
     {
       "slug": "qwen3.8-max",
@@ -29,18 +47,34 @@
       "visibility": "list",
       "supported_in_api": true,
       "priority": 11,
-      "input_modalities": ["text", "image"],
+      "input_modalities": [
+        "text",
+        "image"
+      ],
       "default_reasoning_level": "high",
       "supported_reasoning_levels": [
-        { "effort": "low", "description": "Fast responses with lighter reasoning" },
-        { "effort": "high", "description": "Extra high reasoning depth for complex problems" }
+        {
+          "effort": "low",
+          "description": "Fast responses with lighter reasoning"
+        },
+        {
+          "effort": "high",
+          "description": "Extra high reasoning depth for complex problems"
+        }
       ],
       "shell_type": "shell_command",
       "support_verbosity": true,
-      "truncation_policy": { "mode": "tokens", "limit": 10000 },
+      "truncation_policy": {
+        "mode": "tokens",
+        "limit": 10000
+      },
       "supports_parallel_tool_calls": true,
       "experimental_supported_tools": [],
-      "base_instructions": "You are Codex, a coding assistant. Answer concisely and verify your work."
+      "base_instructions": "You are Codex, a coding assistant. Answer concisely and verify your work.",
+      "context_window": 131072,
+      "max_context_window": 131072,
+      "effective_context_window_percent": 95,
+      "auto_compact_token_limit": 120000
     }
   ]
 }
