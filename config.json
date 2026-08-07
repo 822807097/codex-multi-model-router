@@ -53,7 +53,7 @@
   "modelContext": {
     "_comment": "路由启动时写回 models.json，让桌面端做滑动窗口/压缩，避免第三方模型每轮全量重发历史",
     "enabled": true,
-    "contextWindow": 1048576,
+    "contextWindow": 1000000,
     "autoCompactTokenLimit": 400000,
     "slugs": [
       "deepseek-v4-flash",
