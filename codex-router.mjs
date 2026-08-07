@@ -325,6 +325,27 @@ function responsesToChatMessages(input) {
   }
   return messages;
 }
+// 估算单条消息 token 数（粗略：字符数*0.7，中文偏保守），用于上下文裁剪
+function msgTokens(m) {
+  let c = typeof m.content === 'string' ? m.content : JSON.stringify(m.content || '');
+  if (m.tool_calls) c += JSON.stringify(m.tool_calls);
+  return Math.ceil((c || '').length * 0.7);
+}
+// 上下文裁剪：超过预算时从最旧（index 1，保留 index0 系统提示）开始删，
+// 并保持 tool 配对（删 assistant 带 tool_calls 时连同其后 tool 消息一起删；清理孤立 tool）
+function trimToBudget(messages, budget) {
+  const out = messages.slice();
+  let total = out.reduce((s, m) => s + msgTokens(m), 0);
+  const dropAt1 = () => { const r = out.splice(1, 1)[0]; total -= msgTokens(r); return r; };
+  while (total > budget && out.length > 2) {
+    const removed = dropAt1();
+    if (removed && removed.role === 'assistant' && removed.tool_calls) {
+      while (out.length > 1 && out[1] && out[1].role === 'tool') dropAt1();
+    }
+    while (out.length > 2 && out[1] && out[1].role === 'tool') dropAt1();
+  }
+  return out;
+}
 // Responses tools → Chat tools（让模型知道有哪些工具可用，才会真正发 tool_calls 而不是只描述）
 function responsesToolsToChat(tools) {
   if (!Array.isArray(tools)) return undefined;
@@ -602,6 +623,11 @@ const server = http.createServer(async (clientReq, clientRes) => {
     let upstreamPath = target.prefix + url.replace(/^\/v1/, '');
     if (bodyObj && target.wireApi === 'chat') {
       chatReq = { model: bodyObj.model, messages: responsesToChatMessages(bodyObj.input), stream: false };
+      // 上下文裁剪兕底：桌面端可能不压缩，超模型上限会 400；按 contextWindow 留安全余量裁剪
+      const ctxWin = Number(cfg.modelContext?.contextWindow) || 1048576;
+      const before = chatReq.messages.length;
+      chatReq.messages = trimToBudget(chatReq.messages, Math.floor(ctxWin * 0.9));
+      if (chatReq.messages.length < before) flog(`TRIM ${model} | ${before} -> ${chatReq.messages.length} messages`);
       const tools = responsesToolsToChat(bodyObj.tools);
       if (tools) chatReq.tools = tools;
       isChat = true;
