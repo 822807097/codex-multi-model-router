@@ -151,7 +151,8 @@ const connectTls = (host, viaProxy) => (viaProxy ? tlsSocketViaProxy(host) : tls
 // ---------- 一次性 HTTPS 请求（裸写 HTTP/1.1，返回 status+bodyText） ----------
 // 为什么不用 fetch/http.request：隧道场景下 Node http.request 的 options.createConnection
 // 实测不生效（会另起一条直连 host:80 的连接），只能自己在 TLS socket 上裸写字节。
-function rawHttpsRequest(host, reqPath, viaProxy, headers, bodyStr) {
+function rawHttpsRequest(host, reqPath, viaProxy, headers, bodyStr, timeoutMs) {
+  const TIMEOUT = timeoutMs || 60000;
   return connectTls(host, viaProxy).then((socket) => new Promise((resolve, reject) => {
     // content-length 只发一次：调用方 headers 已带则用它的，否则按 body 计算（重复会导致网关 400）
     const hasCL = Object.keys(headers).some((k) => k.toLowerCase() === 'content-length');
@@ -170,7 +171,8 @@ function rawHttpsRequest(host, reqPath, viaProxy, headers, bodyStr) {
       resolve({ status: m ? Number(m[1]) : 0, bodyText: bodyBuf.toString('utf8') });
     });
     socket.on('error', reject);
-    socket.setTimeout(60000, () => { reject(new Error(`rawHttpsRequest ${host} timeout`)); socket.destroy(); });
+    // 空闲超时：非流式上游可能长时间思考无数据，用调用方指定的超时（chat 通道传 10 分钟）
+    socket.setTimeout(TIMEOUT, () => { reject(new Error(`rawHttpsRequest ${host} timeout`)); socket.destroy(); });
   }));
 }
 // 整包解码 chunked 传输编码（按字节操作，保证多字节 UTF-8 不被截断）
@@ -657,7 +659,7 @@ const server = http.createServer(async (clientReq, clientRes) => {
         const chatBody = Buffer.from(JSON.stringify(chatReq));
         flog(`CHAT-BODY ${model} | ${chatBody.toString().slice(0, 300)}`);
         headers['content-length'] = chatBody.length;
-        const r = await rawHttpsRequest(target.host, upstreamPath, target.viaProxy, headers, chatBody.toString());
+        const r = await rawHttpsRequest(target.host, upstreamPath, target.viaProxy, headers, chatBody.toString(), 10 * 60 * 1000);
         if (r.status !== 200) {
           log(`chat upstream error ${r.status}: ${r.bodyText.slice(0, 200)}`);
           flog(`CHAT-ERR ${model} | status=${r.status} | toolsKeys=${JSON.stringify((chatReq.tools || []).slice(0,2).map(t => Object.keys(t)))} | ${r.bodyText.slice(0, 200)}`);
