@@ -43,9 +43,20 @@ import {
 import { createChatSseToResponsesTransform } from './lib/chat-stream.mjs';
 import { fitMessagesToContext, resolveModelCapability } from './lib/context-budget.mjs';
 import {
+  buildCheckpointMessages,
+  buildCheckpointSource,
+  extractCheckpointText,
+  extractGoalAnchor,
+  GoalCheckpointStore,
+  normalizeCheckpoint,
+  resolveStrongTaskKey,
+} from './lib/goal-checkpoint.mjs';
+import {
   adaptOfficialResponsesBody,
+  applyCheckpointProviderOptions,
   applyChatProviderOptions,
   buildProviderAuthHeaders,
+  resolveOAuthViaProxy,
   resolveRequestProtocol,
   resolveProvider,
 } from './lib/provider-adapters.mjs';
@@ -92,6 +103,7 @@ const TARGETS = (cfg.targets || []).flatMap((t) => {
 });
 const providerPool = new ProviderPool(TARGETS, cfg.providerPool);
 const responseHistory = new ResponseToolHistoryStore(cfg.responseHistory);
+const goalCheckpoints = new GoalCheckpointStore(cfg.goalCheckpoint);
 const HEARTBEAT_MS = Math.max(10, Number(process.env.ROUTER_HEARTBEAT_MS || cfg.heartbeatMs) || 15_000);
 
 // ---------- 视觉中继配置 ----------
@@ -153,7 +165,7 @@ applyModelContext();
 
 // ---------- HTTPS 传输 ----------
 // TLS、HTTP/1.1、CONNECT 代理、chunked 解码与分层超时集中在 lib/transport.mjs。
-// 一次性 HTTPS 请求并解析 JSON 响应（用于 oauth refresh、视觉中继等控制类调用）
+// 一次性 HTTPS 请求并解析 JSON 响应（用于 OAuth refresh 等控制类调用）
 function httpsJson(host, reqPath, viaProxy, headers, bodyObj) {
   return rawHttpsRequest({
     host,
@@ -289,7 +301,7 @@ function jwtExp(token) {
 function readAuth() { return JSON.parse(fs.readFileSync(AUTH_PATH, 'utf8')); }
 // single-flight：并发请求同时临期时只真正 refresh 一次，避免 refresh_token 轮换竞态写坏 auth.json
 let refreshInFlight = null;
-async function getOpenAiAuth() {
+async function getOpenAiAuth(target) {
   const data = readAuth();
   const tokens = data.tokens || {};
   if (!tokens.access_token) throw new Error('auth.json 缺少 access_token，请先在 Codex 桌面端登录 ChatGPT');
@@ -299,17 +311,18 @@ async function getOpenAiAuth() {
   }
   if (!tokens.refresh_token) throw new Error('access_token 已过期且无 refresh_token，请在桌面端重新登录');
   if (!refreshInFlight) {
-    refreshInFlight = doRefresh().finally(() => { refreshInFlight = null; });
+    const viaProxy = resolveOAuthViaProxy(cfg.oauth, target);
+    refreshInFlight = doRefresh(viaProxy).finally(() => { refreshInFlight = null; });
   }
   return refreshInFlight;
 }
 // 实际执行 refresh：用 refresh_token 换新 access_token 并原子写回 auth.json
-async function doRefresh() {
+async function doRefresh(viaProxy) {
   const data = readAuth(); // 重新读，拿最新 refresh_token
   const tokens = data.tokens || {};
   log('openai: access_token 临期，执行 refresh');
   const r = await withTimeout(
-    httpsJson('auth.openai.com', '/oauth/token', true, {}, {
+    httpsJson('auth.openai.com', '/oauth/token', viaProxy, {}, {
       client_id: CLIENT_ID, grant_type: 'refresh_token', refresh_token: tokens.refresh_token,
     }),
     // refresh 失败必须让请求快速失败并允许下次重试，不能让所有并发请求无限等待同一挂起的 refresh。
@@ -412,7 +425,7 @@ async function authHeadersForTarget(clientReq, target, provider) {
   // 每次 failover 都重新按目标构造认证头，严禁沿用上一供应商的密钥。
   const headers = { ...copyRequestHeaders(clientReq), ...(target.headers || {}) };
   if (target.name === 'openai' || target.useOpenAiAuth === true) {
-    const auth = await getOpenAiAuth();
+    const auth = await getOpenAiAuth(target);
     headers.authorization = `Bearer ${auth.token}`;
     if (auth.accountId) headers['ChatGPT-Account-ID'] = auth.accountId;
     return headers;
@@ -448,8 +461,62 @@ async function prepareAttemptBody(bodyObj, target, isChat, model, signal) {
   return attemptBody;
 }
 
+function goalCheckpointConfig(capability) {
+  const configured = cfg.goalCheckpoint || {};
+  return {
+    enabled: configured.enabled !== false,
+    maxOutputTokens: Math.max(256, Number(configured.maxOutputTokens) || 2_048),
+    requestMs: Math.max(1_000, Number(configured.requestMs) || 120_000),
+    sourceTokenBudget: Math.max(128, Math.min(
+      Number(configured.sourceTokenBudget) || 128_000,
+      Math.floor(capability.contextWindow * (Number(configured.sourceWindowRatio) || 0.2)),
+    )),
+  };
+}
+
+function injectGoalCheckpoint(messages, checkpoint) {
+  // 检查点属于低优先级 assistant 历史，必须放在原始 system/developer 指令之后。
+  let cursor = 0;
+  while (cursor < messages.length && messages[cursor]?.role === 'system') cursor += 1;
+  return [
+    ...messages.slice(0, cursor),
+    { role: 'assistant', content: checkpoint },
+    ...messages.slice(cursor),
+  ];
+}
+
+async function requestGoalCheckpoint(target, provider, model, headers, source, signal, timeouts, options) {
+  const request = applyCheckpointProviderOptions({
+    model: upstreamModel(target, model),
+    messages: buildCheckpointMessages(source),
+    stream: false,
+    temperature: 0,
+    [provider.maxTokensField]: options.maxOutputTokens,
+  }, provider);
+  const response = await rawHttpsRequest({
+    protocol: target.protocol,
+    host: target.host,
+    port: target.port || (target.protocol === 'http' ? 80 : 443),
+    path: joinUpstreamPath(target.prefix, provider.chatPath),
+    viaProxy: target.viaProxy,
+    proxy: V2RAY_PROXY,
+    headers: { ...headers, accept: 'application/json' },
+    body: JSON.stringify(request),
+    signal,
+    timeouts: { ...timeouts, requestMs: options.requestMs },
+    // 检查点正文很小；限制异常或恶意兼容网关的非流式响应，避免无界占用内存。
+    maxResponseBytes: 256 * 1024,
+  });
+  if (response.status !== 200) throw statusFailure(response.status || 502, `checkpoint upstream ${response.status || 502}`);
+  let parsed;
+  try { parsed = JSON.parse(response.bodyText); } catch { throw new Error('checkpoint upstream returned non-JSON body'); }
+  const text = extractCheckpointText(parsed);
+  if (!text) throw new Error('checkpoint upstream returned empty content');
+  return normalizeCheckpoint(text, options.maxOutputTokens);
+}
+
 // 把恢复后的 Responses 请求转换成 Chat，并在发往上游前执行完整上下文预算。
-function buildChatRequest(attemptBody, target, provider, model) {
+async function buildChatRequest(attemptBody, target, provider, model, context) {
   const converted = convertResponsesTools(attemptBody.tools, attemptBody.input);
   const baseRequest = {
     model: upstreamModel(target, model),
@@ -463,12 +530,74 @@ function buildChatRequest(attemptBody, target, provider, model) {
   if (converted.tools) baseRequest.tools = converted.tools;
 
   const capability = resolveModelCapability(cfg, target, model);
-  const fitted = fitMessagesToContext(baseRequest.messages, converted.tools, capability);
-  if (!fitted.fits) {
-    const error = new Error(`最新轮次超过模型输入预算 (${fitted.messageTokens} > ${fitted.messageBudget} tokens)`);
+  const baseline = fitMessagesToContext(baseRequest.messages, converted.tools, capability);
+  if (!baseline.fits) {
+    const error = new Error(`最新轮次超过模型输入预算 (${baseline.messageTokens} > ${baseline.messageBudget} tokens)`);
     error.code = 'context_length_exceeded';
     throw error;
   }
+
+  let fitted = baseline;
+  let checkpointInfo = null;
+  const checkpointOptions = goalCheckpointConfig(capability);
+  if (checkpointOptions.enabled && baseline.trimmedGroups > 0) {
+    const reserved = fitMessagesToContext(baseRequest.messages, converted.tools, capability, {
+      reserveTokens: checkpointOptions.maxOutputTokens,
+    });
+    if (reserved.fits) {
+      const taskKey = resolveStrongTaskKey(attemptBody, context.clientHeaders, goalCheckpoints);
+      const previousCheckpoint = taskKey ? goalCheckpoints.getTask(taskKey) : null;
+      const source = buildCheckpointSource({
+        goalAnchor: extractGoalAnchor(attemptBody),
+        previousCheckpoint,
+        removedMessages: reserved.removedMessages,
+        tokenBudget: checkpointOptions.sourceTokenBudget,
+      });
+      // 精确缓存包含完整上游身份，避免不同 host/prefix 恰好复用同名 target 时串用摘要。
+      const exactKey = JSON.stringify([
+        target.name,
+        target.protocol || 'https',
+        `${target.host}:${target.port || (target.protocol === 'http' ? 80 : 443)}`,
+        target.prefix || '',
+        provider.chatPath,
+        upstreamModel(target, model),
+        source.hash,
+      ]);
+      let checkpoint = goalCheckpoints.getExact(exactKey);
+      let persistCheckpoint = Boolean(checkpoint);
+      if (!checkpoint) {
+        try {
+          checkpoint = await requestGoalCheckpoint(
+            target,
+            provider,
+            model,
+            context.headers,
+            source,
+            context.signal,
+            context.timeouts,
+            checkpointOptions,
+          );
+          persistCheckpoint = true;
+          flog(`CHECKPOINT ${model} | provider=${target.name} | source_tokens=${source.estimatedTokens} | chars=${checkpoint.length}`);
+        } catch (error) {
+          if (context.signal?.aborted || error?.name === 'AbortError') throw error;
+          // 摘要失败不能触发供应商 failover；强任务键存在时可用上一份已校验检查点降级。
+          checkpoint = previousCheckpoint;
+          persistCheckpoint = false;
+          flog(`CHECKPOINT_FALLBACK ${model} | provider=${target.name} | ${error.code || error.message}`);
+        }
+      }
+      if (checkpoint) {
+        const withCheckpoint = injectGoalCheckpoint(reserved.messages, checkpoint);
+        const verified = fitMessagesToContext(withCheckpoint, converted.tools, capability);
+        if (verified.fits && verified.messages.some((message) => message.content === checkpoint)) {
+          fitted = verified;
+          checkpointInfo = { taskKey, exactKey, checkpoint, persistCheckpoint };
+        }
+      }
+    }
+  }
+
   baseRequest.messages = fitted.messages;
   if (fitted.trimmedGroups > 0) {
     flog(`TRIM ${model} | groups=${fitted.trimmedGroups} | tokens=${fitted.messageTokens}/${fitted.messageBudget}`);
@@ -477,6 +606,7 @@ function buildChatRequest(attemptBody, target, provider, model) {
     request: applyChatProviderOptions(baseRequest, attemptBody, provider),
     toolContext: converted.context,
     toolCount: converted.tools?.length || 0,
+    checkpointInfo,
   };
 }
 
@@ -632,7 +762,12 @@ const server = http.createServer(async (clientReq, clientRes) => {
         if (clientClosed) return;
 
         if (isChat) {
-          const prepared = buildChatRequest(attemptBody, target, provider, model);
+          const prepared = await buildChatRequest(attemptBody, target, provider, model, {
+            clientHeaders: clientReq.headers,
+            headers,
+            signal: abortController.signal,
+            timeouts,
+          });
           const upstreamPath = joinUpstreamPath(target.prefix, provider.chatPath);
           flog(`CHAT ${model} | provider=${target.name} | messages=${prepared.request.messages.length} | tools=${prepared.toolCount} | stream=true`);
           const upstream = await openTargetStream(
@@ -657,6 +792,14 @@ const server = http.createServer(async (clientReq, clientRes) => {
           pipeChatResponse(upstream, clientRes, model, target.name, stopHeartbeat, prepared.toolContext, (response) => {
             responseHistory.recordResponse(response);
             providerPool.remember(affinityKeys, target, [`response:${response.id}`]);
+            if (prepared.checkpointInfo) {
+              if (prepared.checkpointInfo.persistCheckpoint) {
+                goalCheckpoints.remember({ ...prepared.checkpointInfo, responseId: response.id });
+              } else {
+                // 失败降级只绑定新响应，不得把旧检查点污染到本次失败来源的精确缓存键。
+                goalCheckpoints.bindResponse(prepared.checkpointInfo.taskKey, response.id);
+              }
+            }
           });
           return;
         }

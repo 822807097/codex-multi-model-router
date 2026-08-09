@@ -5,8 +5,12 @@ Codex 桌面端本地多模型路由代理，让官方 GPT、DeepSeek、Qwen 等
 ## 特性
 
 - **多模型共存**：官方 GPT 系列、DeepSeek、Qwen 等模型同时出现在 Codex 桌面端选择器中，会话内可热切换
+- **持续目标检查点**：长任务触发旧轮次裁剪时，自动保留目标、硬性约束、进度、决定、工作集、失败记录和下一步
+- **跨模型任务接力**：同一强任务键下切换 DeepSeek、Qwen、官方 GPT 等模型时迁移任务语义，不迁移供应商私有会话状态
+- **原生 Responses 优先**：已支持 Responses 的模型（默认含 DeepSeek V4 Flash）原样透传，其他 OpenAI-compatible 模型走 Chat 真流式转换
 - **Responses ↔ Chat 真流式转换**：对 `wireApi: "chat"` 的通道实时转换 Chat SSE，支持文本、推理和并行 `tool_calls` 分片
 - **国内外供应商适配**：显式区分 DeepSeek、百炼/通义、硅基流动、OpenRouter、MiniMax 与通用 OpenAI-compatible 网关的推理字段
+- **逐通道网络策略**：官方模型和任意自定义模型都可独立选择直连或经本地 HTTP CONNECT 代理
 - **工具调用转换**：自动转换 `tools` 定义与 `tool_calls`/`tool` 结果，按 index/call ID 重组异常分片
 - **视觉中继**：为不支持图片的文本模型（如 DeepSeek）提供“借眼”能力——收到图片时先调用视觉模型生成描述，注入上下文后转发
 - **无感更新**：`/_admin/shutdown` 优雅退出 + 新进程立即接管，更新路由不打断在跑任务
@@ -18,6 +22,14 @@ Codex 桌面端本地多模型路由代理，让官方 GPT、DeepSeek、Qwen 等
 - **一键运维**：提供启动/停止/重启/状态/测试/恢复官方配置/恢复自定义配置 7 个脚本
 
 ## 演示
+
+### 自定义模型共存 + 同一任务内切换
+
+官方 GPT、DeepSeek、Qwen 等国内外模型可以同时出现在 Codex 桌面端的同一个模型菜单中。任务执行过程中无需新建聊天，可在当前聊天窗口逐轮切换任意已配置模型；路由会根据每轮请求中的 `model` 重新选路。未裁剪历史继续由桌面端随请求提供，路由负责补齐工具调用配对，并在裁剪发生时注入持续目标检查点。
+
+![自定义模型共存并在同一任务内切换](docs/demo-model-switching.png)
+
+> 模型切换从下一轮请求生效。若当前回复仍在流式输出，请先等待本轮完成或主动停止；路由不会把半条回复、未完成工具调用或旧供应商的私有会话状态迁移给新模型。
 
 ### 多模型共存 + 深度推理
 
@@ -35,10 +47,23 @@ DeepSeek-V4-Flash 在 Codex 桌面端处理复杂代码审查任务，支持会�
 
 ```
 Codex 桌面端 ──▶ 127.0.0.1:15730 (router)
-   ├─ gpt-*/codex-*  ──▶ 本地代理隧道 ──▶ chatgpt.com（复用桌面端登录态）
-   ├─ deepseek-*     ──▶ api.deepseek.com（环境变量 key，直连）
-   └─ qwen*          ──▶ 阿里云 Token Plan（环境变量 key，直连）
+   ├─ gpt-*/codex-*  ──▶ 直连或本地代理 ──▶ chatgpt.com（复用桌面端登录态）
+   ├─ deepseek-v4-flash ─▶ 原生 Responses ─▶ api.deepseek.com（环境变量 key）
+   ├─ 其他 deepseek-*   ─▶ Chat 兼容转换 ──▶ api.deepseek.com（环境变量 key）
+   └─ qwen*          ──▶ 直连或本地代理 ──▶ 阿里云 Token Plan（环境变量 key）
 ```
+
+Chat 通道的长任务上下文流程：
+
+```text
+Responses 全量历史 → Responses→Chat 转换 → 完整轮次预算
+  ├─ 未裁剪旧轮次：直接调用当前模型
+  └─ 裁剪旧轮次：目标锚点 + 旧检查点 + 有界旧历史
+                    → 当前模型非流式生成九栏目检查点
+                    → assistant 历史注入 → 主请求真流式输出
+```
+
+检查点只驻留在路由进程内，并通过强任务键关联。摘要失败时优先复用同一任务上一份已校验检查点；没有可用检查点时才降级为原有完整轮次裁剪，不阻断主任务。路由不会伪造官方 Responses compaction item，也不会把 `previous_response_id` 声明成完整会话能力。
 
 视觉中继流程（文本模型收到图片时）：
 ```
@@ -148,7 +173,7 @@ npm run test:integration
 
 预期输出：
 ```
-[路由] 运行中 targets: openai, deepseek, bailian
+[路由] 运行中 targets: openai, deepseek-responses, deepseek-chat, bailian
 [env] DEEPSEEK_API_KEY 已设置
 [env] aliyun_video_key 已设置
 [OK]  deepseek-v4-flash -> 回复: OK (1124ms)
@@ -189,13 +214,16 @@ npm run test:integration
 - `lib/provider-adapters.mjs`：供应商协议、认证和推理字段适配
 - `lib/provider-pool.mjs`：会话粘性候选池和严格 failover 分类
 - `lib/context-budget.mjs`：每模型上下文能力矩阵、图片与工具完整预算
+- `lib/goal-checkpoint.mjs`：持续目标提取、九栏目检查点、强任务键及 TTL/LRU 内存缓存
 - `lib/response-history.mjs`：有界 previous_response_id 工具调用历史
 - `lib/transport.mjs`：TLS/CONNECT、HTTP/1.1、chunked 与分层超时
 - `test/*.test.mjs`：基于 Node `node:test` 的零依赖单元测试
 
 所有可修改参数集中在 `config.json`（与 `codex-router.mjs` 同目录），修改后执行 `restart-router.ps1` 生效。
 
-### config.json 结构
+### config.json 核心结构
+
+以下示例与当前默认配置同步；完整字段和中文说明以仓库中的 `config.json` 为准。
 
 ```json
 {
@@ -203,19 +231,32 @@ npm run test:integration
   "proxy": { "host": "127.0.0.1", "port": 10808 },
   "timeouts": { "connectMs": 15000, "responseHeaderMs": 120000, "streamIdleMs": 600000, "requestMs": 600000 },
   "paths": { "auth": null, "catalog": null },
-  "oauth": { "client_id": "app_EMoamEEZ73f0CkXaXp7hrann", "refresh_skew_seconds": 30 },
+  "oauth": { "client_id": "app_EMoamEEZ73f0CkXaXp7hrann", "refresh_skew_seconds": 30, "viaProxy": null },
   "targets": [
     {
       "match": "^(gpt-|codex-|o\\d|computer-use)",
       "name": "openai",
+      "platform": "openai",
       "host": "chatgpt.com",
       "prefix": "/backend-api/codex",
       "viaProxy": true,
-      "vision": true
+      "vision": true,
+      "wireApi": "responses"
     },
     {
-      "match": "^deepseek-",
-      "name": "deepseek",
+      "match": "^deepseek-v4-flash$",
+      "name": "deepseek-responses",
+      "platform": "deepseek",
+      "host": "api.deepseek.com",
+      "prefix": "/v1",
+      "viaProxy": false,
+      "vision": false,
+      "envKey": "DEEPSEEK_API_KEY",
+      "wireApi": "responses"
+    },
+    {
+      "match": "^deepseek-(?!v4-flash$)",
+      "name": "deepseek-chat",
       "platform": "deepseek",
       "host": "api.deepseek.com",
       "prefix": "",
@@ -239,10 +280,20 @@ npm run test:integration
   "supportsResponses": {
     "slugs": ["deepseek-v4-flash", "qwen3.8-max"]
   },
+  "goalCheckpoint": {
+    "enabled": true,
+    "maxEntries": 128,
+    "maxResponseIdsPerTask": 128,
+    "ttlMs": 86400000,
+    "sourceTokenBudget": 128000,
+    "sourceWindowRatio": 0.2,
+    "maxOutputTokens": 2048,
+    "requestMs": 120000
+  },
   "modelContext": {
     "enabled": true,
-    "contextWindow": 1048576,
-    "autoCompactTokenLimit": 1000000,
+    "contextWindow": 1000000,
+    "autoCompactTokenLimit": 400000,
     "slugs": ["deepseek-v4-flash", "deepseek-v4-pro", "qwen3.8-max"]
   },
   "visionRelay": {
@@ -250,7 +301,8 @@ npm run test:integration
     "prefix": "/compatible-mode/v1",
     "model": "qwen3.8-max",
     "envKey": "aliyun_video_key",
-    "prompt": "Describe this image concisely (2-4 sentences) for a coding assistant that cannot see it.",
+    "viaProxy": false,
+    "prompt": "Describe this image concisely (2-4 sentences) for a coding assistant that cannot see it. Focus on text/UI elements/code/error messages if present.",
     "maxTokens": 300
   }
 }
@@ -260,20 +312,20 @@ npm run test:integration
 
 **顶层**
 - `port`：路由监听端口（默认 15730）
-- `proxy`：本地代理地址（官方通道 CONNECT 隧道用）
+- `proxy`：所有 `viaProxy: true` 通道共用的本地 HTTP CONNECT 代理地址
 - `paths`：auth.json / models.json 路径（null = 使用 CODEX_HOME 默认位置）
-- `oauth`：ChatGPT OAuth client_id 和 token 刷新提前量（秒）
+- `oauth`：ChatGPT OAuth client_id、刷新提前量和刷新请求网络策略；`viaProxy: null` 默认继承当前官方目标，布尔值可单独覆盖
 - `timeouts`：TLS 建连、响应头、流空闲和非流式控制请求的独立超时（毫秒）
 
 **targets[]** — 路由规则，按请求体 `model` 字段收集全部匹配项；同一模型可配置多条目标用于会话粘性和安全 failover
 - `match`：正则字符串，匹配模型 ID
 - `host`：上游域名
-- `protocol` / `port`：默认 `https`/443；`http` 仅用于受信任的本机或内网兼容网关
+- `protocol` / `port`：默认 `https`/443；`http` 仅用于受信任的本机或内网兼容网关，并始终直连
 - `prefix`：上游路径前缀（请求路径 `/v1/responses` 会去掉 `/v1` 后拼到 `prefix` 后）
-- `viaProxy`：`true` = 经本地代理 CONNECT 隧道（国内连 chatgpt.com 需要）
+- `viaProxy`：HTTPS 目标的网络策略；`true` = 经顶层 `proxy` 建立 HTTP CONNECT 隧道，`false` = 直连，不区分官方或自定义供应商；`protocol: "http"` 时忽略此项
 - `vision`：`false` = 该通道是文本模型，收到图片时走视觉中继；`true` = 原样透传
 - `envKey`：该通道 API key 所在的环境变量名（官方通道不用，走 auth.json）
-- `wireApi`：`"responses"` = 原样透传；`"chat"`/`"openai_chat"` = 做 Responses↔Chat 真流式转换
+- `wireApi`：`"responses"` = 原样透传上游原生 Responses（优先）；`"chat"`/`"openai_chat"` = 为不支持 Responses 的兼容网关做 Responses↔Chat 真流式转换
 - `platform`：供应商适配器，可选 `openai`、`deepseek`、`dashscope`、`siliconflow`、`openrouter`、`minimax`、`generic`
 - `chatPath`：Chat endpoint，默认 `/chat/completions`
 - `includeUsage`：是否发送 `stream_options.include_usage`，默认 `true`；不兼容的旧网关可设为 `false`
@@ -292,6 +344,17 @@ npm run test:integration
 
 **providerPool / responseHistory** — 分别限制供应商粘性映射与工具调用历史的 LRU 数量和 TTL；两者都只驻留内存，重启自动清空
 
+**goalCheckpoint** — Chat 通道的持续目标检查点；只有上下文预算确实删除旧轮次时才调用摘要模型
+- `enabled`：是否启用，默认 `true`
+- `maxEntries` / `ttlMs`：内存检查点最大数量与存活时间，默认 128 条 / 24 小时
+- `maxResponseIdsPerTask`：单个活跃任务最多保留的最近响应别名，默认 128，防止超长任务无界增长
+- `sourceTokenBudget`：单次摘要来源硬上限，默认 128K token
+- `sourceWindowRatio`：摘要来源最多占当前模型窗口的比例，默认 20%
+- `maxOutputTokens`：九栏目检查点最大输出，默认 2048 token
+- `requestMs`：非流式摘要调用超时，默认 120 秒
+
+检查点来源中的目标锚点、旧检查点和被裁剪历史都受上述硬预算约束，九个栏目必须完整且顺序固定。摘要响应体另有 256 KiB 硬上限，异常上游不会造成无界内存增长。检查点只缓存结构化摘要、哈希以及有界的任务/响应关联元数据，不缓存完整原始对话。跨模型接力要求显式 conversation/session metadata 或 `x-codex-session-id` 等强任务键；仅模型名、相同目标文本、孤立的 cache key 都不能让不同聊天共享检查点。
+
 **modelContext** — 路由启动时写回 models.json 的上下文窗口配置
 - `contextWindow`/`max_context_window`：上下文窗口（DeepSeek-V4-Flash 支持 1M）
 - `autoCompactTokenLimit`：超过即触发桌面端压缩
@@ -299,6 +362,7 @@ npm run test:integration
 
 **visionRelay** — 视觉中继配置
 - 文本模型（`vision: false`）收到 `input_image` 时，调用这里配置的视觉模型生成描述
+- `viaProxy`：视觉模型 API 是否共用顶层 HTTP CONNECT 代理，默认 `false`
 - `prompt`：发给视觉模型的提示词
 - `maxTokens`：视觉模型最大输出 token 数
 
@@ -324,10 +388,12 @@ npm run test:integration
 **1. 在 config.json 的 `targets` 加一条通道**（`wireApi: "chat"` 走通用 Chat 转换）：
 
 ```json
+[
 { "match": "^glm-",   "name": "glm",  "platform": "generic", "host": "open.bigmodel.cn",    "prefix": "/api/paas/v4", "viaProxy": false, "vision": true,  "envKey": "ZHIPU_API_KEY", "wireApi": "chat" },
 { "match": "^kimi-",  "name": "kimi", "platform": "generic", "host": "api.moonshot.cn",     "prefix": "/v1",          "viaProxy": false, "vision": true,  "envKey": "KIMI_API_KEY",  "wireApi": "chat" },
 { "match": "^sf-",    "name": "siliconflow", "platform": "siliconflow", "host": "api.siliconflow.cn", "prefix": "/v1", "viaProxy": false, "vision": true, "envKey": "SILICONFLOW_API_KEY", "wireApi": "chat" },
 { "match": "^or-",    "name": "openrouter", "platform": "openrouter", "host": "openrouter.ai", "prefix": "/api/v1", "viaProxy": true, "vision": true, "envKey": "OPENROUTER_API_KEY", "wireApi": "chat" }
+]
 ```
 
 **2. 在 models.json 加对应模型条目**（slug 与 `match` 对应，并设 `input_modalities`），并在环境变量里设置对应 `envKey`。
@@ -336,11 +402,18 @@ npm run test:integration
 - 文本模型设 `vision: false` 可启用视觉中继；原生视觉模型设 `vision: true`
 - 各供应商 endpoint/前缀以官方文档为准，上面仅为示例
 
-## 网络与代理（v2rayN 可选）
+## 网络与代理（逐通道可选）
 
-官方 GPT 通道（`chatgpt.com`）在**国内直连不通**，默认经本地代理（v2rayN 等）的 CONNECT 隧道出海（`viaProxy: true`）。
+`viaProxy` 是每条 HTTPS `targets[]` 独立的网络开关，与 `platform`、`wireApi` 和认证方式无关。因此官方 Responses 通道、自定义 Chat 通道以及同一模型的多条候选通道都可以分别选择直连或代理。明确配置为 `protocol: "http"` 的受信任本机/内网目标始终直连，不建立 CONNECT 隧道。
 
-**如果你不用代理客户端**（如在海外、或有其他直连方式），把 openai 通道的 `viaProxy` 设为 `false` 即可直连：
+| 模型通道 | `viaProxy: false` | `viaProxy: true` |
+|---|---|---|
+| 官方 GPT / Codex | 直接连接 `chatgpt.com` | 经顶层 `proxy` 的 HTTP CONNECT 隧道 |
+| DeepSeek / Qwen / 其他自定义模型 | 直接连接各自 API | 经同一个本地 HTTP CONNECT 代理 |
+
+默认配置按常见国内网络环境设置：官方 GPT 经代理，DeepSeek 和 Qwen 直连。这只是默认值，不是硬编码；可按实际网络逐条反转。OAuth token 刷新默认继承触发刷新的官方目标策略，因此官方目标改为直连后，`auth.openai.com` 也会直连；只有网络分流有特殊要求时才设置 `oauth.viaProxy` 单独覆盖。
+
+例如，官方模型改为直连：
 
 ```json
 {
@@ -348,16 +421,27 @@ npm run test:integration
   "name": "openai",
   "host": "chatgpt.com",
   "prefix": "/backend-api/codex",
-  "viaProxy": false,   // 不用代理，直连
+  "viaProxy": false,
   "vision": true
 }
 ```
 
-- `viaProxy: true`：经 `proxy.host:proxy.port`（默认 127.0.0.1:10808）CONNECT 隧道，适合国内 + v2rayN
-- `viaProxy: false`：直连上游，适合海外/有直连条件
-- 第三方通道（deepseek/qwen）国内可直连，默认 `viaProxy: false`
+自定义模型改为走代理只需在对应目标上设置：
 
-代理端口可在 config.json 的 `proxy` 字段或环境变量 `V2RAY_HOST`/`V2RAY_PORT` 调整。
+```json
+{
+  "match": "^or-",
+  "name": "openrouter",
+  "platform": "openrouter",
+  "host": "openrouter.ai",
+  "prefix": "/api/v1",
+  "viaProxy": true,
+  "envKey": "OPENROUTER_API_KEY",
+  "wireApi": "chat"
+}
+```
+
+代理地址可在 `config.json` 的顶层 `proxy` 字段或环境变量 `V2RAY_HOST` / `V2RAY_PORT` 调整。当前代理协议是 HTTP CONNECT；v2rayN 等客户端应填写其 HTTP/混合端口，而不是仅 SOCKS 端口。若 `viaProxy: true` 但代理未监听，请求会明确失败，并按既有安全 failover 规则决定是否尝试下一候选通道。
 
 ## 常见问题
 
@@ -381,6 +465,14 @@ OpenAI 官方额度用尽，链路正常，等额度重置或升级套餐。
 
 Codex 桌面端对第三方模型每轮重发全量历史，若上游 Responses 支持不完善，模型会“看不懂”历史而从头重推。解决：给该通道设 `wireApi: "chat"`，路由转成 Chat 格式（丢弃 reasoning、正确映射 tool_calls/tool），模型即可连贯续接。
 
+如果上游已完整支持 Responses，应优先设为 `wireApi: "responses"` 原样透传。默认 `deepseek-v4-flash` 已按真实 `/v1/responses` 验收配置为原生通道；原生流可直接以 `response.completed` 收尾，不要求额外发送 Chat 风格 `[DONE]`。
+
+### 超长任务中切换模型会丢失目标或进度吗
+
+不会因为“切换模型”这一动作本身直接丢失。未触发裁剪时，桌面端的完整历史照常发送给新模型；触发裁剪时，路由把目标、约束、已完成/进行中/待完成、关键决定、当前工作集、失败原因和下一步整理成供应商无关检查点。切换模型后的新供应商会在可用任务证据范围内，基于上一份任务检查点和本轮历史重新归一化。
+
+供应商的 response id、prompt cache 句柄、sticky target、隐藏推理和未完成工具调用不会迁移。缺少强任务键时，路由宁可重新摘要，也不会把另一个聊天的检查点串进当前任务。
+
 ### 第三方模型不执行工具、只描述计划
 
 Chat 请求必须带 `tools` 定义模型才会发 `tool_calls`。路由已自动转换 `tools`；若仍不执行，检查桌面端是否发送了 tools 字段。
@@ -399,11 +491,14 @@ Chat 请求必须带 `tools` 定义模型才会发 `tool_calls`。路由已自�
 
 ## 技术细节
 
-- **TLS 隧道**：官方通道经本地代理 HTTP CONNECT 隧道出海，裸写 HTTP/1.1 请求（Node `http.request` 的 `createConnection` 实测不生效）
+- **逐通道 TLS 隧道**：任何 HTTPS 目标都可通过 `viaProxy` 选择直连或本地 HTTP CONNECT 代理；裸写 HTTP/1.1 请求避免 `createConnection` 在该链路上的兼容问题
 - **Chunked 解码**：上游 chunked 响应透传时必须先解包，否则 Node `ServerResponse` 会再套一层 chunked 封装，客户端解析直接坏掉（SSE 尤甚）
 - **Responses↔Chat 转换**：上游使用 `stream: true`；状态机实时转换文本、`reasoning_content`/`<think>` 和并行工具调用，并在正常断流时补齐 Responses 生命周期
 - **分层超时**：DNS/TCP/TLS/CONNECT 建连、响应头、流空闲和控制类请求分别计时，客户端断开会取消上游 socket
 - **SSE 保活**：Chat 通道在视觉中继和认证之前立即建立 SSE，每 15 秒发送注释心跳
+- **目标感知裁剪**：只删除完整旧轮次；确实发生裁剪时才调用当前候选供应商以非推理模式生成九栏目检查点，失败时先复用同任务旧检查点，再降级为普通裁剪
+- **摘要内存边界**：目标锚点、旧检查点和裁剪历史受 token 硬预算约束；检查点响应为 256 KiB，其他非流式控制响应默认为 8 MiB 上限
+- **跨模型隔离**：任务检查点可在强任务键下跨模型接力，精确摘要缓存、response id、cache key 和供应商粘性仍按上游链路隔离
 - **无感更新**：`server.close()` 立即释放监听端口但保留已有连接；`closeIdleConnections()` 关空闲连接让 close 完成，在跑任务自然结束
 - **并发安全**：`uncaughtException`/`unhandledRejection` 进程级兕底只记日志不退出；token 刷新 single-flight 防竞态
 - **原子写入**：`auth.json`、`models.json` 修改均先写 tmp 再 rename，避免桌面端并发读到半写文件
