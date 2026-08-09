@@ -1,7 +1,9 @@
 # codex-multi-model-router
 
-一个运行在你自己电脑上的**本地多模型路由代理**：让 Codex 桌面端能同时使用**官方 GPT、DeepSeek、Qwen** 等多个模型，互相之间可以随时切换，并且不用装任何 npm 依赖（纯 Node.js 实现）。
+一个运行在你自己电脑上的**本地多模型路由代理**：让 Codex 桌面端能同时使用**官方 GPT 与任意国内外模型**（DeepSeek、Qwen、GLM、Kimi、硅基流动、OpenRouter……），互相之间可以随时切换，并且不用装任何 npm 依赖（纯 Node.js 实现）。
 
+> **它不是某个模型的专属工具**：只要供应商提供 OpenAI 兼容 API，都能接入。本文档中的模型名（DeepSeek / Qwen 等）只是**默认配置里的示例**，你可以任意替换成自己用的模型。
+>
 > **写给第一次使用的人**：本文档从「下载项目」到「桌面端出现模型」的每一步都写了操作方法和预期结果。遇到问题请先看文末的「常见问题」，大部分坑都列在里面。
 
 ---
@@ -13,7 +15,7 @@
 - [三、新手完整配置教程（7 步）](#三新手完整配置教程7-步)
 - [四、日常使用与运维](#四日常使用与运维)
 - [五、config.json 完整配置参考](#五configjson-完整配置参考)
-- [六、接入任意 OpenAI 兼容模型（GLM / Kimi 等）](#六接入任意-openai-兼容模型glm--kimi-等)
+- [六、接入任意 OpenAI 兼容模型](#六接入任意-openai-兼容模型)
 - [七、网络与代理（逐通道可选）](#七网络与代理逐通道可选)
 - [八、常见问题（新手问答）](#八常见问题新手问答)
 - [九、技术细节](#九技术细节)
@@ -26,16 +28,16 @@ Codex 桌面端**同一时间只能配置一个模型供应商**，官方 GPT �
 
 ```
 Codex 桌面端 ──▶ 127.0.0.1:15730 (router，本项目)
-   ├─ gpt-*/codex-*     ──▶ chatgpt.com（复用桌面端 ChatGPT 登录态，可经代理）
-   ├─ deepseek-v4-flash ─▶ api.deepseek.com（原生 Responses，环境变量 key）
-   ├─ 其他 deepseek-*   ─▶ api.deepseek.com（Chat 兼容转换，环境变量 key）
-   └─ qwen*             ──▶ 阿里云 Token Plan（环境变量 key）
+   ├─ 官方通道（gpt-*/codex-* 等）──▶ chatgpt.com（复用桌面端 ChatGPT 登录态，可经代理）
+   ├─ 供应商 A（默认示例：deepseek-v4-flash）──▶ 你的任意 OpenAI 兼容 API
+   ├─ 供应商 B（默认示例：qwen*）──▶ 你的任意 OpenAI 兼容 API
+   └─ ……按需继续新增
 ```
 
 你只需要把 Codex 桌面端的 `base_url` 指向这个路由器，路由器根据请求里的 `model` 字段把请求转发给对应的上游。
 
 **主要能力**：
-- 官方 GPT / DeepSeek / Qwen 在同一个模型菜单里共存，会话内随时切换
+- 官方 GPT 与任意国内外模型在同一个模型菜单里共存，会话内随时切换
 - 长任务自动生成「目标检查点」，切换模型不丢任务进度（九栏目摘要：目标、约束、已完成、进行中……）
 - 文本模型收图时自动「借眼」：先让视觉模型看图写描述，再发给文本模型
 - 官方登录态自动复用 + 自动续期，第三方 key 全部走环境变量，不写进配置文件
@@ -76,13 +78,16 @@ node -v
 
 > **本项目零 npm 依赖**：不需要执行 `npm install`。`package.json` 只是方便用 npm 命令的人，直接 `node codex-router.mjs` 就能运行。
 
-### 4. 搞定 API Key（三个渠道，按需准备）
+### 4. 搞定 API Key（按需准备，变量名可自定义）
 
-| 模型 | 去哪里申请 | 环境变量名 |
-|------|-----------|-----------|
+> 下面的变量名是**默认配置使用的约定**。接新模型时可以任意命名（例如 `GLM_API_KEY`、`KIMI_API_KEY`），只要 `config.json` 对应通道的 `envKey` 填同一个名字即可（见第 2 步）。
+
+| 模型 | 去哪里申请 | 默认环境变量名 |
+|------|-----------|---------------|
 | 官方 GPT / Codex | **不需要 key**（复用桌面端 ChatGPT 登录态，见下文第 6 步） | - |
-| DeepSeek（deepseek-v4-flash 等） | <https://platform.deepseek.com> 创建 API Key | `DEEPSEEK_API_KEY` |
-| Qwen（qwen3.8-max，兼作视觉中继） | 阿里云百炼/Token Plan 创建 API Key | `aliyun_video_key` |
+| DeepSeek（默认示例模型） | <https://platform.deepseek.com> 创建 API Key | `DEEPSEEK_API_KEY` |
+| Qwen（默认示例模型，兼作视觉中继） | 阿里云百炼/Token Plan 创建 API Key | `aliyun_video_key` |
+| 其他任意模型（GLM/Kimi 等） | 各供应商控制台 | 任意自定义，如 `ZHIPU_API_KEY` |
 
 **Windows 设置环境变量（推荐 GUI 方式）**：
 1. 按 `Win + S` 搜索「编辑系统环境变量」并打开
@@ -120,11 +125,11 @@ setx aliyun_video_key "sk-你的key"
 Copy-Item D:\codex-multi-model-router\models.template.json "$env:USERPROFILE\.codex\models.json"
 ```
 
-模板里已包含 `deepseek-v4-flash` 和 `qwen3.8-max` 两个模型，可以直接用；想加模型见第六节。
+模板里默认包含 `deepseek-v4-flash` 和 `qwen3.8-max` 两个**示例模型**，可以直接用；想换模型/加模型：删除或修改对应条目，再按第六节为你的模型加一条通道配置即可。每个模型条目里 `slug` 是桌面端显示和路由匹配用的模型 ID（必须与 `config.json` 中 `targets[].match` 对应）。
 
 ### 第 2 步：告诉路由模型通道和 key 的环境变量名
 
-打开 `config.json`，确认 `targets` 数组与你的 key 对应：
+打开 `config.json`，确认 `targets` 数组里的通道与你准备用的模型和 key 对应（以下是**默认配置示例**，`envKey` 就是第二步设置的环境变量名，`match` 是模型 ID 匹配规则，均可按你的模型修改）：
 
 ```json
 {
@@ -141,10 +146,10 @@ Copy-Item D:\codex-multi-model-router\models.template.json "$env:USERPROFILE\.co
 }
 ```
 
-- `match`：模型 ID 的匹配规则（正则）
-- `envKey`：**这个通道的 key 存在哪个环境变量里**（就是第二步里设置的变量名）
+- `match`：模型 ID 的匹配规则（正则），命中哪个通道就转发到哪个供应商
+- `envKey`：**这个通道的 key 存在哪个环境变量里**
 
-> 默认配置已经正确，**不需要改**。只有当你换 key 变量名或加模型时才动这里。
+> 默认配置已经正确，**不需要改**。当你换 key 变量名、加新模型或换供应商时才动这里（示例见第六节）。
 
 ### 第 3 步：修改 Codex 桌面端配置 config.toml
 
@@ -156,7 +161,7 @@ Copy-Item D:\codex-multi-model-router\models.template.json "$env:USERPROFILE\.co
 **没有这个文件就新建一个**。用记事本打开，把内容改成（有旧内容建议先备份）：
 
 ```toml
-model = "gpt-5.6-terra"
+model = "gpt-5.6-terra"   # 示例：默认模型，可改成任意已配置模型的 slug
 model_provider = "router"
 model_catalog_json = "C:/Users/你的用户名/.codex/models.json"
 
@@ -170,7 +175,7 @@ supports_websockets = false
 
 | 配置项 | 含义 | 注意事项 |
 |--------|------|---------|
-| `model = "gpt-5.6-terra"` | 默认使用的模型 | 可以填任意已在 models.json 里的 slug |
+| `model = "gpt-5.6-terra"` | 默认使用的模型（示例值） | 可以填任意已在 models.json 里的 slug，如 `deepseek-v4-flash`、`qwen3.8-max` 或你自定义的模型 |
 | `model_provider = "router"` | 默认供应商指向路由 | 与下面的 `[model_providers.router]` 名字一致 |
 | `model_catalog_json` | 模型目录路径 | 必须是**绝对路径**，正斜杠 `/` 或双反斜杠 `\\` |
 | `base_url = "http://127.0.0.1:15730/v1"` | 路由的地址 | 端口必须和 `config.json` 里的 `port` 一致（默认 15730） |
@@ -199,12 +204,12 @@ cd D:\codex-multi-model-router\scripts
 Set-ExecutionPolicy -Scope CurrentUser RemoteSigned
 ```
 
-看到类似下面的输出就是启动成功：
+看到类似下面的输出就是启动成功（`targets` 列出的是**当前 config.json 里配置的通道**，会随你的配置变化）：
 
 ```
 [2026-08-09T10:00:00.000Z] codex-router listening on 127.0.0.1:15730
   config: D:\codex-multi-model-router\config.json
-  targets: openai, deepseek-responses, deepseek-chat, bailian
+  targets: openai, deepseek-responses, deepseek-chat, bailian   # 默认配置示例
 ```
 
 > `start-router.ps1` 是**前台运行**（窗口关掉路由就停了）。想要后台无窗口运行，改用：
@@ -224,7 +229,7 @@ chmod +x *.sh
 
 ### 第 5 步：验证路由工作正常
 
-**方法一：浏览器访问**，打开 <http://127.0.0.1:15730/healthz>，应看到：
+**方法一：浏览器访问**，打开 <http://127.0.0.1:15730/healthz>，应看到（`targets` 随你的配置变化）：
 
 ```json
 {"ok":true,"targets":["openai","deepseek-responses","deepseek-chat","bailian"]}
@@ -237,7 +242,7 @@ cd D:\codex-multi-model-router\scripts
 .\test-router.ps1
 ```
 
-预期输出（耗时数值不重要，重要的是 `[OK]`）：
+预期输出（耗时数值不重要，重要的是 `[OK]`；模型名是**默认配置示例**，你配置了哪些模型就测哪些）：
 
 ```
 [路由] 运行中 targets: openai, deepseek-responses, deepseek-chat, bailian
@@ -272,11 +277,10 @@ cd D:\codex-multi-model-router\scripts
 
 **完全退出 Codex**（任务管理器里确认 `ChatGPT.exe` 全部关闭）再重新打开。
 
-现在模型菜单里应该能看到：官方 GPT 系列 + `DeepSeek-V4-Flash` + `Qwen3.8-Max` 等。随便选一个发消息试试：
+现在模型菜单里应该能看到你在 models.json 里配置的全部模型（默认配置示例：官方 GPT 系列 + `DeepSeek-V4-Flash` + `Qwen3.8-Max`）。随便选一个发消息试试：
 
-- 选 `DeepSeek-V4-Flash` → 走 DeepSeek API
-- 选 `Qwen3.8-Max` → 走阿里云
 - 选官方模型 → 走你的 ChatGPT 账号
+- 选你配置的任意第三方模型（如 `DeepSeek-V4-Flash`、`Qwen3.8-Max`）→ 走对应供应商 API
 - 任务进行到一半切换到另一个模型 → 继续对话，路由会自动保持任务连续性
 
 > 如果菜单里没有自定义模型 → 检查 `config.toml` 里的 `requires_openai_auth = true` 是否还在，并确认 `model_catalog_json` 路径正确。
@@ -393,14 +397,14 @@ cd D:\codex-multi-model-router\scripts
 | `ROUTER_PORT` | 监听端口 | `config.json:port` 或 `15730` |
 | `ROUTER_HEARTBEAT_MS` | 心跳间隔覆盖 | `config.json:heartbeatMs` 或 `15000` |
 | `V2RAY_HOST` / `V2RAY_PORT` | 代理地址覆盖 | `config.json:proxy` 或 `127.0.0.1:10808` |
-| `DEEPSEEK_API_KEY` | DeepSeek key | - |
-| `aliyun_video_key` | 阿里云 Token Plan key（Qwen + 视觉中继） | - |
+| `DEEPSEEK_API_KEY` | DeepSeek key（**默认配置约定，可自定义**） | - |
+| `aliyun_video_key` | 阿里云 Token Plan key，Qwen + 视觉中继共用（**默认配置约定，可自定义**） | - |
 
 ---
 
-## 六、接入任意 OpenAI 兼容模型（GLM / Kimi 等）
+## 六、接入任意 OpenAI 兼容模型
 
-路由是通用的：任何提供 OpenAI 兼容 `/chat/completions` 的供应商都能接入，只需三步：
+**这是本项目最核心的能力**：默认配置里的 DeepSeek / Qwen 只是开箱即用的预置示例，**任何提供 OpenAI 兼容 API 的供应商（GLM、Kimi、硅基流动、OpenRouter……）都能接入**。接入一个全新模型只需三步：
 
 **① 在 `config.json` 的 `targets` 数组加一条通道**（`wireApi: "chat"` 走通用转换）：
 
