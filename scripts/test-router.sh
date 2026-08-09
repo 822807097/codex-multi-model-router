@@ -50,7 +50,7 @@ test_model() {
         return 1
     }
     local text
-    text=$(echo "$response" | node -e "let d='';process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>{try{const j=JSON.parse(d);console.log(j.output_text||(j.output||[]).map(m=>(m.content||[]).map(c=>c.text).join('')).join(''))}catch{console.log('')}})" 2>/dev/null)
+    text=$(printf '%s' "$response" | node -e "let d='';process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>{let j;try{j=JSON.parse(d)}catch{for(const l of d.split(/\r?\n/)){if(!l.startsWith('data: '))continue;try{const e=JSON.parse(l.slice(6));if(e.type==='response.completed')j=e.response}catch{}}}console.log(j?.output_text||(j?.output||[]).map(m=>(m.content||[]).map(c=>c.text||'').join('')).join(''))})")
     echo "[OK]   $model -> 回复：${text:-OK}"
 }
 
@@ -64,7 +64,7 @@ fi
 
 # 4. 官方腿（可选）
 if [ "$SKIP_OFFICIAL" = false ]; then
-    local code
+    code=''
     code=$(curl -s -o /dev/null -w '%{http_code}' -X POST "$BASE/v1/responses" \
         -H "content-type: application/json" \
         -H "Authorization: Bearer router-local" \

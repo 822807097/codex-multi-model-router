@@ -5,8 +5,9 @@ Codex 桌面端本地多模型路由代理，让官方 GPT、DeepSeek、Qwen 等
 ## 特性
 
 - **多模型共存**：官方 GPT 系列、DeepSeek、Qwen 等模型同时出现在 Codex 桌面端选择器中，会话内可热切换
-- **Responses ↔ Chat 协议转换**：对 `wireApi: "chat"` 的通道，把 Codex 的 Responses 请求转成 Chat 格式发给 DeepSeek/Qwen（其 Chat API 更稳定），响应再转回 Responses，解决第三方模型“闪跳/从头重推”问题
-- **工具调用转换**：自动转换 `tools` 定义与 `tool_calls`/`tool` 结果，让第三方模型真正执行工具而不是只描述
+- **Responses ↔ Chat 真流式转换**：对 `wireApi: "chat"` 的通道实时转换 Chat SSE，支持文本、推理和并行 `tool_calls` 分片
+- **国内外供应商适配**：显式区分 DeepSeek、百炼/通义、硅基流动、OpenRouter、MiniMax 与通用 OpenAI-compatible 网关的推理字段
+- **工具调用转换**：自动转换 `tools` 定义与 `tool_calls`/`tool` 结果，按 index/call ID 重组异常分片
 - **视觉中继**：为不支持图片的文本模型（如 DeepSeek）提供“借眼”能力——收到图片时先调用视觉模型生成描述，注入上下文后转发
 - **无感更新**：`/_admin/shutdown` 优雅退出 + 新进程立即接管，更新路由不打断在跑任务
 - **并发安全**：Node 事件循环 + 每请求独立状态 + 进程级异常兕底，多任务并发不崩溃
@@ -58,7 +59,7 @@ Codex 桌面端 ──▶ 127.0.0.1:15730 (router)
 
 ```
 DEEPSEEK_API_KEY=sk-xxx
-BAILIAN_API_KEY=sk-xxx
+aliyun_video_key=sk-xxx
 ```
 
 ### 2. 模型目录
@@ -126,7 +127,7 @@ nohup ./start-router.sh > /tmp/codex-router.log 2>&1 &
 
 ```bash
 npm install
-codex-router start
+npm run start
 ```
 
 ### 5. 验证
@@ -138,15 +139,18 @@ codex-router start
 # Linux/macOS
 ./test-router.sh
 
-# 或 npm
-codex-router test
+# 单元测试（不要求路由正在运行）
+npm test
+
+# 集成验收（要求路由已运行）
+npm run test:integration
 ```
 
 预期输出：
 ```
 [路由] 运行中 targets: openai, deepseek, bailian
 [env] DEEPSEEK_API_KEY 已设置
-[env] BAILIAN_API_KEY 已设置
+[env] aliyun_video_key 已设置
 [OK]  deepseek-v4-flash -> 回复: OK (1124ms)
 [OK]  qwen3.8-max -> 回复: OK (1776ms)
 [OK]  视觉中继 deepseek+图片 -> 回复: red
@@ -173,9 +177,21 @@ codex-router test
 | `restore-official.ps1` / `restore-official.sh` | 一键恢复官方配置（移除路由，停止服务） |
 | `restore-custom.ps1` / `restore-custom.sh` | 一键恢复自定义模型组合 |
 
-**npm 用户**可直接使用 `codex-router <command>`（见 `package.json` 的 `scripts` 字段）。
+**npm 用户**使用 `npm run <script>`（见 `package.json` 的 `scripts` 字段）。
 
 ## 配置说明
+
+### 代码结构
+
+- `codex-router.mjs`：本地 HTTP 服务、模型分流、认证与视觉中继编排
+- `lib/chat-protocol.mjs`：Responses→Chat 请求转换和安全上下文裁剪
+- `lib/chat-stream.mjs`：Chat SSE→Responses SSE 状态机
+- `lib/provider-adapters.mjs`：供应商协议、认证和推理字段适配
+- `lib/provider-pool.mjs`：会话粘性候选池和严格 failover 分类
+- `lib/context-budget.mjs`：每模型上下文能力矩阵、图片与工具完整预算
+- `lib/response-history.mjs`：有界 previous_response_id 工具调用历史
+- `lib/transport.mjs`：TLS/CONNECT、HTTP/1.1、chunked 与分层超时
+- `test/*.test.mjs`：基于 Node `node:test` 的零依赖单元测试
 
 所有可修改参数集中在 `config.json`（与 `codex-router.mjs` 同目录），修改后执行 `restart-router.ps1` 生效。
 
@@ -185,6 +201,7 @@ codex-router test
 {
   "port": 15730,
   "proxy": { "host": "127.0.0.1", "port": 10808 },
+  "timeouts": { "connectMs": 15000, "responseHeaderMs": 120000, "streamIdleMs": 600000, "requestMs": 600000 },
   "paths": { "auth": null, "catalog": null },
   "oauth": { "client_id": "app_EMoamEEZ73f0CkXaXp7hrann", "refresh_skew_seconds": 30 },
   "targets": [
@@ -199,6 +216,7 @@ codex-router test
     {
       "match": "^deepseek-",
       "name": "deepseek",
+      "platform": "deepseek",
       "host": "api.deepseek.com",
       "prefix": "",
       "viaProxy": false,
@@ -209,11 +227,12 @@ codex-router test
     {
       "match": "^qwen",
       "name": "bailian",
+      "platform": "dashscope",
       "host": "token-plan.cn-beijing.maas.aliyuncs.com",
       "prefix": "/compatible-mode/v1",
       "viaProxy": false,
       "vision": true,
-      "envKey": "BAILIAN_API_KEY",
+      "envKey": "aliyun_video_key",
       "wireApi": "chat"
     }
   ],
@@ -230,7 +249,7 @@ codex-router test
     "host": "token-plan.cn-beijing.maas.aliyuncs.com",
     "prefix": "/compatible-mode/v1",
     "model": "qwen3.8-max",
-    "envKey": "BAILIAN_API_KEY",
+    "envKey": "aliyun_video_key",
     "prompt": "Describe this image concisely (2-4 sentences) for a coding assistant that cannot see it.",
     "maxTokens": 300
   }
@@ -244,17 +263,34 @@ codex-router test
 - `proxy`：本地代理地址（官方通道 CONNECT 隧道用）
 - `paths`：auth.json / models.json 路径（null = 使用 CODEX_HOME 默认位置）
 - `oauth`：ChatGPT OAuth client_id 和 token 刷新提前量（秒）
+- `timeouts`：TLS 建连、响应头、流空闲和非流式控制请求的独立超时（毫秒）
 
-**targets[]** — 路由规则，按请求体 `model` 字段匹配，命中第一条即用之
+**targets[]** — 路由规则，按请求体 `model` 字段收集全部匹配项；同一模型可配置多条目标用于会话粘性和安全 failover
 - `match`：正则字符串，匹配模型 ID
 - `host`：上游域名
+- `protocol` / `port`：默认 `https`/443；`http` 仅用于受信任的本机或内网兼容网关
 - `prefix`：上游路径前缀（请求路径 `/v1/responses` 会去掉 `/v1` 后拼到 `prefix` 后）
 - `viaProxy`：`true` = 经本地代理 CONNECT 隧道（国内连 chatgpt.com 需要）
 - `vision`：`false` = 该通道是文本模型，收到图片时走视觉中继；`true` = 原样透传
 - `envKey`：该通道 API key 所在的环境变量名（官方通道不用，走 auth.json）
-- `wireApi`：`"chat"` = 做 Responses→Chat 协议转换（推荐第三方模型，解决闪跳）；默认/不填 = 原样转发 Responses
+- `wireApi`：`"responses"` = 原样透传；`"chat"`/`"openai_chat"` = 做 Responses↔Chat 真流式转换
+- `platform`：供应商适配器，可选 `openai`、`deepseek`、`dashscope`、`siliconflow`、`openrouter`、`minimax`、`generic`
+- `chatPath`：Chat endpoint，默认 `/chat/completions`
+- `includeUsage`：是否发送 `stream_options.include_usage`，默认 `true`；不兼容的旧网关可设为 `false`
+- `reasoningMode`：可覆盖推理字段映射，支持 `reasoning_effort`、`openrouter`、`enable_thinking`、`reasoning_split`、`none`
+- `authType`/`authHeader`：默认 `bearer`；兼容使用 `x-api-key` 或自定义认证头的网关
+- `timeouts`：该目标单独覆盖顶层分层超时
+- `upstreamModel` / `modelMap`：把桌面端模型 slug 映射成该供应商实际接受的模型名
 
-**supportsResponses** — 精确声明哪些模型原生支持 Responses 协议（`previous_response_id`），在 `/models` 端点声明能力
+只有连接失败、HTTP 408、429 和 5xx 会在尚未输出模型事件时换腿；客户端取消、400、401、403 和上下文超限不会重试，避免重复副作用或把错误请求扩散到其他供应商。
+
+**官方通道（`platform: "openai"`）** — 自动适配 chatgpt.com backend-api 的参数限制：请求未显式声明 `store` 时注入 `store: false`，并移除 `max_output_tokens`（上游会以 400 拒绝这两类请求）。只在请求未声明对应字段时生效，不覆盖客户端明确意图。
+
+**supportsResponses** — 兼容旧配置名；列出的模型只在 `/models` 中声明 `streaming: true`。路由只维护有界工具调用历史，不维护完整对话状态，因此不会声明 `previous_response_id`
+
+**modelCapabilities[]** — 按模型正则配置 `contextWindow`、`maxOutputTokens`、安全比例、协议余量和图片预算；优先级高于 target 与全局默认值
+
+**providerPool / responseHistory** — 分别限制供应商粘性映射与工具调用历史的 LRU 数量和 TTL；两者都只驻留内存，重启自动清空
 
 **modelContext** — 路由启动时写回 models.json 的上下文窗口配置
 - `contextWindow`/`max_context_window`：上下文窗口（DeepSeek-V4-Flash 支持 1M）
@@ -279,7 +315,7 @@ codex-router test
 | `V2RAY_HOST` | 代理主机 | `config.json:proxy.host` 或 `127.0.0.1` |
 | `V2RAY_PORT` | 代理端口 | `config.json:proxy.port` 或 `10808` |
 | `DEEPSEEK_API_KEY` | DeepSeek API Key | - |
-| `BAILIAN_API_KEY` | 阿里云百炼 API Key | - |
+| `aliyun_video_key` | 阿里云 Token Plan API Key | - |
 
 ## 接入任意 OpenAI 兼容模型（GLM / Kimi / MiMo 等）
 
@@ -288,9 +324,10 @@ codex-router test
 **1. 在 config.json 的 `targets` 加一条通道**（`wireApi: "chat"` 走通用 Chat 转换）：
 
 ```json
-{ "match": "^glm-",   "name": "glm",  "host": "open.bigmodel.cn",      "prefix": "/api/paas/v4", "viaProxy": false, "vision": true,  "envKey": "ZHIPU_API_KEY", "wireApi": "chat" },
-{ "match": "^kimi-",  "name": "kimi", "host": "api.moonshot.cn",       "prefix": "/v1",          "viaProxy": false, "vision": true,  "envKey": "KIMI_API_KEY",  "wireApi": "chat" },
-{ "match": "^mimo-",  "name": "mimo", "host": "api.mimo.xiaomi.com",   "prefix": "/v1",          "viaProxy": false, "vision": false, "envKey": "MIMO_API_KEY",  "wireApi": "chat" }
+{ "match": "^glm-",   "name": "glm",  "platform": "generic", "host": "open.bigmodel.cn",    "prefix": "/api/paas/v4", "viaProxy": false, "vision": true,  "envKey": "ZHIPU_API_KEY", "wireApi": "chat" },
+{ "match": "^kimi-",  "name": "kimi", "platform": "generic", "host": "api.moonshot.cn",     "prefix": "/v1",          "viaProxy": false, "vision": true,  "envKey": "KIMI_API_KEY",  "wireApi": "chat" },
+{ "match": "^sf-",    "name": "siliconflow", "platform": "siliconflow", "host": "api.siliconflow.cn", "prefix": "/v1", "viaProxy": false, "vision": true, "envKey": "SILICONFLOW_API_KEY", "wireApi": "chat" },
+{ "match": "^or-",    "name": "openrouter", "platform": "openrouter", "host": "openrouter.ai", "prefix": "/api/v1", "viaProxy": true, "vision": true, "envKey": "OPENROUTER_API_KEY", "wireApi": "chat" }
 ```
 
 **2. 在 models.json 加对应模型条目**（slug 与 `match` 对应，并设 `input_modalities`），并在环境变量里设置对应 `envKey`。
@@ -364,7 +401,9 @@ Chat 请求必须带 `tools` 定义模型才会发 `tool_calls`。路由已自�
 
 - **TLS 隧道**：官方通道经本地代理 HTTP CONNECT 隧道出海，裸写 HTTP/1.1 请求（Node `http.request` 的 `createConnection` 实测不生效）
 - **Chunked 解码**：上游 chunked 响应透传时必须先解包，否则 Node `ServerResponse` 会再套一层 chunked 封装，客户端解析直接坏掉（SSE 尤甚）
-- **Responses↔Chat 转换**：`wireApi: "chat"` 的通道非流式拿完整 Chat 响应，再由路由自生成规范 Responses SSE（保证 `response.completed` 一定发出，避免“stream closed before completion”）
+- **Responses↔Chat 转换**：上游使用 `stream: true`；状态机实时转换文本、`reasoning_content`/`<think>` 和并行工具调用，并在正常断流时补齐 Responses 生命周期
+- **分层超时**：DNS/TCP/TLS/CONNECT 建连、响应头、流空闲和控制类请求分别计时，客户端断开会取消上游 socket
+- **SSE 保活**：Chat 通道在视觉中继和认证之前立即建立 SSE，每 15 秒发送注释心跳
 - **无感更新**：`server.close()` 立即释放监听端口但保留已有连接；`closeIdleConnections()` 关空闲连接让 close 完成，在跑任务自然结束
 - **并发安全**：`uncaughtException`/`unhandledRejection` 进程级兕底只记日志不退出；token 刷新 single-flight 防竞态
 - **原子写入**：`auth.json`、`models.json` 修改均先写 tmp 再 rename，避免桌面端并发读到半写文件

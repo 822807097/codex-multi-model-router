@@ -16,6 +16,20 @@ function Get-EnvAny($name) {
 
 Write-Host "=== 本地路由模型测试 ===" -ForegroundColor Cyan
 
+# 真流式 Chat 通道返回 Responses SSE；从 completed 事件取最终 response，原生 JSON 仍原样返回。
+function ConvertFrom-RouterResponse($response) {
+    if ($response -isnot [string]) { return $response }
+    try { return $response | ConvertFrom-Json -ErrorAction Stop } catch { }
+    foreach ($line in ($response -split "`r?`n")) {
+        if (-not $line.StartsWith('data: ')) { continue }
+        try {
+            $event = $line.Substring(6) | ConvertFrom-Json -ErrorAction Stop
+            if ($event.type -eq 'response.completed') { return $event.response }
+        } catch { }
+    }
+    return $null
+}
+
 # 0. 路由存活
 try {
     $h = Invoke-RestMethod -Uri "$base/healthz" -TimeoutSec 5
@@ -37,7 +51,9 @@ function Test-TextModel($model) {
     $sw = [System.Diagnostics.Stopwatch]::StartNew()
     $body = @{ model = $model; store = $false; input = @(@{ role = 'user'; content = @(@{ type = 'input_text'; text = 'Reply exactly: OK' }) }) } | ConvertTo-Json -Depth 6
     try {
-        $r = Invoke-RestMethod -Uri "$base/v1/responses" -Method Post -ContentType 'application/json' -Headers @{ Authorization = 'Bearer router-local' } -Body $body -TimeoutSec 90
+        $raw = Invoke-RestMethod -Uri "$base/v1/responses" -Method Post -ContentType 'application/json' -Headers @{ Authorization = 'Bearer router-local' } -Body $body -TimeoutSec 90
+        $r = ConvertFrom-RouterResponse $raw
+        if (-not $r) { throw '响应中缺少 response.completed' }
         $sw.Stop()
         $txt = $r.output_text
         if (-not $txt) { $txt = ($r.output | ForEach-Object { $_.content | ForEach-Object { $_.text } }) -join '' }
@@ -63,7 +79,9 @@ if (-not $SkipVision) {
         $bmp.Save($ms, [System.Drawing.Imaging.ImageFormat]::Png)
         $png = [Convert]::ToBase64String($ms.ToArray())
         $body = @{ model = 'deepseek-v4-flash'; store = $false; input = @(@{ role = 'user'; content = @(@{ type = 'input_text'; text = 'What color is the image? One word.' }, @{ type = 'input_image'; image_url = "data:image/png;base64,$png" }) }) } | ConvertTo-Json -Depth 8
-        $r = Invoke-RestMethod -Uri "$base/v1/responses" -Method Post -ContentType 'application/json' -Headers @{ Authorization = 'Bearer router-local' } -Body $body -TimeoutSec 120
+        $raw = Invoke-RestMethod -Uri "$base/v1/responses" -Method Post -ContentType 'application/json' -Headers @{ Authorization = 'Bearer router-local' } -Body $body -TimeoutSec 120
+        $r = ConvertFrom-RouterResponse $raw
+        if (-not $r) { throw '响应中缺少 response.completed' }
         $txt = ($r.output | Where-Object { $_.type -eq 'message' } | ForEach-Object { $_.content | ForEach-Object { $_.text } }) -join ''
         $hit = $txt -match 'red'
         Write-Host "[OK]   视觉中继 deepseek+图片 -> 回复: $($txt.Trim())" -ForegroundColor $(if ($hit) { 'Green' } else { 'Yellow' })

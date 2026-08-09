@@ -25,25 +25,49 @@
 //   CODEX_HOME          Codex 数据目录（默认 ~/.codex），auth.json/models.json 在此
 //   CODEX_AUTH_PATH     覆盖 auth.json 路径
 //   CODEX_CATALOG_PATH  覆盖 models.json 路径（/v1/models 端点读取它）
+//   ROUTER_CONFIG_PATH  覆盖 config.json 路径（用于隔离测试或多实例）
 //   ROUTER_PORT         监听端口（默认 15730）
+//   ROUTER_HEARTBEAT_MS 覆盖 Chat SSE 心跳间隔（默认 15000 毫秒）
 //   V2RAY_PORT          本地代理混合端口（默认 10808，仅 viaProxy 的通道使用）
 //   各通道 key 见下方 TARGETS 的 envKey 字段
 // ============================================================================
 import http from 'node:http';
-import net from 'node:net';
-import tls from 'node:tls';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { Transform } from 'node:stream';
+import {
+  convertResponsesTools,
+  responsesToChatMessages,
+} from './lib/chat-protocol.mjs';
+import { createChatSseToResponsesTransform } from './lib/chat-stream.mjs';
+import { fitMessagesToContext, resolveModelCapability } from './lib/context-budget.mjs';
+import {
+  adaptOfficialResponsesBody,
+  applyChatProviderOptions,
+  buildProviderAuthHeaders,
+  resolveRequestProtocol,
+  resolveProvider,
+} from './lib/provider-adapters.mjs';
+import {
+  isRetryableProviderFailure,
+  ProviderPool,
+  requestAffinityKeys,
+} from './lib/provider-pool.mjs';
+import { ResponseToolHistoryStore } from './lib/response-history.mjs';
+import {
+  openHttpsStream,
+  rawHttpsRequest,
+  resolveTimeouts,
+  withTimeout,
+} from './lib/transport.mjs';
 
 // ---------- 加载配置 ----------
 // config.json 与 codex-router.mjs 同目录，包含所有可修改参数
 // 环境变量优先级高于 config.json（PORT/PROXY 等）
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
-const CONFIG_PATH = path.join(__dirname, 'config.json');
+const CONFIG_PATH = process.env.ROUTER_CONFIG_PATH || path.join(__dirname, 'config.json');
 const cfg = JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf8'));
 
 const PORT = Number(process.env.ROUTER_PORT || cfg.port || 15730);
@@ -57,7 +81,7 @@ const V2RAY_PROXY = {
 const CLIENT_ID = cfg.oauth?.client_id || 'app_EMoamEEZ73f0CkXaXp7hrann';
 const REFRESH_SKEW_SECONDS = cfg.oauth?.refresh_skew_seconds || 30;
 
-// 路由规则：按请求体 model 字段匹配，命中第一条即用之
+// 路由规则：按请求体 model 字段收集所有匹配目标，优先使用会话粘性目标；失败时安全换腿
 // match: 正则字符串 | host: 上游域名 | prefix: 路径前缀
 // viaProxy: true=经本地代理 CONNECT 隧道 | vision: false=文本模型走视觉中继
 // envKey: API key 所在环境变量名（官方通道不用，走 auth.json）
@@ -66,16 +90,35 @@ const TARGETS = (cfg.targets || []).flatMap((t) => {
   try { return [{ ...t, match: new RegExp(t.match) }]; }
   catch (e) { console.error(`[config] 忽略非法 match 正则: ${t.match} (${e.message})`); return []; }
 });
+const providerPool = new ProviderPool(TARGETS, cfg.providerPool);
+const responseHistory = new ResponseToolHistoryStore(cfg.responseHistory);
+const HEARTBEAT_MS = Math.max(10, Number(process.env.ROUTER_HEARTBEAT_MS || cfg.heartbeatMs) || 15_000);
 
 // ---------- 视觉中继配置 ----------
 // 文本模型 (vision:false) 收到 input_image 时，调用这里配置的视觉模型生成描述
 // 配置项见 config.json 的 visionRelay 字段
-const VISION_RELAY = cfg.visionRelay || { host: 'token-plan.cn-beijing.maas.aliyuncs.com', prefix: '/compatible-mode/v1', model: 'qwen3.8-max', envKey: 'BAILIAN_API_KEY' };
+const VISION_RELAY = cfg.visionRelay || { host: 'token-plan.cn-beijing.maas.aliyuncs.com', prefix: '/compatible-mode/v1', model: 'qwen3.8-max', envKey: 'aliyun_video_key' };
 
 const log = (...a) => console.log(`[${new Date().toISOString()}]`, ...a);
 // 诊断日志（可选）：ROUTER_LOG 指向文件时记录请求形状，用于排查闪跳/上下文问题
+// 异步链式追加：同步磁盘 IO 会把事件循环卡在系统调用上（慢盘/文件锁时所有请求一起挂），
+// 因此写入全部走 libuv 线程池，并按 promise 链保持顺序；超过上限时轮转保留一份旧日志。
 const LOG_FILE = process.env.ROUTER_LOG || null;
-const flog = (m) => { if (LOG_FILE) { try { fs.appendFileSync(LOG_FILE, `[${new Date().toISOString()}] ${m}\n`); } catch { /* noop */ } } };
+const LOG_MAX_BYTES = 50 * 1024 * 1024;
+let logChain = Promise.resolve();
+const flog = (m) => {
+  if (!LOG_FILE) return;
+  logChain = logChain.then(async () => {
+    try {
+      const line = `[${new Date().toISOString()}] ${m}\n`;
+      const stat = await fs.promises.stat(LOG_FILE).catch(() => null);
+      if (stat && stat.size > LOG_MAX_BYTES) {
+        await fs.promises.rename(LOG_FILE, `${LOG_FILE}.1`).catch(() => {});
+      }
+      await fs.promises.appendFile(LOG_FILE, line);
+    } catch { /* 日志失败不影响路由 */ }
+  }).catch(() => {});
+};
 
 // ---------- 进程级异常兕底（并发安全） ----------
 // 多任务并发时，任何漏网的异常/未决拒绝只记日志、不退出进程，避免路由整体崩溃。
@@ -108,113 +151,19 @@ function applyModelContext() {
 }
 applyModelContext();
 
-// ---------- TLS 连接：直连 或 经本地代理 HTTP CONNECT 隧道 ----------
-// 直连：直接与上游 443 端口建立 TLS（海外/有直连条件时用）
-function tlsSocketDirect(host) {
-  return new Promise((resolve, reject) => {
-    const s = tls.connect(443, host, { servername: host }, () => resolve(s));
-    s.on('error', reject);
-  });
-}
-// 先连代理端口，发 CONNECT host:443，收到 200 后在该 socket 上叠 TLS
-function tlsSocketViaProxy(host) {
-  return new Promise((resolve, reject) => {
-    const socket = net.connect(V2RAY_PROXY.port, V2RAY_PROXY.host, () => {
-      socket.write(`CONNECT ${host}:443 HTTP/1.1\r\nHost: ${host}:443\r\n\r\n`);
-    });
-    let buf = '';
-    const onData = (d) => {
-      buf += d.toString('latin1');
-      if (buf.includes('\r\n\r\n')) {
-        socket.removeListener('data', onData);
-        const statusLine = buf.split('\r\n')[0];
-        if (!/ 200 /.test(statusLine + ' ')) {
-          reject(new Error(`CONNECT ${host} failed: ${statusLine}`));
-          socket.destroy();
-          return;
-        }
-        const t = tls.connect({ socket, servername: host }, () => {
-          socket.setTimeout(0); // CONNECT 已建立，清除空闲超时，避免长流/长思考被掐断
-          resolve(t);
-        });
-        t.on('error', reject);
-      }
-    };
-    socket.on('data', onData);
-    socket.on('error', reject);
-    socket.setTimeout(15000, () => { reject(new Error(`CONNECT ${host} timeout`)); socket.destroy(); });
-  });
-}
-// 统一入口：按 viaProxy 选择直连或代理隧道
-const connectTls = (host, viaProxy) => (viaProxy ? tlsSocketViaProxy(host) : tlsSocketDirect(host));
-
-// ---------- 一次性 HTTPS 请求（裸写 HTTP/1.1，返回 status+bodyText） ----------
-// 为什么不用 fetch/http.request：隧道场景下 Node http.request 的 options.createConnection
-// 实测不生效（会另起一条直连 host:80 的连接），只能自己在 TLS socket 上裸写字节。
-function rawHttpsRequest(host, reqPath, viaProxy, headers, bodyStr, timeoutMs) {
-  const TIMEOUT = timeoutMs || 60000;
-  return connectTls(host, viaProxy).then((socket) => new Promise((resolve, reject) => {
-    // content-length 只发一次：调用方 headers 已带则用它的，否则按 body 计算（重复会导致网关 400）
-    const hasCL = Object.keys(headers).some((k) => k.toLowerCase() === 'content-length');
-    const lines = [`POST ${reqPath} HTTP/1.1`, `Host: ${host}`, 'Connection: close', 'content-type: application/json'];
-    if (!hasCL) lines.push(`content-length: ${Buffer.byteLength(bodyStr)}`);
-    for (const [k, v] of Object.entries(headers)) lines.push(`${k}: ${v}`);
-    socket.write(lines.join('\r\n') + '\r\n\r\n' + bodyStr);
-    let buf = Buffer.alloc(0);
-    socket.on('data', (d) => (buf = Buffer.concat([buf, d])));
-    socket.on('end', () => {
-      const idx = buf.indexOf('\r\n\r\n');
-      const head = idx === -1 ? '' : buf.subarray(0, idx).toString('latin1');
-      let bodyBuf = idx === -1 ? buf : buf.subarray(idx + 4);
-      const m = head.match(/^HTTP\/[\d.]+ (\d{3})/);
-      if (/transfer-encoding:\s*chunked/i.test(head)) bodyBuf = dechunkBuffer(bodyBuf);
-      resolve({ status: m ? Number(m[1]) : 0, bodyText: bodyBuf.toString('utf8') });
-    });
-    socket.on('error', reject);
-    // 空闲超时：非流式上游可能长时间思考无数据，用调用方指定的超时（chat 通道传 10 分钟）
-    socket.setTimeout(TIMEOUT, () => { reject(new Error(`rawHttpsRequest ${host} timeout`)); socket.destroy(); });
-  }));
-}
-// 整包解码 chunked 传输编码（按字节操作，保证多字节 UTF-8 不被截断）
-function dechunkBuffer(buf) {
-  const out = [];
-  let i = 0;
-  while (i < buf.length) {
-    const lineEnd = buf.indexOf('\r\n', i);
-    if (lineEnd === -1) break;
-    const size = parseInt(buf.subarray(i, lineEnd).toString('latin1').split(';')[0], 16);
-    if (!size) break;
-    out.push(buf.subarray(lineEnd + 2, lineEnd + 2 + size));
-    i = lineEnd + 2 + size + 2;
-  }
-  return Buffer.concat(out);
-}
-// 流式增量 dechunk：上游 chunked 响应透传给客户端时必须先解包，
-// 否则 Node ServerResponse 会再套一层 chunked 封装，客户端解析直接坏掉（SSE 尤甚）。
-class DechunkTransform extends Transform {
-  constructor() { super(); this._buf = Buffer.alloc(0); this._size = -1; }
-  _transform(chunk, enc, cb) {
-    this._buf = Buffer.concat([this._buf, chunk]);
-    while (true) {
-      if (this._size === -1) {
-        const le = this._buf.indexOf('\r\n');
-        if (le === -1) return cb();
-        this._size = parseInt(this._buf.subarray(0, le).toString('latin1').split(';')[0], 16) || 0;
-        this._buf = this._buf.subarray(le + 2);
-        if (this._size === 0) { this._buf = Buffer.alloc(0); return cb(); }
-      } else {
-        if (this._buf.length < this._size + 2) return cb();
-        this.push(this._buf.subarray(0, this._size));
-        this._buf = this._buf.subarray(this._size + 2);
-        this._size = -1;
-      }
-    }
-  }
-  _flush(cb) { if (this._size > 0 && this._buf.length) this.push(this._buf.subarray(0, this._size)); cb(); }
-}
+// ---------- HTTPS 传输 ----------
+// TLS、HTTP/1.1、CONNECT 代理、chunked 解码与分层超时集中在 lib/transport.mjs。
 // 一次性 HTTPS 请求并解析 JSON 响应（用于 oauth refresh、视觉中继等控制类调用）
 function httpsJson(host, reqPath, viaProxy, headers, bodyObj) {
-  return rawHttpsRequest(host, reqPath, viaProxy, headers, JSON.stringify(bodyObj)).then(({ status, bodyText }) => {
+  return rawHttpsRequest({
+    host,
+    path: reqPath,
+    viaProxy,
+    proxy: V2RAY_PROXY,
+    headers,
+    body: JSON.stringify(bodyObj),
+    timeouts: resolveTimeouts(cfg.timeouts),
+  }).then(({ status, bodyText }) => {
     try { return { status, json: JSON.parse(bodyText) }; } catch { return { status, json: null, raw: bodyText }; }
   });
 }
@@ -225,7 +174,7 @@ function httpsJson(host, reqPath, viaProxy, headers, bodyObj) {
 const captionCache = new Map();
 const CAPTION_CACHE_MAX = 200;
 // 调用视觉模型为单张图片生成文字描述（带缓存，同图只调一次）
-async function captionImage(imageUrl) {
+async function captionImage(imageUrl, signal) {
   if (captionCache.has(imageUrl)) return captionCache.get(imageUrl);
   const key = process.env[VISION_RELAY.envKey];
   if (!key) throw new Error(`VISION_RELAY 环境变量 ${VISION_RELAY.envKey} 未设置`);
@@ -237,7 +186,16 @@ async function captionImage(imageUrl) {
     ] }],
     max_tokens: VISION_RELAY.maxTokens || 300,
   });
-  const r = await rawHttpsRequest(VISION_RELAY.host, `${VISION_RELAY.prefix}/chat/completions`, false, { authorization: `Bearer ${key}` }, body);
+  const r = await rawHttpsRequest({
+    host: VISION_RELAY.host,
+    path: `${VISION_RELAY.prefix}/chat/completions`,
+    viaProxy: VISION_RELAY.viaProxy === true,
+    proxy: V2RAY_PROXY,
+    headers: { authorization: `Bearer ${key}` },
+    body,
+    signal,
+    timeouts: resolveTimeouts(cfg.timeouts, VISION_RELAY.timeouts),
+  });
   const j = JSON.parse(r.bodyText);
   if (r.status !== 200 || !j.choices?.[0]?.message?.content) throw new Error(`vision relay HTTP ${r.status}`);
   const desc = j.choices[0].message.content;
@@ -249,7 +207,7 @@ async function captionImage(imageUrl) {
 //   1. user 消息的 content（用户直接贴图）
 //   2. function_call_output 的 output（浏览器/电脑操作插件回传的截图）
 // 注意：assistant 角色的历史消息不修改，避免把描述注入错误的上下文位置
-async function relayNonTextParts(body) {
+async function relayNonTextParts(body, signal) {
   if (!body || !Array.isArray(body.input)) return 0;
   let stripped = 0;
   const relayParts = async (parts) => {
@@ -260,7 +218,7 @@ async function relayNonTextParts(body) {
       stripped++;
       const url = typeof p.image_url === 'string' ? p.image_url : p.image_url?.url;
       try {
-        const desc = await captionImage(url);
+        const desc = await captionImage(url, signal);
         log(`vision relay: captioned image (${desc.length} chars)`);
         return { type: 'input_text', text: `[image description: ${desc}]` };
       } catch (e) {
@@ -283,142 +241,39 @@ async function relayNonTextParts(body) {
   return stripped;
 }
 
-// ---------- Responses ↔ Chat 协议转换 ----------
-// 为什么需要：DeepSeek/Qwen 的 Chat API 久经考验，而 Responses 格式（含 reasoning/
-// custom_tool_call 等 Codex 特有字段）处理不完善，导致模型“看不懂”历史、从头重推（闪跳）。
-// cc-switch/Codex++ 正是转成 Chat 格式才稳定。故对 wireApi='chat' 的通道做转换。
-// 从 Responses 的 content（字符串或 part 数组）中提取纯文本
-function extractText(content) {
-  if (typeof content === 'string') return content;
-  if (Array.isArray(content)) return content.map((c) => (c && (c.text || c.output_text || ''))).join('');
-  return '';
-}
-// Responses input → Chat messages
-function responsesToChatMessages(input) {
-  const messages = [];
-  let pendingToolCalls = [];
-  const flushTools = () => {
-    if (pendingToolCalls.length) { messages.push({ role: 'assistant', content: '', tool_calls: pendingToolCalls }); pendingToolCalls = []; }
+// ---------- Responses SSE 生命周期 ----------
+function startResponsesSse(clientRes) {
+  if (!clientRes.headersSent) {
+    clientRes.writeHead(200, {
+      'content-type': 'text/event-stream',
+      'cache-control': 'no-cache',
+      connection: 'keep-alive',
+      'x-accel-buffering': 'no',
+    });
+    clientRes.flushHeaders();
+  }
+  let heartbeat = setInterval(() => {
+    if (clientRes.destroyed || clientRes.writableEnded) return;
+    try { clientRes.write(': keep-alive\n\n'); } catch { /* close 事件统一清理 */ }
+  }, HEARTBEAT_MS);
+  heartbeat.unref();
+  return () => {
+    if (!heartbeat) return;
+    clearInterval(heartbeat);
+    heartbeat = null;
   };
-  for (const item of input || []) {
-    if (!item) continue;
-    const t = item.type;
-    if (item.role === 'user' || item.role === 'developer' || item.role === 'system') {
-      const text = extractText(item.content);
-      if (text) messages.push({ role: item.role === 'developer' ? 'system' : item.role, content: text });
-    } else if (item.role === 'assistant') {
-      const text = extractText(item.content);
-      if (text) messages.push({ role: 'assistant', content: text });
-    } else if (t === 'reasoning') {
-      // Chat 无对应物，丢弃（保持历史干净）
-    } else if (t === 'function_call') {
-      pendingToolCalls.push({ id: item.call_id, type: 'function', function: { name: item.name, arguments: item.arguments || '{}' } });
-    } else if (t === 'custom_tool_call') {
-      pendingToolCalls.push({ id: item.call_id, type: 'function', function: { name: item.name || 'custom', arguments: item.input || '{}' } });
-    } else if (t === 'function_call_output' || t === 'custom_tool_call_output') {
-      flushTools();
-      messages.push({ role: 'tool', tool_call_id: item.call_id, content: extractText(item.output) });
-    }
+}
+
+// SSE 响应头已经发出后，上游错误也必须用 SSE 结束，不能再切回 JSON 响应
+function emitResponsesErrorSse(clientRes, message, code = 'upstream_error') {
+  if (!clientRes.headersSent) {
+    try { clientRes.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache', connection: 'keep-alive' }); } catch { return; }
   }
-  flushTools();
-  // 自主性提示：第三方模型在工具循环里容易“只描述不执行”，补一条系统提示督促其自主调用工具推进
-  if (cfg.chatConversion?.autonomy !== false) {
-    messages.push({ role: 'system', content: '重要：请自主使用可用工具持续推进任务直至完成；需要信息时直接调用工具获取，不要只描述计划而不调用工具。' });
-  }
-  return messages;
-}
-// 估算单条消息 token 数（粗略：字符数*0.7，中文偏保守），用于上下文裁剪
-function msgTokens(m) {
-  let c = typeof m.content === 'string' ? m.content : JSON.stringify(m.content || '');
-  if (m.tool_calls) c += JSON.stringify(m.tool_calls);
-  return Math.ceil((c || '').length * 0.7);
-}
-// 上下文裁剪：超过预算时从最旧（index 1，保留 index0 系统提示）开始删，
-// 并保持 tool 配对（删 assistant 带 tool_calls 时连同其后 tool 消息一起删；清理孤立 tool）
-function trimToBudget(messages, budget) {
-  const out = messages.slice();
-  let total = out.reduce((s, m) => s + msgTokens(m), 0);
-  const dropAt1 = () => { const r = out.splice(1, 1)[0]; total -= msgTokens(r); return r; };
-  while (total > budget && out.length > 2) {
-    const removed = dropAt1();
-    if (removed && removed.role === 'assistant' && removed.tool_calls) {
-      while (out.length > 1 && out[1] && out[1].role === 'tool') dropAt1();
-    }
-    while (out.length > 2 && out[1] && out[1].role === 'tool') dropAt1();
-  }
-  return out;
-}
-// Responses tools → Chat tools（让模型知道有哪些工具可用，才会真正发 tool_calls 而不是只描述）
-function responsesToolsToChat(tools) {
-  if (!Array.isArray(tools)) return undefined;
-  const out = [];
-  for (const t of tools) {
-    if (!t) continue;
-    if (t.type === 'function' && t.function) out.push(t); // 已是 Chat 格式
-    else if (t.name) out.push({ type: 'function', function: { name: t.name, description: t.description || '', parameters: t.parameters || { type: 'object', properties: {} } } });
-  }
-  return out.length ? out : undefined;
-}
-// Chat 非流式响应 → Responses 格式
-function chatToResponses(chatJson, model) {
-  const msg = chatJson.choices?.[0]?.message || {};
-  const output = [];
-  for (const tc of msg.tool_calls || []) output.push({ type: 'function_call', call_id: tc.id, name: tc.function?.name, arguments: tc.function?.arguments });
-  if (msg.content) output.push({ type: 'message', role: 'assistant', content: [{ type: 'output_text', text: msg.content }] });
-  return { id: 'resp_' + crypto.randomUUID(), object: 'response', model, status: 'completed', output };
-}
-// 从完整 Responses 对象生成规范 SSE 流（保证 response.completed 一定发出，避免桌面端报
-// “stream closed before response.completed”）。牺牲逐 token 流式换取可靠性。
-function emitResponsesSse(clientRes, resp) {
-  const send = (o) => { try { clientRes.write('data: ' + JSON.stringify(o) + '\n\n'); } catch { /* noop */ } };
-  try { clientRes.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache' }); } catch { return; }
-  send({ type: 'response.created', response: { ...resp, status: 'in_progress', output: [] } });
-  for (const item of resp.output || []) {
-    send({ type: 'response.output_item.added', output_index: 0, item });
-    if (item.type === 'message') {
-      const text = (item.content || []).map((c) => c.text || '').join('');
-      // 分块发 delta，模拟流式
-      for (let i = 0; i < text.length; i += 200) send({ type: 'response.output_text.delta', item_id: item.id || resp.id, delta: text.slice(i, i + 200) });
-    }
-    send({ type: 'response.output_item.done', item });
-  }
-  send({ type: 'response.completed', response: resp });
-  try { clientRes.write('data: [DONE]\n\n'); clientRes.end(); } catch { /* noop */ }
-}
-// （保留）Chat 流式 SSE → Responses SSE 转换器。当前 chat 通道走非流式+自生成 SSE，
-// 此转换器暂不启用，留作将来需要真正逐 token 流式时启用。
-function chatSseToResponsesSse(model) {
-  let buf = Buffer.alloc(0);
-  let started = false;
-  let fullText = '';
-  const respId = 'resp_' + crypto.randomUUID();
-  const emit = (obj) => 'data: ' + JSON.stringify(obj) + '\n\n';
-  return new Transform({
-    transform(chunk, _e, cb) {
-      buf = Buffer.concat([buf, chunk]);
-      let idx;
-      while ((idx = buf.indexOf('\n')) !== -1) {
-        const line = buf.subarray(0, idx).toString('utf8').replace(/\r$/, '');
-        buf = buf.subarray(idx + 1);
-        if (!line.startsWith('data:')) continue;
-        const payload = line.slice(5).trim();
-        if (payload === '[DONE]') continue;
-        try {
-          const ev = JSON.parse(payload);
-          const delta = ev.choices?.[0]?.delta || {};
-          if (!started) { started = true; this.push(emit({ type: 'response.created', response: { id: respId, object: 'response', model, status: 'in_progress', output: [] } })); }
-          if (delta.content) { fullText += delta.content; this.push(emit({ type: 'response.output_text.delta', item_id: respId, delta: delta.content })); }
-        } catch { /* 忽略非 JSON 行 */ }
-      }
-      cb();
-    },
-    flush(cb) {
-      if (!started) this.push(emit({ type: 'response.created', response: { id: respId, object: 'response', model, status: 'in_progress', output: [] } }));
-      this.push(emit({ type: 'response.completed', response: { id: respId, object: 'response', model, status: 'completed', output: [{ type: 'message', role: 'assistant', content: [{ type: 'output_text', text: fullText }] }] } }));
-      this.push('data: [DONE]\n\n');
-      cb();
-    }
-  });
+  try {
+    clientRes.write('data: ' + JSON.stringify({ type: 'error', error: { type: 'upstream_error', code, message } }) + '\n\n');
+    clientRes.write('data: [DONE]\n\n');
+    clientRes.end();
+  } catch { /* noop */ }
 }
 
 // ---------- ChatGPT 登录态：读 auth.json，临期自动 refresh 并原子写回 ----------
@@ -453,9 +308,14 @@ async function doRefresh() {
   const data = readAuth(); // 重新读，拿最新 refresh_token
   const tokens = data.tokens || {};
   log('openai: access_token 临期，执行 refresh');
-  const r = await httpsJson('auth.openai.com', '/oauth/token', true, {}, {
-    client_id: CLIENT_ID, grant_type: 'refresh_token', refresh_token: tokens.refresh_token,
-  });
+  const r = await withTimeout(
+    httpsJson('auth.openai.com', '/oauth/token', true, {}, {
+      client_id: CLIENT_ID, grant_type: 'refresh_token', refresh_token: tokens.refresh_token,
+    }),
+    // refresh 失败必须让请求快速失败并允许下次重试，不能让所有并发请求无限等待同一挂起的 refresh。
+    Number(cfg.oauth?.refresh_timeout_ms) || 30_000,
+    'token refresh',
+  );
   if (r.status !== 200 || !r.json?.access_token) throw new Error(`token refresh 失败 HTTP ${r.status}`);
   tokens.access_token = r.json.access_token;
   if (r.json.refresh_token) tokens.refresh_token = r.json.refresh_token;
@@ -470,72 +330,170 @@ async function doRefresh() {
   return { token: tokens.access_token, accountId: tokens.account_id };
 }
 
-// ---------- 在已建立的 TLS socket 上裸写 HTTP/1.1 请求并流式回传响应 ----------
-function rawHttpRequest(socket, host, reqPath, method, headers, bodyBuf, clientRes, tag, respTransform) {
-  const headLines = [`${method} ${reqPath} HTTP/1.1`, `Host: ${host}`, 'Connection: close'];
-  for (const [k, v] of Object.entries(headers)) headLines.push(`${k}: ${v}`);
-  socket.write(headLines.join('\r\n') + '\r\n\r\n');
-  if (bodyBuf.length) socket.write(bodyBuf);
-  let headBuf = Buffer.alloc(0);
-  let piped = false;
-  const onData = (d) => {
-    if (piped) return;
-    headBuf = Buffer.concat([headBuf, d]);
-    const idx = headBuf.indexOf('\r\n\r\n'); // 响应头结束标记
-    if (idx === -1) {
-      if (headBuf.length > 64 * 1024) socket.destroy(); // 防异常上游撑爆内存
-      return;
-    }
-    piped = true;
-    socket.removeListener('data', onData);
-    const headText = headBuf.subarray(0, idx).toString('latin1');
-    const rest = headBuf.subarray(idx + 4); // 头后已到的首包 body，别丢
-    const lines = headText.split('\r\n');
-    const statusMatch = lines[0].match(/^HTTP\/[\d.]+ (\d{3})/);
-    const status = statusMatch ? Number(statusMatch[1]) : 502;
-    // 透传响应头：剔除 hop-by-hop 与长度类头（body 可能被 dechunk 改变长度）
-    const outHeaders = {};
-    for (const line of lines.slice(1)) {
-      const ci = line.indexOf(':');
-      if (ci === -1) continue;
-      const k = line.slice(0, ci).trim().toLowerCase();
-      const v = line.slice(ci + 1).trim();
-      if (k === 'connection' || k === 'keep-alive') continue;
-      if (outHeaders[k] !== undefined) outHeaders[k] = [].concat(outHeaders[k], v);
-      else outHeaders[k] = v;
-    }
-    log(`${tag} -> ${status}`);
-    const chunked = /chunked/i.test(String(outHeaders['transfer-encoding'] || ''));
-    if (chunked) { delete outHeaders['transfer-encoding']; delete outHeaders['content-length']; }
-    // 有响应转换（Chat→Responses）时，响应头改为 SSE 流式 JSON，长度类头剔除
-    if (respTransform) { delete outHeaders['content-length']; outHeaders['content-type'] = 'text/event-stream'; outHeaders['cache-control'] = 'no-cache'; }
-    try { clientRes.writeHead(status, outHeaders); } catch { /* 客户端已断开 */ }
-    if (chunked) {
-      const t = new DechunkTransform();
-      if (rest.length) t.write(rest);
-      socket.pipe(t);
-      if (respTransform) { t.pipe(respTransform); respTransform.pipe(clientRes); respTransform.on('error', () => clientRes.destroy()); }
-      else t.pipe(clientRes);
-      t.on('error', () => clientRes.destroy());
-    } else if (respTransform) {
-      if (rest.length) respTransform.write(rest);
-      socket.pipe(respTransform);
-      respTransform.pipe(clientRes);
-      respTransform.on('error', () => clientRes.destroy());
-    } else {
-      if (rest.length) clientRes.write(rest);
-      socket.pipe(clientRes);
-    }
-  };
-  socket.on('data', onData);
-  socket.on('end', () => {
-    if (!piped) { try { clientRes.writeHead(502, { 'content-type': 'application/json' }); clientRes.end(JSON.stringify({ error: 'upstream closed before response head' })); } catch { /* noop */ } }
-    else clientRes.end();
+function joinUpstreamPath(prefix = '', endpoint = '') {
+  const left = prefix.endsWith('/') ? prefix.slice(0, -1) : prefix;
+  const right = endpoint.startsWith('/') ? endpoint : `/${endpoint}`;
+  return `${left}${right}` || '/';
+}
+
+function copyRequestHeaders(clientReq) {
+  const blocked = new Set([
+    'host', 'connection', 'keep-alive', 'proxy-connection', 'proxy-authenticate',
+    'proxy-authorization', 'te', 'trailer', 'transfer-encoding', 'upgrade',
+    'authorization', 'x-api-key', 'content-length', 'accept-encoding', 'content-type',
+  ]);
+  const headers = {};
+  for (const [key, value] of Object.entries(clientReq.headers)) {
+    if (!blocked.has(key.toLowerCase())) headers[key] = value;
+  }
+  headers['accept-encoding'] = 'identity';
+  return headers;
+}
+
+function copyResponseHeaders(headers) {
+  const blocked = new Set([
+    'connection', 'keep-alive', 'proxy-authenticate', 'proxy-authorization',
+    'te', 'trailer', 'transfer-encoding', 'upgrade', 'content-length',
+  ]);
+  return Object.fromEntries(Object.entries(headers).filter(([key]) => !blocked.has(key.toLowerCase())));
+}
+
+async function readStreamSnippet(stream, limit = 64 * 1024) {
+  const chunks = [];
+  let size = 0;
+  for await (const chunk of stream) {
+    const remaining = limit - size;
+    if (remaining <= 0) break;
+    chunks.push(chunk.subarray(0, remaining));
+    size += Math.min(chunk.length, remaining);
+    if (size >= limit) break;
+  }
+  if (!stream.destroyed) stream.destroy();
+  return Buffer.concat(chunks).toString('utf8');
+}
+
+function pipeNativeResponse(upstream, clientRes, tag) {
+  log(`${tag} -> ${upstream.status}`);
+  if (!clientRes.headersSent) clientRes.writeHead(upstream.status || 502, copyResponseHeaders(upstream.headers));
+  upstream.stream.once('error', (error) => {
+    log(`native stream error [${tag}]`, error.message);
+    clientRes.destroy(error);
   });
-  socket.on('error', (e) => {
-    log(`socket error [${tag}]`, e.message);
-    if (!piped) { try { clientRes.writeHead(502, { 'content-type': 'application/json' }); clientRes.end(JSON.stringify({ error: `router upstream error: ${e.message}` })); } catch { /* noop */ } }
-    else clientRes.destroy();
+  upstream.stream.pipe(clientRes);
+}
+
+function pipeChatResponse(upstream, clientRes, model, tag, stopHeartbeat, toolContext, onResponse) {
+  const transform = createChatSseToResponsesTransform(model, toolContext);
+  let failed = false;
+  const fail = (error) => {
+    if (failed || clientRes.destroyed || clientRes.writableEnded) return;
+    failed = true;
+    stopHeartbeat();
+    upstream.stream.unpipe(transform);
+    transform.unpipe(clientRes);
+    transform.destroy();
+    log(`chat stream error [${tag}]`, error.message);
+    emitResponsesErrorSse(clientRes, `chat stream error: ${error.message}`);
+  };
+  upstream.stream.once('error', fail);
+  transform.once('error', fail);
+  if (onResponse) transform.once('response', onResponse);
+  clientRes.once('finish', stopHeartbeat);
+  transform.pipe(clientRes);
+  upstream.stream.pipe(transform);
+}
+
+function upstreamModel(target, requestedModel) {
+  // 同一对外模型可在不同供应商使用不同上游 slug。
+  return target.modelMap?.[requestedModel] || target.upstreamModel || target.model || requestedModel;
+}
+
+async function authHeadersForTarget(clientReq, target, provider) {
+  // 每次 failover 都重新按目标构造认证头，严禁沿用上一供应商的密钥。
+  const headers = { ...copyRequestHeaders(clientReq), ...(target.headers || {}) };
+  if (target.name === 'openai' || target.useOpenAiAuth === true) {
+    const auth = await getOpenAiAuth();
+    headers.authorization = `Bearer ${auth.token}`;
+    if (auth.accountId) headers['ChatGPT-Account-ID'] = auth.accountId;
+    return headers;
+  }
+  const key = process.env[target.envKey];
+  if (!key) throw new Error(`环境变量 ${target.envKey} 未设置`);
+  return { ...headers, ...buildProviderAuthHeaders(provider, key) };
+}
+
+function statusFailure(status, message) {
+  // 把 HTTP 状态挂到 Error 上，交给统一重试分类器判定。
+  const error = new Error(message);
+  error.status = status;
+  error.code = String(status || 502);
+  return error;
+}
+
+// 为单个候选目标复制并准备请求体，防止 failover 之间共享可变状态。
+async function prepareAttemptBody(bodyObj, target, isChat, model, signal) {
+  const attemptBody = bodyObj ? structuredClone(bodyObj) : null;
+  if (isChat && attemptBody) {
+    // 只为 Chat 转换腿补工具调用历史；原生 Responses 仍由上游维护完整状态。
+    const restored = responseHistory.restoreRequest(attemptBody);
+    attemptBody.input = restored.input;
+    if (restored.restoredCallIds.length) {
+      flog(`HISTORY ${model} | restored=${restored.restoredCallIds.join(',')} | hit=${restored.historyHit}`);
+    }
+  }
+  if (attemptBody && target.vision === false) {
+    const stripped = await relayNonTextParts(attemptBody, signal);
+    if (stripped > 0) log(`${model}: relayed/stripped ${stripped} non-text part(s) for text-only model`);
+  }
+  return attemptBody;
+}
+
+// 把恢复后的 Responses 请求转换成 Chat，并在发往上游前执行完整上下文预算。
+function buildChatRequest(attemptBody, target, provider, model) {
+  const converted = convertResponsesTools(attemptBody.tools, attemptBody.input);
+  const baseRequest = {
+    model: upstreamModel(target, model),
+    messages: responsesToChatMessages(attemptBody.input, {
+      autonomy: cfg.chatConversion?.autonomy,
+      instructions: attemptBody.instructions,
+      vision: target.vision !== false,
+      toolContext: converted.context,
+    }),
+  };
+  if (converted.tools) baseRequest.tools = converted.tools;
+
+  const capability = resolveModelCapability(cfg, target, model);
+  const fitted = fitMessagesToContext(baseRequest.messages, converted.tools, capability);
+  if (!fitted.fits) {
+    const error = new Error(`最新轮次超过模型输入预算 (${fitted.messageTokens} > ${fitted.messageBudget} tokens)`);
+    error.code = 'context_length_exceeded';
+    throw error;
+  }
+  baseRequest.messages = fitted.messages;
+  if (fitted.trimmedGroups > 0) {
+    flog(`TRIM ${model} | groups=${fitted.trimmedGroups} | tokens=${fitted.messageTokens}/${fitted.messageBudget}`);
+  }
+  return {
+    request: applyChatProviderOptions(baseRequest, attemptBody, provider),
+    toolContext: converted.context,
+    toolCount: converted.tools?.length || 0,
+  };
+}
+
+// Chat 与原生 Responses 共用同一裸 HTTP/1.1 传输入口，避免两处分层超时配置漂移。
+function openTargetStream(target, requestPath, headers, body, signal, timeouts, method = 'POST') {
+  return openHttpsStream({
+    protocol: target.protocol,
+    host: target.host,
+    port: target.port || (target.protocol === 'http' ? 80 : 443),
+    path: requestPath,
+    method,
+    viaProxy: target.viaProxy,
+    proxy: V2RAY_PROXY,
+    headers,
+    body,
+    signal,
+    timeouts,
   });
 }
 
@@ -545,8 +503,9 @@ const server = http.createServer(async (clientReq, clientRes) => {
   // 无感更新控制端点：旧进程释放端口但继续服务完在跑任务，新进程立即接管新请求
   if (url === '/_admin/shutdown' && clientReq.method === 'POST') {
     clientRes.writeHead(200, { 'content-type': 'application/json' });
+    // 先把管理响应完整交给调用方，再关闭监听；否则当前连接会阻塞 server.close 回调。
+    clientRes.once('finish', gracefulExit);
     clientRes.end(JSON.stringify({ ok: true }));
-    gracefulExit();
     return;
   }
   // 健康检查
@@ -561,11 +520,10 @@ const server = http.createServer(async (clientReq, clientRes) => {
       const catalog = JSON.parse(fs.readFileSync(CATALOG_PATH, 'utf8'));
       const data = catalog.models.map((m) => {
         const base = { id: m.slug, object: 'model', created: 0, owned_by: 'local-router' };
-        // 按模型精确声明能力：只有原生支持 Responses 协议的模型才声明 previous_response_id
-        // DeepSeek-V4-Flash / Qwen3.8-Max 原生支持；DeepSeek-V4-Pro 尚未支持
+        // 有界工具历史不等于完整会话状态，因此只声明可安全使用的流式能力。
         const sr = cfg.supportsResponses?.slugs || [];
         if (sr.includes(m.slug)) {
-          base.capabilities = { previous_response_id: true, streaming: true };
+          base.capabilities = { streaming: true };
         }
         return base;
       });
@@ -582,10 +540,33 @@ const server = http.createServer(async (clientReq, clientRes) => {
     clientRes.end(JSON.stringify({ error: 'not found' }));
     return;
   }
-  // 收齐请求体 → 按 model 选通道 → 必要时视觉中继 → 换认证头 → 裸写转发
+  // 收齐请求体 → 按 model 选通道 → 必要时视觉中继 → 换认证头 → 流式转发
+  const maxRequestBytes = Number(cfg.maxRequestBytes) || 200 * 1024 * 1024;
+  const declaredLength = Number(clientReq.headers['content-length'] || 0);
+  if (declaredLength > maxRequestBytes) {
+    clientReq.resume();
+    clientRes.writeHead(413, { 'content-type': 'application/json' });
+    clientRes.end(JSON.stringify({ error: 'request body too large' }));
+    return;
+  }
   const chunks = [];
-  clientReq.on('data', (c) => chunks.push(c));
+  let receivedBytes = 0;
+  let bodyTooLarge = false;
+  clientReq.on('data', (chunk) => {
+    receivedBytes += chunk.length;
+    if (receivedBytes > maxRequestBytes) {
+      bodyTooLarge = true;
+      chunks.length = 0;
+      return;
+    }
+    if (!bodyTooLarge) chunks.push(chunk);
+  });
   clientReq.on('end', async () => {
+    if (bodyTooLarge) {
+      clientRes.writeHead(413, { 'content-type': 'application/json' });
+      clientRes.end(JSON.stringify({ error: 'request body too large' }));
+      return;
+    }
     const bodyBuf0 = Buffer.concat(chunks);
     let bodyObj = null;
     let model = '';
@@ -608,80 +589,128 @@ const server = http.createServer(async (clientReq, clientRes) => {
       };
       flog(`REQ ${model} | prev=${prevIdShort} | ${JSON.stringify(sample)}`);
     }
-    const target = TARGETS.find((t) => t.match.test(model)) || TARGETS[0];
-    try {
-    let bodyBuf = bodyBuf0;
-    if (bodyObj && target.vision === false) {
-      const stripped = await relayNonTextParts(bodyObj);
-      if (stripped > 0) {
-        bodyBuf = Buffer.from(JSON.stringify(bodyObj));
-        log(`${model}: relayed/stripped ${stripped} non-text part(s) for text-only model`);
-      }
+    // 同一模型允许配置多条目标；命中过的会话优先使用上轮成功供应商。
+    const affinityKeys = requestAffinityKeys(bodyObj || {}, clientReq.headers);
+    const candidates = providerPool.candidates(model, affinityKeys);
+    const compatibleCandidates = candidates.filter((target) => resolveRequestProtocol(resolveProvider(target), url).allowed);
+    if (candidates.length && !compatibleCandidates.length) {
+      // Chat compact 无可靠等价语义，不能伪装成功或静默改成普通 responses。
+      clientRes.writeHead(400, { 'content-type': 'application/json' });
+      clientRes.end(JSON.stringify({ error: { code: 'compact_not_supported', message: 'Chat 通道不支持 /responses/compact' } }));
+      return;
     }
-    // Chat 转换模式：wireApi='chat' 的通道把 Responses 请求转成 Chat（非流式拿完整响应），
-    // 再由路由自生成规范 Responses SSE，保证 completed 事件可靠发出
-    let isChat = false;
-    let chatReq = null;
-    let upstreamPath = target.prefix + url.replace(/^\/v1/, '');
-    if (bodyObj && target.wireApi === 'chat') {
-      chatReq = { model: bodyObj.model, messages: responsesToChatMessages(bodyObj.input), stream: false };
-      // 上下文裁剪兕底：桌面端可能不压缩，超模型上限会 400；按 contextWindow 留安全余量裁剪
-      const ctxWin = Number(cfg.modelContext?.contextWindow) || 1048576;
-      const before = chatReq.messages.length;
-      chatReq.messages = trimToBudget(chatReq.messages, Math.floor(ctxWin * 0.9));
-      if (chatReq.messages.length < before) flog(`TRIM ${model} | ${before} -> ${chatReq.messages.length} messages`);
-      const tools = responsesToolsToChat(bodyObj.tools);
-      if (tools) chatReq.tools = tools;
-      isChat = true;
-      upstreamPath = target.prefix + '/chat/completions';
-      flog(`CHAT ${model} | messages=${chatReq.messages.length} | tools=${tools ? tools.length : 0} | stream=false`);
-    }
-    // 透传客户端头，但剔除 hop-by-hop / 认证 / 长度 / 压缩 / content-type（rawHttpsRequest 会统一加 content-type，透传会重复导致部分网关 400）
-    const headers = {};
-      for (const [k, v] of Object.entries(clientReq.headers)) {
-        if (['host', 'connection', 'authorization', 'content-length', 'accept-encoding', 'content-type'].includes(k.toLowerCase())) continue;
-        headers[k] = v;
-      }
-      headers['content-length'] = bodyBuf.length;
-      headers['accept-encoding'] = 'identity';
-      if (target.name === 'openai') {
-        // 官方通道：用桌面端登录态（自动 refresh），客户端带来的 Bearer 被覆盖
-        const auth = await getOpenAiAuth();
-        headers.authorization = `Bearer ${auth.token}`;
-        if (auth.accountId) headers['ChatGPT-Account-ID'] = auth.accountId;
-      } else {
-        const key = process.env[target.envKey];
-        if (!key) throw new Error(`环境变量 ${target.envKey} 未设置`);
-        headers.authorization = `Bearer ${key}`;
-      }
-      // Chat 通道：非流式拿完整 Chat 响应 → 转 Responses → 自生成 SSE
-      if (isChat) {
-        const chatBody = Buffer.from(JSON.stringify(chatReq));
-        flog(`CHAT-BODY ${model} | ${chatBody.toString().slice(0, 300)}`);
-        headers['content-length'] = chatBody.length;
-        const r = await rawHttpsRequest(target.host, upstreamPath, target.viaProxy, headers, chatBody.toString(), 10 * 60 * 1000);
-        if (r.status !== 200) {
-          log(`chat upstream error ${r.status}: ${r.bodyText.slice(0, 200)}`);
-          flog(`CHAT-ERR ${model} | status=${r.status} | toolsKeys=${JSON.stringify((chatReq.tools || []).slice(0,2).map(t => Object.keys(t)))} | ${r.bodyText.slice(0, 200)}`);
-          if (!clientRes.headersSent) clientRes.writeHead(r.status || 502, { 'content-type': 'application/json' });
-          clientRes.end(r.bodyText || JSON.stringify({ error: `chat upstream ${r.status}` }));
+    const abortController = new AbortController();
+    let clientClosed = false;
+    let stopHeartbeat = () => {};
+    let heartbeatStarted = false;
+    const ensureHeartbeat = () => {
+      if (heartbeatStarted) return;
+      heartbeatStarted = true;
+      stopHeartbeat = startResponsesSse(clientRes);
+    };
+    clientRes.once('close', () => {
+      clientClosed = true;
+      stopHeartbeat();
+      abortController.abort();
+    });
+
+    let lastError = null;
+    for (let index = 0; index < compatibleCandidates.length; index += 1) {
+      const target = compatibleCandidates[index];
+      const provider = resolveProvider(target);
+      const isChat = provider.wireApi === 'chat';
+      const hasFallback = index < compatibleCandidates.length - 1;
+      try {
+        if (!['responses', 'chat'].includes(provider.wireApi)) throw new Error(`暂不支持 wireApi=${provider.wireApi}`);
+        if (isChat) ensureHeartbeat();
+
+        const attemptBody = await prepareAttemptBody(bodyObj, target, isChat, model, abortController.signal);
+        if (clientClosed) return;
+
+        const headers = await authHeadersForTarget(clientReq, target, provider);
+        const timeouts = resolveTimeouts(cfg.timeouts, provider.timeouts);
+        if (clientClosed) return;
+
+        if (isChat) {
+          const prepared = buildChatRequest(attemptBody, target, provider, model);
+          const upstreamPath = joinUpstreamPath(target.prefix, provider.chatPath);
+          flog(`CHAT ${model} | provider=${target.name} | messages=${prepared.request.messages.length} | tools=${prepared.toolCount} | stream=true`);
+          const upstream = await openTargetStream(
+            target,
+            upstreamPath,
+            headers,
+            JSON.stringify(prepared.request),
+            abortController.signal,
+            timeouts,
+          );
+          if (clientClosed) {
+            upstream.socket.destroy();
+            return;
+          }
+          const contentType = String(upstream.headers['content-type'] || '');
+          if (upstream.status !== 200 || /application\/json/i.test(contentType)) {
+            // 此时尚未输出模型事件，满足条件时可以在同一 SSE 连接内安全换腿。
+            const errorText = await readStreamSnippet(upstream.stream);
+            throw statusFailure(upstream.status || 502, `chat upstream ${upstream.status || 502}: ${errorText.slice(0, 300)}`);
+          }
+          providerPool.remember(affinityKeys, target);
+          pipeChatResponse(upstream, clientRes, model, target.name, stopHeartbeat, prepared.toolContext, (response) => {
+            responseHistory.recordResponse(response);
+            providerPool.remember(affinityKeys, target, [`response:${response.id}`]);
+          });
           return;
         }
-        let chatJson;
-        try { chatJson = JSON.parse(r.bodyText); } catch { chatJson = null; }
-        if (!chatJson) { if (!clientRes.headersSent) clientRes.writeHead(502, { 'content-type': 'application/json' }); clientRes.end(JSON.stringify({ error: 'chat upstream non-JSON' })); return; }
-        const respObj = chatToResponses(chatJson, model);
-        flog(`CHAT-RESP ${model} | output=${respObj.output.map(o => o.type).join(',')}`);
-        emitResponsesSse(clientRes, respObj);
+
+        if (attemptBody) {
+          attemptBody.model = upstreamModel(target, model);
+          // 官方通道适配 chatgpt.com 参数限制（store:false 注入、max_output_tokens 移除）
+          if (provider.platform === 'openai') adaptOfficialResponsesBody(attemptBody);
+        }
+        const upstreamPath = joinUpstreamPath(target.prefix, url.replace(/^\/v1/, ''));
+        const upstream = await openTargetStream(
+          target,
+          upstreamPath,
+          headers,
+          attemptBody ? JSON.stringify(attemptBody) : bodyBuf0.toString('utf8'),
+          abortController.signal,
+          timeouts,
+          clientReq.method,
+        );
+        if (clientClosed) {
+          upstream.socket.destroy();
+          return;
+        }
+        if (isRetryableProviderFailure({ status: upstream.status }) && hasFallback) {
+          // 原生腿只有在响应头阶段判断为可重试时换腿；开始 pipe 后绝不重放。
+          const errorText = await readStreamSnippet(upstream.stream);
+          throw statusFailure(upstream.status, `native upstream ${upstream.status}: ${errorText.slice(0, 300)}`);
+        }
+        providerPool.remember(affinityKeys, target);
+        stopHeartbeat();
+        pipeNativeResponse(upstream, clientRes, `${model || '?'} -> ${target.name}`);
         return;
+      } catch (error) {
+        lastError = error;
+        if (clientClosed) return;
+        if (hasFallback && isRetryableProviderFailure(error)) {
+          log(`provider failover [${target.name}]`, error.message);
+          flog(`FAILOVER ${model} | provider=${target.name} | ${error.message}`);
+          continue;
+        }
+        break;
       }
-      const socket = await connectTls(target.host, target.viaProxy);
-      clientRes.on('close', () => socket.destroy()); // 客户端断开即掐上游
-      rawHttpRequest(socket, target.host, upstreamPath, clientReq.method, headers, bodyBuf, clientRes, `${model || '?'} -> ${target.name}`);
-    } catch (e) {
-      log(`route error [${target.name}]`, e.message);
-      if (!clientRes.headersSent) clientRes.writeHead(502, { 'content-type': 'application/json' });
-      clientRes.end(JSON.stringify({ error: `router error: ${e.message}` }));
+    }
+
+    stopHeartbeat();
+    if (clientClosed) return;
+    const error = lastError || new Error('没有可用的上游目标');
+    log('route error', error.message);
+    if (clientRes.headersSent) {
+      emitResponsesErrorSse(clientRes, `router error: ${error.message}`, error.code || 'upstream_error');
+    } else {
+      const status = error.code === 'context_length_exceeded' ? 400 : 502;
+      clientRes.writeHead(status, { 'content-type': 'application/json' });
+      clientRes.end(JSON.stringify({ error: { code: error.code || 'upstream_error', message: `router error: ${error.message}` } }));
     }
   });
 });

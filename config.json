@@ -5,6 +5,23 @@
     "host": "127.0.0.1",
     "port": 10808
   },
+  "timeouts": {
+    "connectMs": 15000,
+    "responseHeaderMs": 120000,
+    "streamIdleMs": 600000,
+    "requestMs": 600000
+  },
+  "heartbeatMs": 15000,
+  "providerPool": {
+    "_comment": "同一模型配置多条 target 时记录成功供应商；仅对连接错误、408、429、5xx 安全换腿",
+    "maxEntries": 2048,
+    "ttlMs": 86400000
+  },
+  "responseHistory": {
+    "_comment": "只缓存 previous_response_id 对应的工具调用，不保存完整对话正文",
+    "maxEntries": 512,
+    "ttlMs": 86400000
+  },
   "paths": {
     "auth": null,
     "catalog": null
@@ -17,14 +34,17 @@
     {
       "match": "^(gpt-|codex-|o\\d|computer-use)",
       "name": "openai",
+      "platform": "openai",
       "host": "chatgpt.com",
       "prefix": "/backend-api/codex",
       "viaProxy": true,
-      "vision": true
+      "vision": true,
+      "wireApi": "responses"
     },
     {
       "match": "^deepseek-",
       "name": "deepseek",
+      "platform": "deepseek",
       "host": "api.deepseek.com",
       "prefix": "",
       "viaProxy": false,
@@ -35,21 +55,51 @@
     {
       "match": "^qwen",
       "name": "bailian",
+      "platform": "dashscope",
       "host": "token-plan.cn-beijing.maas.aliyuncs.com",
       "prefix": "/compatible-mode/v1",
       "viaProxy": false,
       "vision": true,
-      "envKey": "BAILIAN_API_KEY",
+      "envKey": "aliyun_video_key",
       "wireApi": "chat"
     }
   ],
   "supportsResponses": {
-    "_comment": "精确声明哪些模型原生支持 Responses 协议（previous_response_id）。DeepSeek-V4-Pro 尚未支持，不在此列",
+    "_comment": "兼容旧配置名：这些模型在 /models 中只声明 streaming；有界工具历史不等于完整会话状态，因此不声明 previous_response_id",
     "slugs": [
       "deepseek-v4-flash",
       "qwen3.8-max"
     ]
   },
+  "modelCapabilities": [
+    {
+      "_comment": "DeepSeek V4 路由别名的长上下文预算",
+      "match": "^deepseek-v4-(flash|pro)$",
+      "contextWindow": 1000000,
+      "maxOutputTokens": 65536,
+      "safetyRatio": 0.9,
+      "protocolReserveTokens": 1024,
+      "imageTokens": 2048
+    },
+    {
+      "_comment": "DeepSeek 官方 chat/reasoner 使用保守的 128K 窗口",
+      "match": "^deepseek-(chat|reasoner)$",
+      "contextWindow": 128000,
+      "maxOutputTokens": 8192,
+      "safetyRatio": 0.9,
+      "protocolReserveTokens": 1024,
+      "imageTokens": 2048
+    },
+    {
+      "_comment": "Qwen 长上下文模型预算，可按实际套餐覆盖",
+      "match": "^qwen3\\.8-max$",
+      "contextWindow": 1000000,
+      "maxOutputTokens": 65536,
+      "safetyRatio": 0.9,
+      "protocolReserveTokens": 1024,
+      "imageTokens": 2048
+    }
+  ],
   "modelContext": {
     "_comment": "路由启动时写回 models.json，让桌面端做滑动窗口/压缩，避免第三方模型每轮全量重发历史",
     "enabled": true,
@@ -65,7 +115,7 @@
     "host": "token-plan.cn-beijing.maas.aliyuncs.com",
     "prefix": "/compatible-mode/v1",
     "model": "qwen3.8-max",
-    "envKey": "BAILIAN_API_KEY",
+    "envKey": "aliyun_video_key",
     "prompt": "Describe this image concisely (2-4 sentences) for a coding assistant that cannot see it. Focus on text/UI elements/code/error messages if present.",
     "maxTokens": 300
   }

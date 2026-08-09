@@ -12,7 +12,8 @@
     "stop": "bash scripts/stop-router.sh",
     "restart": "bash scripts/restart-router.sh",
     "status": "bash scripts/status-router.sh",
-    "test": "bash scripts/test-router.sh",
+    "test": "node --test \"test/*.test.mjs\"",
+    "test:integration": "bash scripts/test-router.sh",
     "restore:official": "bash scripts/restore-official.sh",
     "restore:custom": "bash scripts/restore-custom.sh"
   },

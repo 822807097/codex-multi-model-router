@@ -28,7 +28,8 @@ $env:ROUTER_LOG = Join-Path (Split-Path $router) 'router.log'
 function Get-EnvAny($n) { $v = [Environment]::GetEnvironmentVariable($n, 'User'); if (-not $v) { $v = [Environment]::GetEnvironmentVariable($n, 'Machine') }; $v }
 $keySet = @{}
 if (Test-Path $cfgPath) {
-    $cfg = Get-Content $cfgPath -Raw | ConvertFrom-Json
+    # 显式 UTF8：Windows PowerShell 5.1 的 Get-Content 默认按 ANSI 解码，会把中文注释读坏导致 JSON 解析失败
+    $cfg = Get-Content $cfgPath -Raw -Encoding UTF8 | ConvertFrom-Json
     foreach ($t in @($cfg.targets)) { if ($t.envKey) { $keySet[$t.envKey] = $true } }
     if ($cfg.visionRelay.envKey) { $keySet[$cfg.visionRelay.envKey] = $true }
 }
