@@ -2,6 +2,7 @@
   "_comment": "路由配置文件：修改后执行 restart-router.ps1 生效",
   "port": 15730,
   "proxy": {
+    "_comment": "所有 viaProxy=true 的官方或自定义 HTTPS 通道共用此 HTTP CONNECT 代理；v2rayN 请填写 HTTP/混合端口",
     "host": "127.0.0.1",
     "port": 10808
   },
@@ -22,16 +23,30 @@
     "maxEntries": 512,
     "ttlMs": 86400000
   },
+  "goalCheckpoint": {
+    "_comment": "仅在 Chat 裁剪旧轮次时生成九栏目目标检查点；来源和响应体均有硬上限，只缓存摘要、哈希及有界关联元数据",
+    "enabled": true,
+    "maxEntries": 128,
+    "maxResponseIdsPerTask": 128,
+    "ttlMs": 86400000,
+    "sourceTokenBudget": 128000,
+    "sourceWindowRatio": 0.2,
+    "maxOutputTokens": 2048,
+    "requestMs": 120000
+  },
   "paths": {
     "auth": null,
     "catalog": null
   },
   "oauth": {
+    "_comment": "viaProxy=null 时 token 刷新继承当前官方 target 的直连/代理策略；设为 true/false 可单独覆盖",
     "client_id": "app_EMoamEEZ73f0CkXaXp7hrann",
-    "refresh_skew_seconds": 30
+    "refresh_skew_seconds": 30,
+    "viaProxy": null
   },
   "targets": [
     {
+      "_comment": "官方模型示例为走代理；改为 false 即可直连，不影响登录态和 Responses 协议",
       "match": "^(gpt-|codex-|o\\d|computer-use)",
       "name": "openai",
       "platform": "openai",
@@ -42,8 +57,21 @@
       "wireApi": "responses"
     },
     {
-      "match": "^deepseek-",
-      "name": "deepseek",
+      "_comment": "DeepSeek V4 Flash 官方原生 Responses，优先保留原生事件和工具语义；国内默认直连",
+      "match": "^deepseek-v4-flash$",
+      "name": "deepseek-responses",
+      "platform": "deepseek",
+      "host": "api.deepseek.com",
+      "prefix": "/v1",
+      "viaProxy": false,
+      "vision": false,
+      "envKey": "DEEPSEEK_API_KEY",
+      "wireApi": "responses"
+    },
+    {
+      "_comment": "其他 DeepSeek 型号保留 OpenAI Chat 兼容转换；如上游也支持原生 Responses 可按型号另设 target",
+      "match": "^deepseek-(?!v4-flash$)",
+      "name": "deepseek-chat",
       "platform": "deepseek",
       "host": "api.deepseek.com",
       "prefix": "",
@@ -53,6 +81,7 @@
       "wireApi": "chat"
     },
     {
+      "_comment": "Qwen 默认直连；若当前网络需要代理，可把 viaProxy 改为 true",
       "match": "^qwen",
       "name": "bailian",
       "platform": "dashscope",
@@ -112,10 +141,12 @@
     ]
   },
   "visionRelay": {
+    "_comment": "视觉中继也可独立选择直连或共用顶层 HTTP CONNECT 代理",
     "host": "token-plan.cn-beijing.maas.aliyuncs.com",
     "prefix": "/compatible-mode/v1",
     "model": "qwen3.8-max",
     "envKey": "aliyun_video_key",
+    "viaProxy": false,
     "prompt": "Describe this image concisely (2-4 sentences) for a coding assistant that cannot see it. Focus on text/UI elements/code/error messages if present.",
     "maxTokens": 300
   }

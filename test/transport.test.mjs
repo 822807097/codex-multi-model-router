@@ -6,6 +6,7 @@ import { Duplex, Readable } from 'node:stream';
 import {
   DechunkTransform,
   openHttpsStream,
+  rawHttpsRequest,
   resolveTimeouts,
   withTimeout,
 } from '../lib/transport.mjs';
@@ -76,6 +77,29 @@ test('openHttpsStream 在响应头到达后立即返回可读流', async () => {
   assert.match(socket.request, /^POST \/chat\/completions HTTP\/1\.1/);
 });
 
+test('openHttpsStream 把每条目标的直连或代理策略原样交给连接器', async () => {
+  const socket = new FakeSocket(['HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok']);
+  let connectionOptions = null;
+  const opened = openHttpsStream({
+    host: 'custom.example.com',
+    path: '/v1/chat/completions',
+    viaProxy: true,
+    proxy: { host: '127.0.0.1', port: 10808 },
+    body: '{}',
+    timeouts: { connectMs: 50, responseHeaderMs: 50, streamIdleMs: 50, requestMs: 50 },
+    connector: async (options) => {
+      connectionOptions = options;
+      return socket;
+    },
+  });
+  queueMicrotask(() => socket.startResponse());
+
+  const response = await opened;
+  assert.equal(await collect(response.stream), 'ok');
+  assert.equal(connectionOptions.viaProxy, true);
+  assert.deepEqual(connectionOptions.proxy, { host: '127.0.0.1', port: 10808 });
+});
+
 test('openHttpsStream 的响应头超时会销毁上游 socket', async () => {
   const socket = new FakeSocket();
   await assert.rejects(openHttpsStream({
@@ -123,6 +147,59 @@ test('客户端取消会在流式响应期间终止上游 body', async () => {
   const body = collect(response.stream);
   controller.abort();
   await assert.rejects(body, { name: 'AbortError' });
+  assert.equal(socket.destroyed, true);
+});
+
+test('rawHttpsRequest 超过非流式响应体上限时销毁上游 socket', async () => {
+  const socket = new FakeSocket([
+    'HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\r\n',
+    JSON.stringify({ content: 'x'.repeat(1_024) }),
+  ]);
+  const request = rawHttpsRequest({
+    host: 'example.com',
+    path: '/chat/completions',
+    body: '{}',
+    maxResponseBytes: 128,
+    timeouts: { connectMs: 50, responseHeaderMs: 50, streamIdleMs: 50, requestMs: 50 },
+    connector: async () => socket,
+  });
+  queueMicrotask(() => socket.startResponse());
+
+  await assert.rejects(request, /response body too large/);
+  assert.equal(socket.destroyed, true);
+});
+
+test('rawHttpsRequest 未显式配置时也使用安全的默认响应体上限', async () => {
+  const socket = new FakeSocket([
+    'HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\n\r\n',
+    Buffer.alloc(8 * 1024 * 1024 + 1, 120),
+  ]);
+  const request = rawHttpsRequest({
+    host: 'example.com',
+    path: '/control',
+    body: '{}',
+    timeouts: { connectMs: 50, responseHeaderMs: 50, streamIdleMs: 50, requestMs: 500 },
+    connector: async () => socket,
+  });
+  queueMicrotask(() => socket.startResponse());
+
+  await assert.rejects(request, /limit 8388608 bytes/);
+  assert.equal(socket.destroyed, true);
+});
+
+test('rawHttpsRequest 在连接器返回前已取消时立即销毁 socket', async () => {
+  const socket = new FakeSocket();
+  const controller = new AbortController();
+  controller.abort();
+
+  await assert.rejects(rawHttpsRequest({
+    host: 'example.com',
+    path: '/control',
+    body: '{}',
+    signal: controller.signal,
+    timeouts: { connectMs: 50, responseHeaderMs: 50, streamIdleMs: 50, requestMs: 50 },
+    connector: async () => socket,
+  }), { name: 'AbortError' });
   assert.equal(socket.destroyed, true);
 });
 

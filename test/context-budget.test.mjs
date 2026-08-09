@@ -55,7 +55,33 @@ test('完整预算扣除工具定义和输出预留后按完整轮次裁剪', ()
     { role: 'system', content: '系统规则' },
     { role: 'user', content: '最新请求' },
   ]);
+  assert.deepEqual(result.removedMessages, [
+    { role: 'user', content: '旧请求'.repeat(600) },
+    { role: 'assistant', content: '', tool_calls: [{ id: 'call_old', type: 'function', function: { name: 'read', arguments: '{}' } }] },
+    { role: 'tool', tool_call_id: 'call_old', content: '旧结果'.repeat(600) },
+  ]);
   assert.ok(result.toolTokens > 250);
+});
+
+test('检查点预留空间会从消息预算中精确扣除', () => {
+  const messages = [
+    { role: 'system', content: '规则' },
+    { role: 'user', content: '旧轮次'.repeat(300) },
+    { role: 'assistant', content: '旧回复'.repeat(300) },
+    { role: 'user', content: '最新请求' },
+  ];
+  const capability = {
+    contextWindow: 2_000,
+    maxOutputTokens: 400,
+    safetyRatio: 0.9,
+    protocolReserveTokens: 100,
+    imageTokens: 2_048,
+  };
+  const baseline = fitMessagesToContext(messages, [], capability);
+  const reserved = fitMessagesToContext(messages, [], capability, { reserveTokens: 250 });
+
+  assert.equal(reserved.messageBudget, baseline.messageBudget - 250);
+  assert.ok(reserved.trimmedGroups >= baseline.trimmedGroups);
 });
 
 test('最新轮次自身超过输入预算时返回 fits=false', () => {

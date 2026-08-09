@@ -3,11 +3,20 @@ import assert from 'node:assert/strict';
 
 import {
   adaptOfficialResponsesBody,
+  applyCheckpointProviderOptions,
   applyChatProviderOptions,
   buildProviderAuthHeaders,
+  resolveOAuthViaProxy,
   resolveRequestProtocol,
   resolveProvider,
 } from '../lib/provider-adapters.mjs';
+
+test('OAuth 刷新默认继承官方目标网络策略并允许显式覆盖', () => {
+  assert.equal(resolveOAuthViaProxy({}, { viaProxy: true }), true);
+  assert.equal(resolveOAuthViaProxy({}, { viaProxy: false }), false);
+  assert.equal(resolveOAuthViaProxy({ viaProxy: false }, { viaProxy: true }), false);
+  assert.equal(resolveOAuthViaProxy({ viaProxy: true }, { viaProxy: false }), true);
+});
 
 test('供应商协议由显式配置决定并兼容旧 wireApi', () => {
   assert.equal(resolveProvider({ name: 'deepseek', wireApi: 'chat' }).wireApi, 'chat');
@@ -26,6 +35,27 @@ test('DeepSeek Chat 保留 reasoning_effort 并启用 usage 流', () => {
   assert.equal(request.reasoning_effort, 'high');
   assert.equal(request.max_tokens, 2048);
   assert.equal(request.parallel_tool_calls, true);
+});
+
+test('检查点非流式请求按供应商关闭推理以保留正文预算', () => {
+  const base = { model: 'checkpoint-model', messages: [], stream: false };
+  assert.equal(
+    applyCheckpointProviderOptions(base, resolveProvider({ platform: 'deepseek', wireApi: 'chat' })).reasoning_effort,
+    'none',
+  );
+  assert.equal(
+    applyCheckpointProviderOptions(base, resolveProvider({ platform: 'dashscope', wireApi: 'chat' })).enable_thinking,
+    false,
+  );
+  assert.deepEqual(
+    applyCheckpointProviderOptions(base, resolveProvider({ platform: 'openrouter', wireApi: 'chat' })).reasoning,
+    { effort: 'none' },
+  );
+  assert.equal(
+    applyCheckpointProviderOptions(base, resolveProvider({ platform: 'minimax', wireApi: 'chat' })).reasoning_split,
+    false,
+  );
+  assert.equal(applyCheckpointProviderOptions(base, resolveProvider({ platform: 'generic', wireApi: 'chat' })).stream, false);
 });
 
 test('OpenRouter 与国内兼容网关使用各自推理字段', () => {
