@@ -784,7 +784,8 @@ const server = http.createServer(async (clientReq, clientRes) => {
           }
           const contentType = String(upstream.headers['content-type'] || '');
           if (upstream.status !== 200 || /application\/json/i.test(contentType)) {
-            // 此时尚未输出模型事件，满足条件时可以在同一 SSE 连接内安全换腿。
+            // 此时尚未输出模型事件；仅当错误属于可重试分类（连接/网络类、408、429、5xx）
+            // 且存在备用目标时，才会在同一个 SSE 连接内安全换腿。
             const errorText = await readStreamSnippet(upstream.stream);
             throw statusFailure(upstream.status || 502, `chat upstream ${upstream.status || 502}: ${errorText.slice(0, 300)}`);
           }
