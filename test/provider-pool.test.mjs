@@ -31,11 +31,17 @@ test('粘性映射遵守 LRU 数量上限和 TTL', () => {
   assert.equal(pool.hasAffinity('a'), false);
 });
 
-test('failover 仅重试连接类错误、408、429 和 5xx', () => {
+test('failover 仅重试连接/网络类错误、408、429 和 5xx', () => {
   assert.equal(isRetryableProviderFailure({ status: 408 }), true);
   assert.equal(isRetryableProviderFailure({ status: 429 }), true);
   assert.equal(isRetryableProviderFailure({ status: 503 }), true);
   assert.equal(isRetryableProviderFailure(Object.assign(new Error('connect ECONNREFUSED'), { code: 'ECONNREFUSED' })), true);
+  // 无标准错误码的网络/传输类错误消息同样可换腿（超时、响应头前断连、挂起、关键词命中）
+  assert.equal(isRetryableProviderFailure(new Error('request timed out after 30000ms')), true);
+  assert.equal(isRetryableProviderFailure(new Error('upstream closed before response header')), true);
+  assert.equal(isRetryableProviderFailure(new Error('socket hang up')), true);
+  assert.equal(isRetryableProviderFailure(new Error('TLS connect failed for api.example.com')), true);
+  assert.equal(isRetryableProviderFailure(new Error('ordinary business error')), false);
   assert.equal(isRetryableProviderFailure(Object.assign(new Error('aborted'), { name: 'AbortError' })), false);
   assert.equal(isRetryableProviderFailure({ status: 400 }), false);
   assert.equal(isRetryableProviderFailure({ status: 401 }), false);

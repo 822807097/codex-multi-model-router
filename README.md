@@ -355,7 +355,13 @@ cd D:\codex-multi-model-router\scripts
 | `upstreamModel` / `modelMap` | 把桌面端模型 slug 映射成上游实际接受的模型名 |
 | `timeouts` | 单目标覆盖顶层超时 |
 
-**故障换腿规则（安全设计）**：只有连接失败、HTTP 408、429、5xx 会在**尚未输出模型事件时**换到下一候选目标；客户端取消、400、401、403、上下文超限**不会**重试。
+**故障换腿规则（安全设计）**：只有以下三类情况会在**尚未输出模型事件**且**存在备用目标**时换到下一候选目标：
+
+1. **连接类错误码**：`ECONNREFUSED`、`ECONNRESET`、`EHOSTUNREACH`、`ENETUNREACH`、`ENOTFOUND`、`EAI_AGAIN`、`ETIMEDOUT`、`EPIPE`
+2. **网络/传输类错误**：错误消息含 `connect` / `socket` / `network` / `dns` / `tls` 关键词，或为超时、上游在响应头前关闭连接、hang up 等（即使没有标准错误码）
+3. **HTTP 状态**：408、429、5xx
+
+客户端主动取消、400、401、403、上下文超限**不会**重试；一旦开始输出模型事件，**绝不重放换腿**。
 
 **官方通道（`platform: "openai"`）自动适配**：请求未显式声明 `store` 时自动注入 `store: false`，并移除 `max_output_tokens`（chatgpt.com 会以 400 拒绝这两类请求）。只在你没声明时生效，不覆盖你的明确意图。
 
