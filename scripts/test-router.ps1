@@ -1,5 +1,5 @@
 # test-router.ps1 — 改完 key/URL 后的一键验收
-# 依次检查：路由存活 → 环境变量存在 → 两条文本腿 → 视觉中继 → 官方腿(可选)
+# 依次检查：路由存活 → 环境变量存在 → 两条文本通道 → 视觉中继 → 官方通道(可选)
 # 用法：powershell -ExecutionPolicy Bypass -File test-router.ps1 [-SkipOfficial] [-SkipVision]
 # 注意：改完 Machine 环境变量后必须先 restart-router.ps1，再跑本测试
 param([switch]$SkipOfficial, [switch]$SkipVision)
@@ -43,10 +43,10 @@ try {
 $keyNames = if ($env:ROUTER_ENV_KEYS) { $env:ROUTER_ENV_KEYS.Split(',') } else { @('DEEPSEEK_API_KEY', 'BAILIAN_API_KEY') }
 foreach ($k in $keyNames) {
     if (Get-EnvAny $k) { Write-Host "[env] $k 已设置" -ForegroundColor Green }
-    else { Write-Host "[env] $k 未设置！对应腿会失败" -ForegroundColor Red }
+    else { Write-Host "[env] $k 未设置！对应通道会失败" -ForegroundColor Red }
 }
 
-# 2. 文本腿：发一句 "Reply exactly: OK"，能拿回回复即通
+# 2. 文本通道：发一句 "Reply exactly: OK"，能拿回回复即通
 function Test-TextModel($model) {
     $sw = [System.Diagnostics.Stopwatch]::StartNew()
     $body = @{ model = $model; store = $false; input = @(@{ role = 'user'; content = @(@{ type = 'input_text'; text = 'Reply exactly: OK' }) }) } | ConvertTo-Json -Depth 6
@@ -92,14 +92,14 @@ if (-not $SkipVision) {
     }
 }
 
-# 4. 官方腿：流式请求只看状态码。200=通；429=链路通但额度尽；其余=失败（查本地代理）
+# 4. 官方通道：流式请求只看状态码。200=通；429=链路通但额度尽；其余=失败（查本地代理）
 if (-not $SkipOfficial) {
     $body = '{"model":"gpt-5.4-mini","store":false,"stream":true,"input":[{"role":"user","content":[{"type":"input_text","text":"Reply exactly: OK"}]}]}'
     $code = & curl.exe -s -o NUL -w '%{http_code}' --max-time 25 -X POST "$base/v1/responses" -H 'content-type: application/json' -H 'Authorization: Bearer router-local' -d $body 2>$null
     switch ($code) {
-        '200' { Write-Host "[OK]   官方腿 -> 200 流式正常" -ForegroundColor Green; $results += [pscustomobject]@{ model = 'official'; ok = $true } }
-        '429' { Write-Host "[OK]   官方腿 -> 429 额度用尽（链路通）" -ForegroundColor Yellow; $results += [pscustomobject]@{ model = 'official'; ok = $true } }
-        default { Write-Host "[FAIL] 官方腿 -> HTTP $code（检查本地代理是否运行）" -ForegroundColor Red; $results += [pscustomobject]@{ model = 'official'; ok = $false } }
+        '200' { Write-Host "[OK]   官方通道 -> 200 流式正常" -ForegroundColor Green; $results += [pscustomobject]@{ model = 'official'; ok = $true } }
+        '429' { Write-Host "[OK]   官方通道 -> 429 额度用尽（链路通）" -ForegroundColor Yellow; $results += [pscustomobject]@{ model = 'official'; ok = $true } }
+        default { Write-Host "[FAIL] 官方通道 -> HTTP $code（检查本地代理是否运行）" -ForegroundColor Red; $results += [pscustomobject]@{ model = 'official'; ok = $false } }
     }
 }
 

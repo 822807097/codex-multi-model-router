@@ -32,11 +32,11 @@ for k in $KEY_NAMES; do
     if [ -n "${!k:-}" ]; then
         echo "[env] $k 已设置"
     else
-        echo "[env] $k 未设置！对应腿会失败" >&2
+        echo "[env] $k 未设置！对应通道会失败" >&2
     fi
 done
 
-# 2. 文本腿测试
+# 2. 文本通道测试
 test_model() {
     local model=$1
     local body="{\"model\":\"$model\",\"store\":false,\"input\":[{\"role\":\"user\",\"content\":[{\"type\":\"input_text\",\"text\":\"Reply exactly: OK\"}]}]}"
@@ -62,7 +62,7 @@ if [ "$SKIP_VISION" = false ]; then
     echo "[视觉中继] 测试跳过（需要生成图片，暂不支持 bash 版）"
 fi
 
-# 4. 官方腿（可选）
+# 4. 官方通道（可选）
 if [ "$SKIP_OFFICIAL" = false ]; then
     code=''
     code=$(curl -s -o /dev/null -w '%{http_code}' -X POST "$BASE/v1/responses" \
@@ -71,9 +71,9 @@ if [ "$SKIP_OFFICIAL" = false ]; then
         -d '{"model":"gpt-5.4-mini","store":false,"stream":true,"input":[{"role":"user","content":[{"type":"input_text","text":"Reply exactly: OK"}]}]}' \
         --max-time 25 2>/dev/null)
     case $code in
-        200) echo "[OK]   官方腿 -> 200 流式正常" ;;
-        429) echo "[OK]   官方腿 -> 429 额度用尽（链路通）" ;;
-        *)   echo "[FAIL] 官方腿 -> HTTP $code（检查本地代理是否运行）" >&2 ;;
+        200) echo "[OK]   官方通道 -> 200 流式正常" ;;
+        429) echo "[OK]   官方通道 -> 429 额度用尽（链路通）" ;;
+        *)   echo "[FAIL] 官方通道 -> HTTP $code（检查本地代理是否运行）" >&2 ;;
     esac
 fi
 

@@ -92,7 +92,7 @@ const V2RAY_PROXY = {
 const CLIENT_ID = cfg.oauth?.client_id || 'app_EMoamEEZ73f0CkXaXp7hrann';
 const REFRESH_SKEW_SECONDS = cfg.oauth?.refresh_skew_seconds || 30;
 
-// 路由规则：按请求体 model 字段收集所有匹配目标，优先使用会话粘性目标；失败时安全换腿
+// 路由规则：按请求体 model 字段收集所有匹配目标，优先使用会话粘性目标；失败时安全切换备用目标
 // match: 正则字符串 | host: 上游域名 | prefix: 路径前缀
 // viaProxy: true=经本地代理 CONNECT 隧道 | vision: false=文本模型走视觉中继
 // envKey: API key 所在环境变量名（官方通道不用，走 auth.json）
@@ -447,7 +447,7 @@ function statusFailure(status, message) {
 async function prepareAttemptBody(bodyObj, target, isChat, model, signal) {
   const attemptBody = bodyObj ? structuredClone(bodyObj) : null;
   if (isChat && attemptBody) {
-    // 只为 Chat 转换腿补工具调用历史；原生 Responses 仍由上游维护完整状态。
+    // 只为 Chat 转换通道补工具调用历史；原生 Responses 通道仍由上游维护完整状态。
     const restored = responseHistory.restoreRequest(attemptBody);
     attemptBody.input = restored.input;
     if (restored.restoredCallIds.length) {
@@ -785,7 +785,7 @@ const server = http.createServer(async (clientReq, clientRes) => {
           const contentType = String(upstream.headers['content-type'] || '');
           if (upstream.status !== 200 || /application\/json/i.test(contentType)) {
             // 此时尚未输出模型事件；仅当错误属于可重试分类（连接/网络类、408、429、5xx）
-            // 且存在备用目标时，才会在同一个 SSE 连接内安全换腿。
+            // 且存在备用目标时，才会在同一个 SSE 连接内安全切换备用目标。
             const errorText = await readStreamSnippet(upstream.stream);
             throw statusFailure(upstream.status || 502, `chat upstream ${upstream.status || 502}: ${errorText.slice(0, 300)}`);
           }
@@ -825,7 +825,7 @@ const server = http.createServer(async (clientReq, clientRes) => {
           return;
         }
         if (isRetryableProviderFailure({ status: upstream.status }) && hasFallback) {
-          // 原生腿只有在响应头阶段判断为可重试时换腿；开始 pipe 后绝不重放。
+          // 原生 Responses 通道只有在响应头阶段判断为可重试时才切换备用目标；开始 pipe 后绝不重放。
           const errorText = await readStreamSnippet(upstream.stream);
           throw statusFailure(upstream.status, `native upstream ${upstream.status}: ${errorText.slice(0, 300)}`);
         }
