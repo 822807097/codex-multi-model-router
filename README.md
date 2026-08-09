@@ -1,177 +1,244 @@
 # codex-multi-model-router
 
-Codex 桌面端本地多模型路由代理，让官方 GPT、DeepSeek、Qwen 等模型在同一选择器里共存，并为文本模型提供视觉中继能力。
+一个运行在你自己电脑上的**本地多模型路由代理**：让 Codex 桌面端能同时使用**官方 GPT、DeepSeek、Qwen** 等多个模型，互相之间可以随时切换，并且不用装任何 npm 依赖（纯 Node.js 实现）。
 
-## 特性
+> **写给第一次使用的人**：本文档从「下载项目」到「桌面端出现模型」的每一步都写了操作方法和预期结果。遇到问题请先看文末的「常见问题」，大部分坑都列在里面。
 
-- **多模型共存**：官方 GPT 系列、DeepSeek、Qwen 等模型同时出现在 Codex 桌面端选择器中，会话内可热切换
-- **持续目标检查点**：长任务触发旧轮次裁剪时，自动保留目标、硬性约束、进度、决定、工作集、失败记录和下一步
-- **跨模型任务接力**：同一强任务键下切换 DeepSeek、Qwen、官方 GPT 等模型时迁移任务语义，不迁移供应商私有会话状态
-- **原生 Responses 优先**：已支持 Responses 的模型（默认含 DeepSeek V4 Flash）原样透传，其他 OpenAI-compatible 模型走 Chat 真流式转换
-- **Responses ↔ Chat 真流式转换**：对 `wireApi: "chat"` 的通道实时转换 Chat SSE，支持文本、推理和并行 `tool_calls` 分片
-- **国内外供应商适配**：显式区分 DeepSeek、百炼/通义、硅基流动、OpenRouter、MiniMax 与通用 OpenAI-compatible 网关的推理字段
-- **逐通道网络策略**：官方模型和任意自定义模型都可独立选择直连或经本地 HTTP CONNECT 代理
-- **工具调用转换**：自动转换 `tools` 定义与 `tool_calls`/`tool` 结果，按 index/call ID 重组异常分片
-- **视觉中继**：为不支持图片的文本模型（如 DeepSeek）提供“借眼”能力——收到图片时先调用视觉模型生成描述，注入上下文后转发
-- **无感更新**：`/_admin/shutdown` 优雅退出 + 新进程立即接管，更新路由不打断在跑任务
-- **并发安全**：Node 事件循环 + 每请求独立状态 + 进程级异常兕底，多任务并发不崩溃
-- **1M 上下文**：`modelContext` 配置写回 models.json，支持 DeepSeek-V4-Flash 1M 上下文窗口
-- **零依赖**：纯 Node.js 实现，无需任何 npm 包，Node >= 18 即可运行
-- **密钥安全**：API Key 全部通过环境变量注入，配置文件无明文
-- **官方登录态复用**：自动读取 Codex 桌面端 auth.json，临期自动 refresh（single-flight 防并发竞态），无需二次登录
-- **一键运维**：提供启动/停止/重启/状态/测试/恢复官方配置/恢复自定义配置 7 个脚本
+---
 
-## 演示
+## 目录
 
-### 自定义模型共存 + 同一任务内切换
+- [一、它解决了什么问题](#一它解决了什么问题)
+- [二、准备工作（5 分钟）](#二准备工作5-分钟)
+- [三、新手完整配置教程（7 步）](#三新手完整配置教程7-步)
+- [四、日常使用与运维](#四日常使用与运维)
+- [五、config.json 完整配置参考](#五configjson-完整配置参考)
+- [六、接入任意 OpenAI 兼容模型（GLM / Kimi 等）](#六接入任意-openai-兼容模型glm--kimi-等)
+- [七、网络与代理（逐通道可选）](#七网络与代理逐通道可选)
+- [八、常见问题（新手问答）](#八常见问题新手问答)
+- [九、技术细节](#九技术细节)
 
-官方 GPT、DeepSeek、Qwen 等国内外模型可以同时出现在 Codex 桌面端的同一个模型菜单中。任务执行过程中无需新建聊天，可在当前聊天窗口逐轮切换任意已配置模型；路由会根据每轮请求中的 `model` 重新选路。未裁剪历史继续由桌面端随请求提供，路由负责补齐工具调用配对，并在裁剪发生时注入持续目标检查点。
+---
 
-![自定义模型共存并在同一任务内切换](docs/demo-model-switching.png)
+## 一、它解决了什么问题
 
-> 模型切换从下一轮请求生效。若当前回复仍在流式输出，请先等待本轮完成或主动停止；路由不会把半条回复、未完成工具调用或旧供应商的私有会话状态迁移给新模型。
-
-### 多模型共存 + 深度推理
-
-DeepSeek-V4-Flash 在 Codex 桌面端处理复杂代码审查任务，支持会话内热切换模型：
-
-![DeepSeek 代码审查](docs/demo-deepseek-coding.png)
-
-### 视觉中继：文本模型"借眼"看图
-
-给 DeepSeek-V4-Flash 发送截图，路由自动调用 Qwen3.8-Max 生成图片描述，DeepSeek 基于描述回答：
-
-![视觉中继截图识别](docs/demo-vision-relay.png)
-
-## 架构
+Codex 桌面端**同一时间只能配置一个模型供应商**，官方 GPT 和第三方模型无法在同一个选择器里共存。本项目在中间加了一个"路由器"：
 
 ```
-Codex 桌面端 ──▶ 127.0.0.1:15730 (router)
-   ├─ gpt-*/codex-*  ──▶ 直连或本地代理 ──▶ chatgpt.com（复用桌面端登录态）
-   ├─ deepseek-v4-flash ─▶ 原生 Responses ─▶ api.deepseek.com（环境变量 key）
-   ├─ 其他 deepseek-*   ─▶ Chat 兼容转换 ──▶ api.deepseek.com（环境变量 key）
-   └─ qwen*          ──▶ 直连或本地代理 ──▶ 阿里云 Token Plan（环境变量 key）
+Codex 桌面端 ──▶ 127.0.0.1:15730 (router，本项目)
+   ├─ gpt-*/codex-*     ──▶ chatgpt.com（复用桌面端 ChatGPT 登录态，可经代理）
+   ├─ deepseek-v4-flash ─▶ api.deepseek.com（原生 Responses，环境变量 key）
+   ├─ 其他 deepseek-*   ─▶ api.deepseek.com（Chat 兼容转换，环境变量 key）
+   └─ qwen*             ──▶ 阿里云 Token Plan（环境变量 key）
 ```
 
-Chat 通道的长任务上下文流程：
+你只需要把 Codex 桌面端的 `base_url` 指向这个路由器，路由器根据请求里的 `model` 字段把请求转发给对应的上游。
 
-```text
-Responses 全量历史 → Responses→Chat 转换 → 完整轮次预算
-  ├─ 未裁剪旧轮次：直接调用当前模型
-  └─ 裁剪旧轮次：目标锚点 + 旧检查点 + 有界旧历史
-                    → 当前模型非流式生成九栏目检查点
-                    → assistant 历史注入 → 主请求真流式输出
+**主要能力**：
+- 官方 GPT / DeepSeek / Qwen 在同一个模型菜单里共存，会话内随时切换
+- 长任务自动生成「目标检查点」，切换模型不丢任务进度（九栏目摘要：目标、约束、已完成、进行中……）
+- 文本模型收图时自动「借眼」：先让视觉模型看图写描述，再发给文本模型
+- 官方登录态自动复用 + 自动续期，第三方 key 全部走环境变量，不写进配置文件
+
+---
+
+## 二、准备工作（5 分钟）
+
+### 1. 确认 Node.js 已安装（版本 ≥ 18）
+
+打开终端（Windows 按 `Win + R` 输入 `powershell` 回车），输入：
+
+```powershell
+node -v
 ```
 
-检查点只驻留在路由进程内，并通过强任务键关联。摘要失败时优先复用同一任务上一份已校验检查点；没有可用检查点时才降级为原有完整轮次裁剪，不阻断主任务。路由不会伪造官方 Responses compaction item，也不会把 `previous_response_id` 声明成完整会话能力。
+- 看到 `v18.x` 或更高的版本号（如 `v22.14.0`）→ 继续
+- 提示 `'node' 不是内部或外部命令` → 去 <https://nodejs.org> 下载 LTS 版安装，装完**重新打开终端**再试
 
-视觉中继流程（文本模型收到图片时）：
+### 2. 下载本项目
+
+把项目下载/解压到一个固定目录，例如：
+
+- Windows：`D:\codex-multi-model-router`
+- 或直接用 git 克隆：`git clone https://github.com/822807097/codex-multi-model-router.git`
+
+> 建议目录路径**不要包含中文和空格**，避免部分脚本出问题。
+
+### 3. 了解几个关键文件
+
+| 文件 | 作用 | 要不要改 |
+|------|------|---------|
+| `codex-router.mjs` | 路由主程序 | 不用改 |
+| `lib/` | 路由的模块代码 | 不用改 |
+| `config.json` | 路由自己的配置（端口、各模型通道、key 变量名） | **要改**（按需） |
+| `models.template.json` | 模型目录模板（桌面端选择器显示哪些模型） | 复制一份改名后**要改** |
+| `scripts/` | 启动/停止/重启/测试脚本（.ps1 给 Windows，.sh 给 Linux/macOS） | 不用改 |
+
+> **本项目零 npm 依赖**：不需要执行 `npm install`。`package.json` 只是方便用 npm 命令的人，直接 `node codex-router.mjs` 就能运行。
+
+### 4. 搞定 API Key（三个渠道，按需准备）
+
+| 模型 | 去哪里申请 | 环境变量名 |
+|------|-----------|-----------|
+| 官方 GPT / Codex | **不需要 key**（复用桌面端 ChatGPT 登录态，见下文第 6 步） | - |
+| DeepSeek（deepseek-v4-flash 等） | <https://platform.deepseek.com> 创建 API Key | `DEEPSEEK_API_KEY` |
+| Qwen（qwen3.8-max，兼作视觉中继） | 阿里云百炼/Token Plan 创建 API Key | `aliyun_video_key` |
+
+**Windows 设置环境变量（推荐 GUI 方式）**：
+1. 按 `Win + S` 搜索「编辑系统环境变量」并打开
+2. 点「环境变量」→ 在「用户变量」区点「新建」
+3. 变量名填 `DEEPSEEK_API_KEY`，变量值填你的 key，确定
+4. 同样的方法再建 `aliyun_video_key`
+5. **关掉所有已打开的终端窗口再重开**（环境变量只对之后启动的程序生效）
+
+或者用命令行（PowerShell，效果相同）：
+
+```powershell
+setx DEEPSEEK_API_KEY "sk-你的key"
+setx aliyun_video_key "sk-你的key"
 ```
-用户发图 / 插件回传截图 → 路由拦截 → 调用视觉模型写描述 → 替换为 [image description: ...] → 转发给文本模型
+
+> 环境变量设置成**用户级**即可。路由的启动脚本会自动从用户/系统环境读取这些 key 注入到路由进程，所以**改完 key 后记得重启路由**（见「四、日常运维」）。
+
+---
+
+## 三、新手完整配置教程（7 步）
+
+> 全程约 10 分钟。核心思路：**告诉路由「有哪些模型、key 在哪」→ 告诉 Codex「去找路由」→ 启动路由 → 重启桌面端**。
+
+### 第 1 步：创建模型目录 models.json
+
+桌面端的选择器里显示哪些模型，由 `models.json` 决定。
+
+把项目里的 `models.template.json` **复制**一份到 Codex 数据目录，并改名为 `models.json`：
+
+- 默认位置：`C:\Users\你的用户名\.codex\models.json`（Linux/macOS 为 `~/.codex/models.json`）
+- 如果你设置了 `CODEX_HOME` 环境变量，则放在 `$CODEX_HOME\models.json`
+
+```powershell
+# Windows PowerShell 示例（把「你的用户名」替换成实际的）
+Copy-Item D:\codex-multi-model-router\models.template.json "$env:USERPROFILE\.codex\models.json"
 ```
 
-中继覆盖两类图片来源：
-- **用户直接贴图**（user 消息的 content）
-- **浏览器/电脑操作插件回传的屏幕截图**（function_call_output 的 output）
+模板里已包含 `deepseek-v4-flash` 和 `qwen3.8-max` 两个模型，可以直接用；想加模型见第六节。
 
-> 注意：视觉中继是“借眼”方案，适合理解截图内容（报错、UI、代码）。若要做**精确的 GUI 自动化操作**（browser / computer-use 插件），建议切换到原生视觉模型（qwen3.8-max 或官方 GPT），因为 2-4 句描述不足以支撑像素级定位。
+### 第 2 步：告诉路由模型通道和 key 的环境变量名
 
-## 快速开始
+打开 `config.json`，确认 `targets` 数组与你的 key 对应：
 
-### 1. 环境变量
-
-设置以下 Machine 级环境变量：
-
+```json
+{
+  "match": "^deepseek-v4-flash$",
+  "name": "deepseek-responses",
+  "envKey": "DEEPSEEK_API_KEY",
+  "wireApi": "responses"
+},
+{
+  "match": "^qwen",
+  "name": "bailian",
+  "envKey": "aliyun_video_key",
+  "wireApi": "chat"
+}
 ```
-DEEPSEEK_API_KEY=sk-xxx
-aliyun_video_key=sk-xxx
-```
 
-### 2. 模型目录
+- `match`：模型 ID 的匹配规则（正则）
+- `envKey`：**这个通道的 key 存在哪个环境变量里**（就是第二步里设置的变量名）
 
-复制 `models.template.json` 到 `~/.codex/models.json`（或 `CODEX_HOME/models.json`），按需增改模型条目。
+> 默认配置已经正确，**不需要改**。只有当你换 key 变量名或加模型时才动这里。
 
-**注意**：自定义模型必须包含 `input_modalities: ["text", "image"]` 才能在桌面端发图（前端门控）。
+### 第 3 步：修改 Codex 桌面端配置 config.toml
 
-### 3. 配置文件（Codex 接入路由）
+找到 Codex 的配置文件（和 models.json 同一个目录）：
 
-编辑 `~/.codex/config.toml`（不存在则新建）：
+- Windows：`C:\Users\你的用户名\.codex\config.toml`
+- Linux/macOS：`~/.codex/config.toml`
+
+**没有这个文件就新建一个**。用记事本打开，把内容改成（有旧内容建议先备份）：
 
 ```toml
 model = "gpt-5.6-terra"
 model_provider = "router"
-model_catalog_json = "~/.codex/models.json"
+model_catalog_json = "C:/Users/你的用户名/.codex/models.json"
 
 [model_providers.router]
 name = "LocalRouter"
 base_url = "http://127.0.0.1:15730/v1"
 wire_api = "responses"
-requires_openai_auth = true   # 门控钥匙：让桌面端按官方身份放行自定义模型
+requires_openai_auth = true
 supports_websockets = false
 ```
 
-**字段说明**：
-- `model_provider = "router"`：把默认供应商指向路由
-- `base_url`：路由监听地址（与 config.json 的 `port` 一致）
-- `wire_api = "responses"`：桌面端以 Responses API 与路由通信
-- `requires_openai_auth = true`：**关键**，桌面端选择器显示自定义模型的前提（门控钥匙）
-- `model_catalog_json`：模型目录，决定选择器里有哪些模型
+| 配置项 | 含义 | 注意事项 |
+|--------|------|---------|
+| `model = "gpt-5.6-terra"` | 默认使用的模型 | 可以填任意已在 models.json 里的 slug |
+| `model_provider = "router"` | 默认供应商指向路由 | 与下面的 `[model_providers.router]` 名字一致 |
+| `model_catalog_json` | 模型目录路径 | 必须是**绝对路径**，正斜杠 `/` 或双反斜杠 `\\` |
+| `base_url = "http://127.0.0.1:15730/v1"` | 路由的地址 | 端口必须和 `config.json` 里的 `port` 一致（默认 15730） |
+| `wire_api = "responses"` | 桌面端用 Responses 协议和路由通信 | 固定写 `"responses"` |
+| `requires_openai_auth = true` | **门控钥匙** | 没有这一行，桌面端选择器里**不显示**自定义模型 |
+| `supports_websockets = false` | 不用 WebSocket | 固定写 `false` |
 
-**关键**：`requires_openai_auth = true` 是桌面端选择器显示自定义模型的前提。
+### 第 4 步：启动路由
 
-### 4. 启动路由
-
-**Windows (PowerShell)**：
+**Windows（PowerShell）**，在项目目录下执行：
 
 ```powershell
-cd scripts
+cd D:\codex-multi-model-router\scripts
 .\start-router.ps1
 ```
 
-或使用无窗口启动（适合开机自启）：
+第一次运行如果报错：
+
+```
+无法加载文件 ...因为在此系统上禁止运行脚本
+```
+
+说明 PowerShell 执行策略限制了脚本，执行下面这条命令（只需一次）再重新启动：
 
 ```powershell
-wscript start-router-silent.vbs
+Set-ExecutionPolicy -Scope CurrentUser RemoteSigned
 ```
 
-**Linux/macOS (bash)**：
+看到类似下面的输出就是启动成功：
+
+```
+[2026-08-09T10:00:00.000Z] codex-router listening on 127.0.0.1:15730
+  config: D:\codex-multi-model-router\config.json
+  targets: openai, deepseek-responses, deepseek-chat, bailian
+```
+
+> `start-router.ps1` 是**前台运行**（窗口关掉路由就停了）。想要后台无窗口运行，改用：
+> ```powershell
+> wscript start-router-silent.vbs
+> ```
+
+**Linux/macOS（bash）**：
 
 ```bash
-cd scripts
+cd codex-multi-model-router/scripts
 chmod +x *.sh
 ./start-router.sh
+# 后台运行：
+# nohup ./start-router.sh > /tmp/codex-router.log 2>&1 &
 ```
 
-后台运行：
+### 第 5 步：验证路由工作正常
 
-```bash
-nohup ./start-router.sh > /tmp/codex-router.log 2>&1 &
+**方法一：浏览器访问**，打开 <http://127.0.0.1:15730/healthz>，应看到：
+
+```json
+{"ok":true,"targets":["openai","deepseek-responses","deepseek-chat","bailian"]}
 ```
 
-**npm 用户**：
+**方法二：跑一键测试脚本**（要求路由已启动、两个 key 都已设置）：
 
-```bash
-npm install
-npm run start
-```
-
-### 5. 验证
-
-```bash
-# Windows
+```powershell
+cd D:\codex-multi-model-router\scripts
 .\test-router.ps1
-
-# Linux/macOS
-./test-router.sh
-
-# 单元测试（不要求路由正在运行）
-npm test
-
-# 集成验收（要求路由已运行）
-npm run test:integration
 ```
 
-预期输出：
+预期输出（耗时数值不重要，重要的是 `[OK]`）：
+
 ```
 [路由] 运行中 targets: openai, deepseek-responses, deepseek-chat, bailian
 [env] DEEPSEEK_API_KEY 已设置
@@ -183,188 +250,135 @@ npm run test:integration
 总结: 全部通过
 ```
 
-### 6. 重启 Codex 桌面端
+- 出现 `[env] ... 未设置` → 回「二、4」检查环境变量，设好之后**新开终端**再试
+- 出现 `[FAIL]` 或超时 → 看文末「常见问题」
 
-完全退出 Codex（任务管理器确认 ChatGPT.exe 全关）再重开，选择器应显示全部模型。
+> 单元测试（不需要路由运行，也不消耗 API 额度）：
+> ```powershell
+> cd D:\codex-multi-model-router
+> npm test
+> ```
 
-## 运维脚本
+### 第 6 步：确认 ChatGPT 登录态（官方模型用）
 
-所有脚本提供 PowerShell (`.ps1`) 和 bash (`.sh`) 双版本，自动备份 `config.toml`（带时间戳，永不覆盖）。
+官方 GPT / Codex 模型**不需要 API Key**，它复用 Codex 桌面端自己的 ChatGPT 登录态：
 
-| 脚本 | 功能 |
+1. 打开 Codex 桌面端，确认已经登录 ChatGPT（设置里能看到账号）
+2. 登录后会自动生成 `auth.json` 在你的 Codex 数据目录（`C:\Users\你的用户名\.codex\auth.json`），路由会自动读取它，临期还会自动续期
+
+> 注意：`auth.json` 是**你的登录凭据**，不要把它复制进项目目录，也不要提交到任何 Git 仓库。本项目 `.gitignore` 已排除它。
+
+### 第 7 步：重启 Codex 桌面端
+
+**完全退出 Codex**（任务管理器里确认 `ChatGPT.exe` 全部关闭）再重新打开。
+
+现在模型菜单里应该能看到：官方 GPT 系列 + `DeepSeek-V4-Flash` + `Qwen3.8-Max` 等。随便选一个发消息试试：
+
+- 选 `DeepSeek-V4-Flash` → 走 DeepSeek API
+- 选 `Qwen3.8-Max` → 走阿里云
+- 选官方模型 → 走你的 ChatGPT 账号
+- 任务进行到一半切换到另一个模型 → 继续对话，路由会自动保持任务连续性
+
+> 如果菜单里没有自定义模型 → 检查 `config.toml` 里的 `requires_openai_auth = true` 是否还在，并确认 `model_catalog_json` 路径正确。
+
+---
+
+## 四、日常使用与运维
+
+所有脚本在 `scripts/` 目录，Windows 用 `.ps1`，Linux/macOS 用 `.sh`（自动备份 `config.toml`，带时间戳，永不覆盖）。
+
+| 场景 | 命令（Windows PowerShell） | 说明 |
+|------|---------------------------|------|
+| 启动路由 | `.\start-router.ps1` | 前台运行，方便看日志 |
+| 无窗口启动 | `wscript start-router-silent.vbs` | 适合开机自启 |
+| 查看状态 | `.\status-router.ps1` | 显示 PID + 健康检查 |
+| 停止路由 | `.\stop-router.ps1` | 停止路由 |
+| **改完配置/key 后重启** | `.\restart-router.ps1` | **无感重启**：不打断正在跑的任务，改配置后必须执行 |
+| 一键验收 | `.\test-router.ps1` | 测试所有模型通道 |
+| 恢复官方配置 | `.\restore-official.ps1` | 移除路由，恢复纯官方 |
+| 恢复自定义配置 | `.\restore-custom.ps1` | 恢复自定义模型组合 |
+
+**三个最重要的操作习惯**：
+
+1. **改完 `config.json` 或环境变量 key → 必须 `restart-router.ps1`**，否则不生效（路由只在启动时读取配置）
+2. **路由重启不会打断正在跑的 Codex 任务**（旧进程排空在跑任务，新进程接管新请求），可以放心重启
+3. **不要手动删 auth.json / models.json**，它们是桌面端和路由共用的
+
+---
+
+## 五、config.json 完整配置参考
+
+`config.json` 与 `codex-router.mjs` 在同一目录，是路由的全部可调参数。默认值已可开箱即用，以下逐字段说明，方便按需修改。
+
+### 顶层字段
+
+| 字段 | 默认值 | 说明 |
+|------|--------|------|
+| `port` | `15730` | 路由监听端口，必须与桌面端 `config.toml` 的 `base_url` 端口一致 |
+| `proxy` | `127.0.0.1:10808` | 本地 HTTP CONNECT 代理地址（所有 `viaProxy: true` 的通道共用）。v2rayN 等请填 **HTTP/混合端口**，不是 SOCKS 端口 |
+| `paths` | `null` | 手动指定 auth.json / models.json 路径；`null` = 使用 `CODEX_HOME` 下的默认位置 |
+| `oauth` | 见右 | ChatGPT 登录态相关：`client_id`（公开常量）、`refresh_skew_seconds`（提前多少秒刷新）、`viaProxy`（null = 刷新请求跟随官方目标网络策略） |
+| `timeouts` | 见右 | 分层超时（毫秒）：`connectMs` 建连 15s、`responseHeaderMs` 等响应头 120s、`streamIdleMs` 流空闲 10min、`requestMs` 控制请求 10min |
+| `heartbeatMs` | `15000` | Chat 通道 SSE 心跳间隔（毫秒） |
+| `providerPool` | 见右 | 供应商粘性缓存：`maxEntries` 2048 条、`ttlMs` 24h |
+| `responseHistory` | 见右 | previous_response_id 工具调用历史：`maxEntries` 512 条、`ttlMs` 24h |
+| `goalCheckpoint` | 见右 | 持续目标检查点（长任务裁剪时自动摘要），详见下方专节 |
+| `supportsResponses` | 见右 | 兼容旧配置名：`slugs` 列出的模型在 `/models` 中声明 `{ "streaming": true }` |
+| `modelCapabilities` | 见右 | 按模型正则配置上下文窗口/输出预算，优先级高于 target 与全局默认值 |
+| `modelContext` | 见右 | 启动时把上下文窗口写回 models.json，让桌面端据此做滑动窗口/压缩 |
+| `visionRelay` | 见右 | 视觉中继（文本模型「借眼」看图），详见下方专节 |
+
+### targets[]（模型通道，核心）
+
+路由按请求的 `model` 字段匹配 `targets`，**同一模型可配置多条目标**用于会话粘性和故障换腿。
+
+| 字段 | 说明 |
 |------|------|
-| `start-router.ps1` / `start-router.sh` | 前台启动路由（便于看日志） |
-| `start-router-silent.vbs` | 无窗口启动（Windows 开机自启用） |
-| `stop-router.ps1` / `stop-router.sh` | 停止路由 |
-| `restart-router.ps1` / `restart-router.sh` | 重启路由（改完配置/key 后执行） |
-| `status-router.ps1` / `status-router.sh` | 查看路由状态（PID + 健康检查） |
-| `test-router.ps1` / `test-router.sh` | 一键验收（改完 key/URL 后运行） |
-| `restore-official.ps1` / `restore-official.sh` | 一键恢复官方配置（移除路由，停止服务） |
-| `restore-custom.ps1` / `restore-custom.sh` | 一键恢复自定义模型组合 |
+| `match` | 正则字符串，匹配模型 ID，如 `"^qwen"` 匹配所有 qwen 开头的模型 |
+| `name` | 通道名（日志里显示） |
+| `host` | 上游域名，如 `api.deepseek.com` |
+| `prefix` | 上游路径前缀，如 `/v1`、`/backend-api/codex` |
+| `viaProxy` | `true` = 经顶层 `proxy` 的 CONNECT 隧道；`false` = 直连。每个通道独立选择 |
+| `envKey` | 该通道 API key 所在的环境变量名（官方通道不用填，走 auth.json） |
+| `wireApi` | `"responses"` = 原样透传上游原生 Responses（上游支持时优先）；`"chat"` = 做 Responses↔Chat 真流式转换（上游只支持 Chat API 时用） |
+| `platform` | 供应商适配器：`openai` / `deepseek` / `dashscope` / `siliconflow` / `openrouter` / `minimax` / `generic` |
+| `vision` | `false` = 文本模型，收到图片走视觉中继；`true` = 原样透传 |
+| `protocol` / `port` | 默认 `https`/443；`http` 仅用于受信任的本机/内网网关（始终直连） |
+| `chatPath` | Chat 端点，默认 `/chat/completions` |
+| `includeUsage` | 是否发送 `stream_options.include_usage`，默认 `true`；不兼容的旧网关设 `false` |
+| `reasoningMode` | 推理字段映射覆盖：`reasoning_effort` / `openrouter` / `enable_thinking` / `reasoning_split` / `none` |
+| `authType` / `authHeader` | 默认 `bearer`；兼容 `x-api-key` 或自定义认证头 |
+| `upstreamModel` / `modelMap` | 把桌面端模型 slug 映射成上游实际接受的模型名 |
+| `timeouts` | 单目标覆盖顶层超时 |
 
-**npm 用户**使用 `npm run <script>`（见 `package.json` 的 `scripts` 字段）。
+**故障换腿规则（安全设计）**：只有连接失败、HTTP 408、429、5xx 会在**尚未输出模型事件时**换到下一候选目标；客户端取消、400、401、403、上下文超限**不会**重试。
 
-## 配置说明
+**官方通道（`platform: "openai"`）自动适配**：请求未显式声明 `store` 时自动注入 `store: false`，并移除 `max_output_tokens`（chatgpt.com 会以 400 拒绝这两类请求）。只在你没声明时生效，不覆盖你的明确意图。
 
-### 代码结构
+### goalCheckpoint（持续目标检查点）
 
-- `codex-router.mjs`：本地 HTTP 服务、模型分流、认证与视觉中继编排
-- `lib/chat-protocol.mjs`：Responses→Chat 请求转换和安全上下文裁剪
-- `lib/chat-stream.mjs`：Chat SSE→Responses SSE 状态机
-- `lib/provider-adapters.mjs`：供应商协议、认证和推理字段适配
-- `lib/provider-pool.mjs`：会话粘性候选池和严格 failover 分类
-- `lib/context-budget.mjs`：每模型上下文能力矩阵、图片与工具完整预算
-- `lib/goal-checkpoint.mjs`：持续目标提取、九栏目检查点、强任务键及 TTL/LRU 内存缓存
-- `lib/response-history.mjs`：有界 previous_response_id 工具调用历史
-- `lib/transport.mjs`：TLS/CONNECT、HTTP/1.1、chunked 与分层超时
-- `test/*.test.mjs`：基于 Node `node:test` 的零依赖单元测试
+长任务超出上下文预算、需要裁剪旧轮次时，路由自动让当前模型生成一份「九栏目执行摘要」注入对话，保证切换模型后目标、进度、关键决定不丢失。
 
-所有可修改参数集中在 `config.json`（与 `codex-router.mjs` 同目录），修改后执行 `restart-router.ps1` 生效。
+| 字段 | 默认值 | 说明 |
+|------|--------|------|
+| `enabled` | `true` | 总开关 |
+| `maxEntries` / `ttlMs` | `128` / `86400000` | 内存检查点数量上限与存活时间（毫秒） |
+| `maxResponseIdsPerTask` | `128` | 单任务最多保留的最近响应别名 |
+| `sourceTokenBudget` | `128000` | 单次摘要来源的 token 硬上限 |
+| `sourceWindowRatio` | `0.2` | 摘要来源最多占模型窗口的比例 |
+| `maxOutputTokens` | `2048` | 摘要最大输出 token |
+| `requestMs` | `120000` | 摘要调用超时（毫秒） |
 
-### config.json 核心结构
+摘要响应体另有 256 KiB 硬上限。检查点只缓存摘要文本和关联元数据，**不缓存完整对话**；跨模型接力需要强任务键（conversation/session metadata 或 `x-codex-session-id` 请求头），不同聊天不会互相串用检查点。
 
-以下示例与当前默认配置同步；完整字段和中文说明以仓库中的 `config.json` 为准。
+### visionRelay（视觉中继）
 
-```json
-{
-  "port": 15730,
-  "proxy": { "host": "127.0.0.1", "port": 10808 },
-  "timeouts": { "connectMs": 15000, "responseHeaderMs": 120000, "streamIdleMs": 600000, "requestMs": 600000 },
-  "paths": { "auth": null, "catalog": null },
-  "oauth": { "client_id": "app_EMoamEEZ73f0CkXaXp7hrann", "refresh_skew_seconds": 30, "viaProxy": null },
-  "targets": [
-    {
-      "match": "^(gpt-|codex-|o\\d|computer-use)",
-      "name": "openai",
-      "platform": "openai",
-      "host": "chatgpt.com",
-      "prefix": "/backend-api/codex",
-      "viaProxy": true,
-      "vision": true,
-      "wireApi": "responses"
-    },
-    {
-      "match": "^deepseek-v4-flash$",
-      "name": "deepseek-responses",
-      "platform": "deepseek",
-      "host": "api.deepseek.com",
-      "prefix": "/v1",
-      "viaProxy": false,
-      "vision": false,
-      "envKey": "DEEPSEEK_API_KEY",
-      "wireApi": "responses"
-    },
-    {
-      "match": "^deepseek-(?!v4-flash$)",
-      "name": "deepseek-chat",
-      "platform": "deepseek",
-      "host": "api.deepseek.com",
-      "prefix": "",
-      "viaProxy": false,
-      "vision": false,
-      "envKey": "DEEPSEEK_API_KEY",
-      "wireApi": "chat"
-    },
-    {
-      "match": "^qwen",
-      "name": "bailian",
-      "platform": "dashscope",
-      "host": "token-plan.cn-beijing.maas.aliyuncs.com",
-      "prefix": "/compatible-mode/v1",
-      "viaProxy": false,
-      "vision": true,
-      "envKey": "aliyun_video_key",
-      "wireApi": "chat"
-    }
-  ],
-  "supportsResponses": {
-    "slugs": ["deepseek-v4-flash", "qwen3.8-max"]
-  },
-  "goalCheckpoint": {
-    "enabled": true,
-    "maxEntries": 128,
-    "maxResponseIdsPerTask": 128,
-    "ttlMs": 86400000,
-    "sourceTokenBudget": 128000,
-    "sourceWindowRatio": 0.2,
-    "maxOutputTokens": 2048,
-    "requestMs": 120000
-  },
-  "modelContext": {
-    "enabled": true,
-    "contextWindow": 1000000,
-    "autoCompactTokenLimit": 400000,
-    "slugs": ["deepseek-v4-flash", "deepseek-v4-pro", "qwen3.8-max"]
-  },
-  "visionRelay": {
-    "host": "token-plan.cn-beijing.maas.aliyuncs.com",
-    "prefix": "/compatible-mode/v1",
-    "model": "qwen3.8-max",
-    "envKey": "aliyun_video_key",
-    "viaProxy": false,
-    "prompt": "Describe this image concisely (2-4 sentences) for a coding assistant that cannot see it. Focus on text/UI elements/code/error messages if present.",
-    "maxTokens": 300
-  }
-}
-```
-
-### 字段说明
-
-**顶层**
-- `port`：路由监听端口（默认 15730）
-- `proxy`：所有 `viaProxy: true` 通道共用的本地 HTTP CONNECT 代理地址
-- `paths`：auth.json / models.json 路径（null = 使用 CODEX_HOME 默认位置）
-- `oauth`：ChatGPT OAuth client_id、刷新提前量和刷新请求网络策略；`viaProxy: null` 默认继承当前官方目标，布尔值可单独覆盖
-- `timeouts`：TLS 建连、响应头、流空闲和非流式控制请求的独立超时（毫秒）
-
-**targets[]** — 路由规则，按请求体 `model` 字段收集全部匹配项；同一模型可配置多条目标用于会话粘性和安全 failover
-- `match`：正则字符串，匹配模型 ID
-- `host`：上游域名
-- `protocol` / `port`：默认 `https`/443；`http` 仅用于受信任的本机或内网兼容网关，并始终直连
-- `prefix`：上游路径前缀（请求路径 `/v1/responses` 会去掉 `/v1` 后拼到 `prefix` 后）
-- `viaProxy`：HTTPS 目标的网络策略；`true` = 经顶层 `proxy` 建立 HTTP CONNECT 隧道，`false` = 直连，不区分官方或自定义供应商；`protocol: "http"` 时忽略此项
-- `vision`：`false` = 该通道是文本模型，收到图片时走视觉中继；`true` = 原样透传
-- `envKey`：该通道 API key 所在的环境变量名（官方通道不用，走 auth.json）
-- `wireApi`：`"responses"` = 原样透传上游原生 Responses（优先）；`"chat"`/`"openai_chat"` = 为不支持 Responses 的兼容网关做 Responses↔Chat 真流式转换
-- `platform`：供应商适配器，可选 `openai`、`deepseek`、`dashscope`、`siliconflow`、`openrouter`、`minimax`、`generic`
-- `chatPath`：Chat endpoint，默认 `/chat/completions`
-- `includeUsage`：是否发送 `stream_options.include_usage`，默认 `true`；不兼容的旧网关可设为 `false`
-- `reasoningMode`：可覆盖推理字段映射，支持 `reasoning_effort`、`openrouter`、`enable_thinking`、`reasoning_split`、`none`
-- `authType`/`authHeader`：默认 `bearer`；兼容使用 `x-api-key` 或自定义认证头的网关
-- `timeouts`：该目标单独覆盖顶层分层超时
-- `upstreamModel` / `modelMap`：把桌面端模型 slug 映射成该供应商实际接受的模型名
-
-只有连接失败、HTTP 408、429 和 5xx 会在尚未输出模型事件时换腿；客户端取消、400、401、403 和上下文超限不会重试，避免重复副作用或把错误请求扩散到其他供应商。
-
-**官方通道（`platform: "openai"`）** — 自动适配 chatgpt.com backend-api 的参数限制：请求未显式声明 `store` 时注入 `store: false`，并移除 `max_output_tokens`（上游会以 400 拒绝这两类请求）。只在请求未声明对应字段时生效，不覆盖客户端明确意图。
-
-**supportsResponses** — 兼容旧配置名；列出的模型只在 `/models` 中声明 `streaming: true`。路由只维护有界工具调用历史，不维护完整对话状态，因此不会声明 `previous_response_id`
-
-**modelCapabilities[]** — 按模型正则配置 `contextWindow`、`maxOutputTokens`、安全比例、协议余量和图片预算；优先级高于 target 与全局默认值
-
-**providerPool / responseHistory** — 分别限制供应商粘性映射与工具调用历史的 LRU 数量和 TTL；两者都只驻留内存，重启自动清空
-
-**goalCheckpoint** — Chat 通道的持续目标检查点；只有上下文预算确实删除旧轮次时才调用摘要模型
-- `enabled`：是否启用，默认 `true`
-- `maxEntries` / `ttlMs`：内存检查点最大数量与存活时间，默认 128 条 / 24 小时
-- `maxResponseIdsPerTask`：单个活跃任务最多保留的最近响应别名，默认 128，防止超长任务无界增长
-- `sourceTokenBudget`：单次摘要来源硬上限，默认 128K token
-- `sourceWindowRatio`：摘要来源最多占当前模型窗口的比例，默认 20%
-- `maxOutputTokens`：九栏目检查点最大输出，默认 2048 token
-- `requestMs`：非流式摘要调用超时，默认 120 秒
-
-检查点来源中的目标锚点、旧检查点和被裁剪历史都受上述硬预算约束，九个栏目必须完整且顺序固定。摘要响应体另有 256 KiB 硬上限，异常上游不会造成无界内存增长。检查点只缓存结构化摘要、哈希以及有界的任务/响应关联元数据，不缓存完整原始对话。跨模型接力要求显式 conversation/session metadata 或 `x-codex-session-id` 等强任务键；仅模型名、相同目标文本、孤立的 cache key 都不能让不同聊天共享检查点。
-
-**modelContext** — 路由启动时写回 models.json 的上下文窗口配置
-- `contextWindow`/`max_context_window`：上下文窗口（DeepSeek-V4-Flash 支持 1M）
-- `autoCompactTokenLimit`：超过即触发桌面端压缩
-- `slugs`：作用的模型列表
-
-**visionRelay** — 视觉中继配置
-- 文本模型（`vision: false`）收到 `input_image` 时，调用这里配置的视觉模型生成描述
-- `viaProxy`：视觉模型 API 是否共用顶层 HTTP CONNECT 代理，默认 `false`
-- `prompt`：发给视觉模型的提示词
-- `maxTokens`：视觉模型最大输出 token 数
+| 字段 | 说明 |
+|------|------|
+| `host` / `prefix` / `model` | 视觉模型地址和模型名（默认阿里云 qwen3.8-max） |
+| `envKey` | 视觉模型 key 的环境变量名（默认 `aliyun_video_key`） |
+| `viaProxy` | 视觉 API 是否走顶层代理，默认 `false` |
+| `prompt` / `maxTokens` | 视觉提示词与最大输出 |
 
 ### 环境变量优先级
 
@@ -372,137 +386,160 @@ npm run test:integration
 
 | 变量 | 说明 | 默认值 |
 |------|------|--------|
-| `CODEX_HOME` | Codex 数据目录 | `~/.codex` |
+| `CODEX_HOME` | Codex 数据目录（auth.json / models.json / config.toml 所在） | `~/.codex` |
 | `CODEX_AUTH_PATH` | 覆盖 auth.json 路径 | `$CODEX_HOME/auth.json` |
 | `CODEX_CATALOG_PATH` | 覆盖 models.json 路径 | `$CODEX_HOME/models.json` |
+| `ROUTER_CONFIG_PATH` | 覆盖路由 config.json 路径（多实例/隔离测试用） | 与程序同目录 |
 | `ROUTER_PORT` | 监听端口 | `config.json:port` 或 `15730` |
-| `V2RAY_HOST` | 代理主机 | `config.json:proxy.host` 或 `127.0.0.1` |
-| `V2RAY_PORT` | 代理端口 | `config.json:proxy.port` 或 `10808` |
-| `DEEPSEEK_API_KEY` | DeepSeek API Key | - |
-| `aliyun_video_key` | 阿里云 Token Plan API Key | - |
+| `ROUTER_HEARTBEAT_MS` | 心跳间隔覆盖 | `config.json:heartbeatMs` 或 `15000` |
+| `V2RAY_HOST` / `V2RAY_PORT` | 代理地址覆盖 | `config.json:proxy` 或 `127.0.0.1:10808` |
+| `DEEPSEEK_API_KEY` | DeepSeek key | - |
+| `aliyun_video_key` | 阿里云 Token Plan key（Qwen + 视觉中继） | - |
 
-## 接入任意 OpenAI 兼容模型（GLM / Kimi / MiMo 等）
+---
 
-路由是**通用**的：任何提供 OpenAI 兼容 `/chat/completions` 的供应商都能接入，不限于 DeepSeek/Qwen。只需两步：
+## 六、接入任意 OpenAI 兼容模型（GLM / Kimi 等）
 
-**1. 在 config.json 的 `targets` 加一条通道**（`wireApi: "chat"` 走通用 Chat 转换）：
+路由是通用的：任何提供 OpenAI 兼容 `/chat/completions` 的供应商都能接入，只需三步：
 
-```json
-[
-{ "match": "^glm-",   "name": "glm",  "platform": "generic", "host": "open.bigmodel.cn",    "prefix": "/api/paas/v4", "viaProxy": false, "vision": true,  "envKey": "ZHIPU_API_KEY", "wireApi": "chat" },
-{ "match": "^kimi-",  "name": "kimi", "platform": "generic", "host": "api.moonshot.cn",     "prefix": "/v1",          "viaProxy": false, "vision": true,  "envKey": "KIMI_API_KEY",  "wireApi": "chat" },
-{ "match": "^sf-",    "name": "siliconflow", "platform": "siliconflow", "host": "api.siliconflow.cn", "prefix": "/v1", "viaProxy": false, "vision": true, "envKey": "SILICONFLOW_API_KEY", "wireApi": "chat" },
-{ "match": "^or-",    "name": "openrouter", "platform": "openrouter", "host": "openrouter.ai", "prefix": "/api/v1", "viaProxy": true, "vision": true, "envKey": "OPENROUTER_API_KEY", "wireApi": "chat" }
-]
-```
-
-**2. 在 models.json 加对应模型条目**（slug 与 `match` 对应，并设 `input_modalities`），并在环境变量里设置对应 `envKey`。
-
-- `match` 用模型 ID 前缀正则，命中即用该通道；未命中任何通道时回落到第一个通道（官方）
-- 文本模型设 `vision: false` 可启用视觉中继；原生视觉模型设 `vision: true`
-- 各供应商 endpoint/前缀以官方文档为准，上面仅为示例
-
-## 网络与代理（逐通道可选）
-
-`viaProxy` 是每条 HTTPS `targets[]` 独立的网络开关，与 `platform`、`wireApi` 和认证方式无关。因此官方 Responses 通道、自定义 Chat 通道以及同一模型的多条候选通道都可以分别选择直连或代理。明确配置为 `protocol: "http"` 的受信任本机/内网目标始终直连，不建立 CONNECT 隧道。
-
-| 模型通道 | `viaProxy: false` | `viaProxy: true` |
-|---|---|---|
-| 官方 GPT / Codex | 直接连接 `chatgpt.com` | 经顶层 `proxy` 的 HTTP CONNECT 隧道 |
-| DeepSeek / Qwen / 其他自定义模型 | 直接连接各自 API | 经同一个本地 HTTP CONNECT 代理 |
-
-默认配置按常见国内网络环境设置：官方 GPT 经代理，DeepSeek 和 Qwen 直连。这只是默认值，不是硬编码；可按实际网络逐条反转。OAuth token 刷新默认继承触发刷新的官方目标策略，因此官方目标改为直连后，`auth.openai.com` 也会直连；只有网络分流有特殊要求时才设置 `oauth.viaProxy` 单独覆盖。
-
-例如，官方模型改为直连：
+**① 在 `config.json` 的 `targets` 数组加一条通道**（`wireApi: "chat"` 走通用转换）：
 
 ```json
 {
-  "match": "^(gpt-|codex-|o\\d|computer-use)",
-  "name": "openai",
-  "host": "chatgpt.com",
-  "prefix": "/backend-api/codex",
+  "match": "^glm-",
+  "name": "glm",
+  "platform": "generic",
+  "host": "open.bigmodel.cn",
+  "prefix": "/api/paas/v4",
   "viaProxy": false,
-  "vision": true
-}
-```
-
-自定义模型改为走代理只需在对应目标上设置：
-
-```json
-{
-  "match": "^or-",
-  "name": "openrouter",
-  "platform": "openrouter",
-  "host": "openrouter.ai",
-  "prefix": "/api/v1",
-  "viaProxy": true,
-  "envKey": "OPENROUTER_API_KEY",
+  "vision": true,
+  "envKey": "ZHIPU_API_KEY",
   "wireApi": "chat"
 }
 ```
 
-代理地址可在 `config.json` 的顶层 `proxy` 字段或环境变量 `V2RAY_HOST` / `V2RAY_PORT` 调整。当前代理协议是 HTTP CONNECT；v2rayN 等客户端应填写其 HTTP/混合端口，而不是仅 SOCKS 端口。若 `viaProxy: true` 但代理未监听，请求会明确失败，并按既有安全 failover 规则决定是否尝试下一候选通道。
+**② 设置环境变量**：`setx ZHIPU_API_KEY "sk-你的key"`（变量名与 `envKey` 一致）
 
-## 常见问题
+**③ 在 `models.json` 加模型条目**，slug 与 `match` 对应，并包含 `input_modalities`（想发图必须含 `"image"`）：
 
-### 桌面端选择器不显示自定义模型
+```json
+{
+  "slug": "glm-4.7",
+  "display_name": "GLM-4.7",
+  "supported_in_api": true,
+  "input_modalities": ["text", "image"]
+}
+```
 
-检查 `config.toml` 的 `[model_providers.router]` 是否包含 `requires_openai_auth = true`。这是桌面端门控钥匙，缺少则前端隐藏自定义模型。
+最后 `restart-router.ps1` 重启路由、重启桌面端即可。
 
-### 发图时报 "This model does not support image inputs"
+> 其他参考配置：Kimi `api.moonshot.cn`、硅基流动 `api.siliconflow.cn`（platform `siliconflow`）、OpenRouter `openrouter.ai`（platform `openrouter`）。具体 endpoint 以前缀和官方文档为准。
+> 文本模型设 `vision: false` 可启用视觉中继「借眼」；原生视觉模型设 `vision: true`。
 
-检查 `models.json` 里该模型的 `input_modalities` 是否包含 `"image"`。前端按此字段决定是否允许贴图。
+---
 
-### 视觉中继描述不准确
+## 七、网络与代理（逐通道可选）
 
-视觉中继依赖视觉模型的图片理解能力。对截图类图片（报错截图、UI 图）效果最好，因为提示词让它重点提取文字/代码/界面元素。
+`viaProxy` 是**每条通道独立**的网络开关，官方通道和自定义通道可以分别选择直连或代理：
 
-### 官方通道 429
+| 通道 | `viaProxy: false` | `viaProxy: true` |
+|------|-------------------|------------------|
+| 官方 GPT / Codex | 直连 `chatgpt.com` | 经顶层 `proxy` 的 HTTP CONNECT 隧道 |
+| DeepSeek / Qwen / 其他 | 直连各自 API | 经同一个本地代理 |
 
-OpenAI 官方额度用尽，链路正常，等额度重置或升级套餐。
+默认配置按常见国内网络：**官方 GPT 走代理，DeepSeek / Qwen 直连**。如果你的网络环境不同，把对应通道的 `viaProxy` 反过来即可（例如官方模型直连：把 openai 通道的 `viaProxy` 改为 `false`；OAuth 刷新会自动跟随官方通道策略，不需要单独改）。
 
-### 第三方模型“闪跳”（从头重推/重复执行工具）
+代理地址在顶层 `proxy` 或环境变量 `V2RAY_HOST` / `V2RAY_PORT`。协议是 HTTP CONNECT，**v2rayN 等客户端请填 HTTP/混合端口**（不是仅 SOCKS 端口）。如果 `viaProxy: true` 但代理没开，请求会明确失败并按安全规则决定是否换腿。
 
-Codex 桌面端对第三方模型每轮重发全量历史，若上游 Responses 支持不完善，模型会“看不懂”历史而从头重推。解决：给该通道设 `wireApi: "chat"`，路由转成 Chat 格式（丢弃 reasoning、正确映射 tool_calls/tool），模型即可连贯续接。
+---
 
-如果上游已完整支持 Responses，应优先设为 `wireApi: "responses"` 原样透传。默认 `deepseek-v4-flash` 已按真实 `/v1/responses` 验收配置为原生通道；原生流可直接以 `response.completed` 收尾，不要求额外发送 Chat 风格 `[DONE]`。
+## 八、常见问题（新手问答）
 
-### 超长任务中切换模型会丢失目标或进度吗
+### 启动类
 
-不会因为“切换模型”这一动作本身直接丢失。未触发裁剪时，桌面端的完整历史照常发送给新模型；触发裁剪时，路由把目标、约束、已完成/进行中/待完成、关键决定、当前工作集、失败原因和下一步整理成供应商无关检查点。切换模型后的新供应商会在可用任务证据范围内，基于上一份任务检查点和本轮历史重新归一化。
+**Q1：`start-router.ps1` 报「禁止运行脚本」**
+执行一次 `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned`，再重新运行。
 
-供应商的 response id、prompt cache 句柄、sticky target、隐藏推理和未完成工具调用不会迁移。缺少强任务键时，路由宁可重新摘要，也不会把另一个聊天的检查点串进当前任务。
+**Q2：启动报 `Error: listen EADDRINUSE`（端口被占用）**
+路由已经在运行，或端口被其他程序占用。先 `.\status-router.ps1` 看状态；确认是路由就直接 `.\restart-router.ps1`；如果是别的程序占了 15730，改 `config.json` 的 `port`（同时改桌面端 `config.toml` 的 `base_url`）。
 
-### 第三方模型不执行工具、只描述计划
+**Q3：启动后 `healthz` 打不开 / 提示连接被拒绝**
+路由没在运行。看启动窗口的报错；或先跑 `Set-ExecutionPolicy` 那条命令再启动。
 
-Chat 请求必须带 `tools` 定义模型才会发 `tool_calls`。路由已自动转换 `tools`；若仍不执行，检查桌面端是否发送了 tools 字段。
+### 模型显示类
 
-### 子代理并行（collaboration）不可用
+**Q4：桌面端选择器里没有自定义模型**
+`config.toml` 缺 `requires_openai_auth = true`；或 `model_catalog_json` 路径不对；或改完没**完全退出并重开** Codex（任务管理器确认 `ChatGPT.exe` 全关）。
 
-子代理并行是 Codex 桌面端对**官方模型**开放的运行时编排特性，第三方模型被标记 `unsupported call`。模型会自动降级为单代理并行 shell，属正常行为（cc-switch/Codex++ 同样如此）。
+**Q5：选择器里有模型但发消息报错**
+先跑 `.\test-router.ps1` 定位是哪个通道失败。常见原因：key 没设置/设置后没重启路由/额度用尽。
 
-### 更新路由会打断在跑任务吗
+### Key 与鉴权类
 
-不会。`restart-router.ps1` 先 `POST /_admin/shutdown` 让旧进程释放端口并排空在跑任务，新进程立即接管新请求；在跑的流式任务在旧进程上自然结束。
+**Q6：日志或测试报 401 Unauthorized**
+key 没设置、设置错、或**改完 key 没重启路由**（路由只在启动时读环境变量）。另外改完环境变量要**新开终端**。
 
-### 改完环境变量 key 后不生效
+**Q7：`[env] 未设置` 警告**
+环境变量没找到。用 GUI 或 `setx` 设置（用户级即可），重开终端，`restart-router.ps1`。
 
-路由进程启动时才读取环境变量，必须执行 `restart-router.ps1` 后再跑 `test-router.ps1` 验证。
+**Q8：官方模型报 401 / 登录态失效**
+打开 Codex 桌面端重新登录 ChatGPT，路由会自动读取新 `auth.json`；登录态临期时路由会自动续期。
 
-## 技术细节
+### 上游错误类
 
-- **逐通道 TLS 隧道**：任何 HTTPS 目标都可通过 `viaProxy` 选择直连或本地 HTTP CONNECT 代理；裸写 HTTP/1.1 请求避免 `createConnection` 在该链路上的兼容问题
-- **Chunked 解码**：上游 chunked 响应透传时必须先解包，否则 Node `ServerResponse` 会再套一层 chunked 封装，客户端解析直接坏掉（SSE 尤甚）
-- **Responses↔Chat 转换**：上游使用 `stream: true`；状态机实时转换文本、`reasoning_content`/`<think>` 和并行工具调用，并在正常断流时补齐 Responses 生命周期
-- **分层超时**：DNS/TCP/TLS/CONNECT 建连、响应头、流空闲和控制类请求分别计时，客户端断开会取消上游 socket
-- **SSE 保活**：Chat 通道在视觉中继和认证之前立即建立 SSE，每 15 秒发送注释心跳
-- **目标感知裁剪**：只删除完整旧轮次；确实发生裁剪时才调用当前候选供应商以非推理模式生成九栏目检查点，失败时先复用同任务旧检查点，再降级为普通裁剪
-- **摘要内存边界**：目标锚点、旧检查点和裁剪历史受 token 硬预算约束；检查点响应为 256 KiB，其他非流式控制响应默认为 8 MiB 上限
-- **跨模型隔离**：任务检查点可在强任务键下跨模型接力，精确摘要缓存、response id、cache key 和供应商粘性仍按上游链路隔离
-- **无感更新**：`server.close()` 立即释放监听端口但保留已有连接；`closeIdleConnections()` 关空闲连接让 close 完成，在跑任务自然结束
-- **并发安全**：`uncaughtException`/`unhandledRejection` 进程级兕底只记日志不退出；token 刷新 single-flight 防竞态
-- **原子写入**：`auth.json`、`models.json` 修改均先写 tmp 再 rename，避免桌面端并发读到半写文件
-- **Token 自动刷新**：access_token 距过期不足 30 秒时自动 refresh 并原子写回 auth.json
+**Q9：429 Too Many Requests**
+额度用尽：DeepSeek 去平台充值；阿里云 Token Plan 检查周配额（如提示 `quota will reset at ...`，到期自动恢复）；官方 GPT 等套餐重置。链路本身是正常的。
+
+**Q10：`insufficient_quota`（阿里云）**
+Token Plan 周配额耗尽，提示里带重置时间，到期自动恢复，无需改任何配置。
+
+**Q11：官方模型报「Store must be set to false」或「Unsupported parameter: max_output_tokens」**
+这是旧版本或绕过路由直连才会出现。当前版本已自动适配（注入 `store: false`、移除 `max_output_tokens`），升级到最新版即可。
+
+### 功能类
+
+**Q12：发图时报「This model does not support image inputs」**
+`models.json` 里该模型的 `input_modalities` 缺 `"image"`。前端按此字段决定能否贴图。
+
+**Q13：文本模型收到图后回答很模糊**
+视觉中继是「借眼」方案（先让视觉模型写 2-4 句描述），适合理解截图内容（报错、UI、代码）。要做精确的 GUI 自动化操作（browser / computer-use 插件），请切换到原生视觉模型（qwen3.8-max 或官方 GPT）。
+
+**Q14：第三方模型不执行工具、只描述计划**
+路由已自动转换 `tools` 定义；若仍不执行，检查桌面端请求是否带了 `tools` 字段（Codex 通常默认带）。
+
+**Q15：子代理并行（collaboration）不可用**
+这是 Codex 对**官方模型**开放的运行时特性，第三方模型会被标记 `unsupported call` 并自动降级为单代理并行 shell，属正常行为。
+
+**Q16：切换模型会丢任务进度吗**
+不会。未触发裁剪时完整历史照常发送；触发裁剪时路由自动生成目标检查点（目标/约束/进度/决定/工作集/失败/下一步），新模型基于检查点继续。供应商私有状态（response id、cache key 等）不会迁移。
+
+**Q17：更新路由会不会打断正在跑的任务**
+不会。`restart-router.ps1` 先让旧进程释放端口并排空在跑任务，新进程立即接管新请求。
+
+### 安全类
+
+**Q18：auth.json 会被误传到 Git 吗**
+不会。`.gitignore` 已排除 `auth.json`、`models.json`、日志、备份。请勿手动把它们复制进项目目录。
+
+**Q19：为什么仓库里有 `client_id`，是不是泄露**
+`app_EMoamEEZ73f0CkXaXp7hrann` 是 Codex 应用的**公开 OAuth 客户端标识**（类似应用 ID，GitHub 上所有同类项目都公开），不是机密；真正的凭据是本地 `auth.json` 里的令牌，从未进仓库。
+
+---
+
+## 九、技术细节
+
+- **逐通道 TLS 隧道**：任何 HTTPS 目标都可通过 `viaProxy` 选择直连或本地 HTTP CONNECT 代理；裸写 HTTP/1.1 请求避免 `createConnection` 兼容问题
+- **Chunked 解码**：上游 chunked 响应先解包再透传，避免 Node 再套一层 chunked 导致客户端解析失败（SSE 尤甚）
+- **Responses↔Chat 转换**：上游 `stream: true`；状态机实时转换文本、`reasoning_content`/`<think>` 和并行工具调用，正常断流时补齐 Responses 生命周期
+- **分层超时**：建连、响应头、流空闲和控制请求分别计时；客户端断开立即取消上游 socket
+- **SSE 保活**：Chat 通道在视觉中继和认证之前立即建立 SSE，每 15 秒发注释心跳
+- **目标感知裁剪**：只删完整旧轮次；确实裁剪时才生成九栏目检查点，失败先复用同任务旧检查点，再降级为普通裁剪
+- **摘要内存边界**：检查点响应 256 KiB，其他非流式控制响应默认 8 MiB 上限
+- **跨模型隔离**：检查点可在强任务键下跨模型接力，精确摘要缓存、response id、cache key、供应商粘性按上游链路隔离
+- **无感更新**：`server.close()` 立即释放端口保留连接；`closeIdleConnections()` 关空闲连接；在跑任务自然结束
+- **并发安全**：进程级异常兜底只记日志不退出；token 刷新 single-flight 防竞态
+- **原子写入**：auth.json、models.json 修改均先写 tmp 再 rename，避免并发读到半写文件
+- **Token 自动刷新**：access_token 距过期不足 30 秒自动 refresh 并原子写回 auth.json
 
 ## License
 
