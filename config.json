@@ -14,7 +14,7 @@
   },
   "heartbeatMs": 15000,
   "providerPool": {
-    "_comment": "同一模型配置多条 target 时记录成功供应商；仅对连接错误、408、429、5xx 安全换腿",
+    "_comment": "同一模型配置多条 target 时记录成功供应商；仅对连接错误、408、429、5xx 安全切换备用目标",
     "maxEntries": 2048,
     "ttlMs": 86400000
   },

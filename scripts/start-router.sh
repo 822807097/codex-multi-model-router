@@ -13,7 +13,7 @@ KEY_NAMES="${ROUTER_ENV_KEYS:-DEEPSEEK_API_KEY BAILIAN_API_KEY}"
 
 for k in $KEY_NAMES; do
     if [ -z "${!k:-}" ]; then
-        echo "警告：环境变量 $k 未设置，对应腿会失败" >&2
+        echo "警告：环境变量 $k 未设置，对应通道会失败" >&2
     fi
 done
 

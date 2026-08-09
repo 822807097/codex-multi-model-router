@@ -27,7 +27,7 @@ if (Test-Path $cfgPath) {
 if ($env:ROUTER_ENV_KEYS) { foreach ($k in $env:ROUTER_ENV_KEYS.Split(',')) { $keySet[$k.Trim()] = $true } }
 foreach ($k in $keySet.Keys) {
     $v = Get-EnvAny $k
-    if ($v) { Set-Item "env:$k" $v } else { Write-Host "警告: 环境变量 $k 未设置，对应腿会失败" -ForegroundColor Yellow }
+    if ($v) { Set-Item "env:$k" $v } else { Write-Host "警告: 环境变量 $k 未设置，对应通道会失败" -ForegroundColor Yellow }
 }
 
 $router = Join-Path $PSScriptRoot '..\codex-router.mjs'

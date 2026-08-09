@@ -334,7 +334,7 @@ cd D:\codex-multi-model-router\scripts
 
 ### targets[]（模型通道，核心）
 
-路由按请求的 `model` 字段匹配 `targets`，**同一模型可配置多条目标**用于会话粘性和故障换腿。
+路由按请求的 `model` 字段匹配 `targets`，**同一模型可配置多条目标**用于会话粘性和故障切换备用目标。
 
 | 字段 | 说明 |
 |------|------|
@@ -355,13 +355,13 @@ cd D:\codex-multi-model-router\scripts
 | `upstreamModel` / `modelMap` | 把桌面端模型 slug 映射成上游实际接受的模型名 |
 | `timeouts` | 单目标覆盖顶层超时 |
 
-**故障换腿规则（安全设计）**：只有以下三类情况会在**尚未输出模型事件**且**存在备用目标**时换到下一候选目标：
+**故障切换备用目标规则（安全设计）**：只有以下三类情况会在**尚未输出模型事件**且**存在备用目标**时切换到下一候选目标：
 
 1. **连接类错误码**：`ECONNREFUSED`、`ECONNRESET`、`EHOSTUNREACH`、`ENETUNREACH`、`ENOTFOUND`、`EAI_AGAIN`、`ETIMEDOUT`、`EPIPE`
 2. **网络/传输类错误**：错误消息含 `connect` / `socket` / `network` / `dns` / `tls` 关键词，或为超时、上游在响应头前关闭连接、hang up 等（即使没有标准错误码）
 3. **HTTP 状态**：408、429、5xx
 
-客户端主动取消、400、401、403、上下文超限**不会**重试；一旦开始输出模型事件，**绝不重放换腿**。
+客户端主动取消、400、401、403、上下文超限**不会**重试；一旦开始输出模型事件，**绝不重放切换**。
 
 **官方通道（`platform: "openai"`）自动适配**：请求未显式声明 `store` 时自动注入 `store: false`，并移除 `max_output_tokens`（chatgpt.com 会以 400 拒绝这两类请求）。只在你没声明时生效，不覆盖你的明确意图。
 
@@ -459,7 +459,7 @@ cd D:\codex-multi-model-router\scripts
 
 默认配置按常见国内网络：**官方 GPT 走代理，DeepSeek / Qwen 直连**。如果你的网络环境不同，把对应通道的 `viaProxy` 反过来即可（例如官方模型直连：把 openai 通道的 `viaProxy` 改为 `false`；OAuth 刷新会自动跟随官方通道策略，不需要单独改）。
 
-代理地址在顶层 `proxy` 或环境变量 `V2RAY_HOST` / `V2RAY_PORT`。协议是 HTTP CONNECT，**v2rayN 等客户端请填 HTTP/混合端口**（不是仅 SOCKS 端口）。如果 `viaProxy: true` 但代理没开，请求会明确失败并按安全规则决定是否换腿。
+代理地址在顶层 `proxy` 或环境变量 `V2RAY_HOST` / `V2RAY_PORT`。协议是 HTTP CONNECT，**v2rayN 等客户端请填 HTTP/混合端口**（不是仅 SOCKS 端口）。如果 `viaProxy: true` 但代理没开，请求会明确失败并按安全规则决定是否切换备用目标。
 
 ---
 

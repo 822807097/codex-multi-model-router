@@ -36,7 +36,7 @@ test('failover 仅重试连接/网络类错误、408、429 和 5xx', () => {
   assert.equal(isRetryableProviderFailure({ status: 429 }), true);
   assert.equal(isRetryableProviderFailure({ status: 503 }), true);
   assert.equal(isRetryableProviderFailure(Object.assign(new Error('connect ECONNREFUSED'), { code: 'ECONNREFUSED' })), true);
-  // 无标准错误码的网络/传输类错误消息同样可换腿（超时、响应头前断连、挂起、关键词命中）
+  // 无标准错误码的网络/传输类错误消息同样可切换备用目标（超时、响应头前断连、挂起、关键词命中）
   assert.equal(isRetryableProviderFailure(new Error('request timed out after 30000ms')), true);
   assert.equal(isRetryableProviderFailure(new Error('upstream closed before response header')), true);
   assert.equal(isRetryableProviderFailure(new Error('socket hang up')), true);
