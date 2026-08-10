@@ -188,7 +188,9 @@ test('强任务键允许跨模型取得检查点，孤立 previous_response_id �
     responseId: 'resp-a',
   });
 
-  assert.equal(resolveStrongTaskKey({ previous_response_id: 'resp-a' }, {}, store), taskKey);
+  const restoredTaskKey = resolveStrongTaskKey({ previous_response_id: 'resp-a' }, {}, store);
+  assert.match(restoredTaskKey, /^task:[a-f0-9]{64}$/);
+  assert.equal(store.getTask(restoredTaskKey), VALID_CHECKPOINT);
   assert.equal(store.getTask(taskKey), VALID_CHECKPOINT);
   assert.equal(store.getExact('deepseek|model-a|hash-a'), VALID_CHECKPOINT);
   assert.equal(store.getExact('qwen|model-b|hash-a'), null);
@@ -223,8 +225,11 @@ test('同一任务更新检查点后旧 response id 仍能解析到任务', () =
   store.remember({ taskKey: 'header:a', exactKey: 'provider-a|model|one', checkpoint: `${VALID_CHECKPOINT}\nA`, responseId: 'resp-old' });
   store.remember({ taskKey: 'header:a', exactKey: 'provider-b|model|two', checkpoint: `${VALID_CHECKPOINT}\nB`, responseId: 'resp-new' });
 
-  assert.equal(store.taskForResponse('resp-old'), 'header:a');
-  assert.equal(store.taskForResponse('resp-new'), 'header:a');
+  const oldTask = store.taskForResponse('resp-old');
+  const newTask = store.taskForResponse('resp-new');
+  assert.match(oldTask, /^task:[a-f0-9]{64}$/);
+  assert.equal(newTask, oldTask);
+  assert.match(store.getTask(oldTask), /B$/);
 });
 
 test('同一活跃任务只保留有界的最近 response id 别名', () => {
@@ -239,6 +244,214 @@ test('同一活跃任务只保留有界的最近 response id 别名', () => {
   store.remember({ taskKey: 'header:a', exactKey: 'p|m|3', checkpoint: VALID_CHECKPOINT, responseId: 'resp-3' });
 
   assert.equal(store.taskForResponse('resp-1'), null);
-  assert.equal(store.taskForResponse('resp-2'), 'header:a');
-  assert.equal(store.taskForResponse('resp-3'), 'header:a');
+  assert.match(store.taskForResponse('resp-2'), /^task:[a-f0-9]{64}$/);
+  assert.equal(store.taskForResponse('resp-3'), store.taskForResponse('resp-2'));
+});
+
+test('检查点来源会截断工具正文并清理常见凭据值', () => {
+  const secret = 'sk-sensitive-value-1234567890';
+  const source = buildCheckpointSource({
+    goalAnchor: { text: '目标：安全接力' },
+    removedMessages: [{
+      role: 'tool',
+      content: `执行结果\nAuthorization: Bearer private-token-value\napi_key=${secret}\n${'x'.repeat(8_000)}`,
+    }],
+    tokenBudget: 10_000,
+  });
+
+  assert.doesNotMatch(source.text, /private-token-value/);
+  assert.doesNotMatch(source.text, /sk-sensitive-value/);
+  assert.ok(source.text.length < 4_000);
+  assert.match(source.text, /工具输出/);
+});
+
+test('同一任务只允许最后开始的并发请求更新检查点', () => {
+  const store = new GoalCheckpointStore({ maxEntries: 8, ttlMs: 60_000 });
+  const older = store.beginTask('task:concurrent');
+  const newer = store.beginTask('task:concurrent');
+
+  assert.equal(store.remember({
+    taskKey: 'task:concurrent',
+    checkpoint: '旧请求晚完成',
+    requestSequence: older,
+  }), false);
+  assert.equal(store.remember({
+    taskKey: 'task:concurrent',
+    checkpoint: '新请求进度',
+    requestSequence: newer,
+  }), true);
+  assert.equal(store.getTask('task:concurrent'), '新请求进度');
+});
+
+test('检查点任务、精确来源和 response id 只持久化带域定长摘要', () => {
+  const longTaskKey = `metadata:${'t'.repeat(100_000)}`;
+  const longExactKey = `provider|model-${'m'.repeat(100_000)}|hash`;
+  const longResponseId = `resp_${'r'.repeat(100_000)}`;
+  const store = new GoalCheckpointStore({ maxEntries: 4, ttlMs: 60_000 });
+  const requestSequence = store.beginTask(longTaskKey);
+
+  assert.equal(store.remember({
+    taskKey: longTaskKey,
+    exactKey: longExactKey,
+    checkpoint: VALID_CHECKPOINT,
+    responseId: longResponseId,
+    requestSequence,
+  }), true);
+
+  const opaqueTaskKey = store.taskForResponse(longResponseId);
+  assert.match(opaqueTaskKey, /^task:[a-f0-9]{64}$/);
+  assert.equal(store.getTask(longTaskKey), VALID_CHECKPOINT);
+  assert.equal(store.getTask(opaqueTaskKey), VALID_CHECKPOINT);
+  assert.equal(store.getExact(longExactKey), VALID_CHECKPOINT);
+  assert.ok([...store.tasks.keys(), ...store.latestRequests.keys()].every((key) => /^task:[a-f0-9]{64}$/.test(key)));
+  assert.ok([...store.exacts.keys()].every((key) => /^exact:[a-f0-9]{64}$/.test(key)));
+  assert.ok([...store.responses.keys()].every((key) => /^response:[a-f0-9]{64}$/.test(key)));
+  assert.ok([...store.entries.values()].every((entry) => {
+    const serialized = JSON.stringify({
+      ...entry,
+      responseIds: [...entry.responseIds],
+    });
+    return !serialized.includes(longTaskKey)
+      && !serialized.includes(longExactKey)
+      && !serialized.includes(longResponseId);
+  }));
+});
+
+test('同名 response id 绑定多个任务时不得反查为任一任务', () => {
+  const store = new GoalCheckpointStore({ maxEntries: 4, ttlMs: 60_000 });
+  store.remember({ taskKey: 'header:task-a', checkpoint: `${VALID_CHECKPOINT}\nA`, responseId: 'resp_same' });
+  store.remember({ taskKey: 'header:task-b', checkpoint: `${VALID_CHECKPOINT}\nB`, responseId: 'resp_same' });
+
+  assert.equal(store.taskForResponse('resp_same'), null);
+  assert.match(store.getTask('header:task-a'), /A$/);
+  assert.match(store.getTask('header:task-b'), /B$/);
+});
+
+test('同名 response id 碰撞后其中一个任务被 LRU 淘汰仍保持歧义', () => {
+  const store = new GoalCheckpointStore({ maxEntries: 2, ttlMs: 60_000 });
+  store.remember({ taskKey: 'header:task-a', checkpoint: `${VALID_CHECKPOINT}\nA`, responseId: 'resp_same' });
+  store.remember({ taskKey: 'header:task-b', checkpoint: `${VALID_CHECKPOINT}\nB`, responseId: 'resp_same' });
+  store.remember({ taskKey: 'header:task-c', checkpoint: `${VALID_CHECKPOINT}\nC`, responseId: 'resp_c' });
+
+  assert.equal(store.getTask('header:task-a'), null);
+  assert.match(store.getTask('header:task-b'), /B$/);
+  assert.equal(store.taskForResponse('resp_same'), null);
+});
+
+test('同名 response id 的歧义保持到 response 索引自身 TTL 到期', () => {
+  let now = 0;
+  const store = new GoalCheckpointStore({ maxEntries: 4, ttlMs: 100, now: () => now });
+  store.remember({ taskKey: 'header:task-a', checkpoint: `${VALID_CHECKPOINT}\nA`, responseId: 'resp_same' });
+  now = 50;
+  store.remember({ taskKey: 'header:task-b', checkpoint: `${VALID_CHECKPOINT}\nB`, responseId: 'resp_same' });
+
+  now = 101;
+  assert.equal(store.taskForResponse('resp_same'), null);
+  assert.match(store.getTask('header:task-b'), /B$/);
+  assert.equal(store.responses.size, 1);
+
+  now = 151;
+  assert.equal(store.taskForResponse('resp_same'), null);
+  assert.equal(store.responses.size, 0);
+});
+
+test('response 索引按独立 LRU 上限淘汰且不会被任务更新重新带回', () => {
+  const store = new GoalCheckpointStore({
+    maxEntries: 4,
+    maxResponseIdsPerTask: 4,
+    maxResponseIndexes: 2,
+    ttlMs: 60_000,
+  });
+  store.remember({ taskKey: 'header:task-a', checkpoint: `${VALID_CHECKPOINT}\nA`, responseId: 'resp_a' });
+  store.remember({ taskKey: 'header:task-b', checkpoint: `${VALID_CHECKPOINT}\nB`, responseId: 'resp_b' });
+  store.taskForResponse('resp_a'); // 刷新 A，使 B 成为最旧索引。
+  store.remember({ taskKey: 'header:task-c', checkpoint: `${VALID_CHECKPOINT}\nC`, responseId: 'resp_c' });
+
+  assert.match(store.getTask(store.taskForResponse('resp_a')), /A$/);
+  assert.equal(store.taskForResponse('resp_b'), null);
+  assert.match(store.getTask(store.taskForResponse('resp_c')), /C$/);
+  assert.equal(store.responses.size, 2);
+
+  store.remember({ taskKey: 'header:task-b', checkpoint: `${VALID_CHECKPOINT}\nB2` });
+  assert.equal(store.taskForResponse('resp_b'), null);
+});
+
+test('歧义 response 索引被查询时也刷新 LRU 并保持保守哨兵', () => {
+  const store = new GoalCheckpointStore({
+    maxEntries: 5,
+    maxResponseIdsPerTask: 4,
+    maxResponseIndexes: 2,
+    ttlMs: 60_000,
+  });
+  store.remember({ taskKey: 'header:task-a', checkpoint: `${VALID_CHECKPOINT}\nA`, responseId: 'resp_same' });
+  store.remember({ taskKey: 'header:task-b', checkpoint: `${VALID_CHECKPOINT}\nB`, responseId: 'resp_same' });
+  store.remember({ taskKey: 'header:task-c', checkpoint: `${VALID_CHECKPOINT}\nC`, responseId: 'resp_c' });
+
+  assert.equal(store.taskForResponse('resp_same'), null); // 刷新歧义哨兵，使 C 成为最旧索引。
+  store.remember({ taskKey: 'header:task-d', checkpoint: `${VALID_CHECKPOINT}\nD`, responseId: 'resp_d' });
+  store.remember({ taskKey: 'header:task-b', checkpoint: `${VALID_CHECKPOINT}\nB2`, responseId: 'resp_same' });
+
+  assert.equal(store.taskForResponse('resp_same'), null);
+  assert.equal(store.taskForResponse('resp_c'), null);
+  assert.match(store.getTask(store.taskForResponse('resp_d')), /D$/);
+});
+
+test('检查点快照只导出哈希索引并可在冷重启后恢复', () => {
+  const now = () => 10_000;
+  const first = new GoalCheckpointStore({ now, ttlMs: 60_000 });
+  first.remember({
+    taskKey: 'raw-task-id',
+    exactKey: 'raw-exact-source',
+    checkpoint: VALID_CHECKPOINT,
+    responseId: 'raw-response-id',
+  });
+
+  const snapshot = first.exportSnapshot();
+  const serialized = JSON.stringify(snapshot);
+  assert.doesNotMatch(serialized, /raw-task-id|raw-exact-source|raw-response-id/);
+  assert.match(serialized, /task:[a-f0-9]{64}/);
+  assert.match(serialized, /response:[a-f0-9]{64}/);
+
+  const restored = new GoalCheckpointStore({ now, ttlMs: 60_000 });
+  assert.equal(restored.importSnapshot(snapshot), 1);
+  assert.equal(restored.getTask('raw-task-id'), VALID_CHECKPOINT);
+  assert.equal(restored.getExact('raw-exact-source'), VALID_CHECKPOINT);
+  const restoredTask = restored.taskForResponse('raw-response-id');
+  assert.match(restoredTask, /^task:[a-f0-9]{64}$/);
+  assert.equal(restored.getTask(restoredTask), VALID_CHECKPOINT);
+});
+
+test('检查点快照恢复时丢弃过期项并保留 response 歧义哨兵', () => {
+  let current = 1_000;
+  const first = new GoalCheckpointStore({ now: () => current, ttlMs: 100 });
+  first.remember({ taskKey: 'task-a', checkpoint: `${VALID_CHECKPOINT}\nA`, responseId: 'shared' });
+  first.remember({ taskKey: 'task-b', checkpoint: `${VALID_CHECKPOINT}\nB`, responseId: 'shared' });
+  const snapshot = first.exportSnapshot();
+
+  const restored = new GoalCheckpointStore({ now: () => current, ttlMs: 100 });
+  assert.equal(restored.importSnapshot(snapshot), 2);
+  assert.equal(restored.taskForResponse('shared'), null);
+
+  current = 2_000;
+  const expired = new GoalCheckpointStore({ now: () => current, ttlMs: 100 });
+  assert.equal(expired.importSnapshot(snapshot), 0);
+  assert.equal(expired.getTask('task-a'), null);
+});
+
+test('清空检查点同时移除任务、精确来源、response 和并发序号', () => {
+  const store = new GoalCheckpointStore();
+  const sequence = store.beginTask('task-a');
+  store.remember({
+    taskKey: 'task-a',
+    exactKey: 'exact-a',
+    checkpoint: VALID_CHECKPOINT,
+    responseId: 'response-a',
+    requestSequence: sequence,
+  });
+
+  assert.equal(store.clear(), 1);
+  assert.equal(store.getTask('task-a'), null);
+  assert.equal(store.getExact('exact-a'), null);
+  assert.equal(store.taskForResponse('response-a'), null);
+  assert.equal(store.exportSnapshot().entries.length, 0);
 });

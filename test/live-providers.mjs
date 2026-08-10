@@ -10,6 +10,8 @@ import { fileURLToPath } from 'node:url';
 // ---------- DeepSeek / 阿里云 Token Plan 真实链路冒烟测试 ----------
 // 不进入 npm test，避免普通本地测试意外消耗额度；密钥只从父进程环境继承且从不打印。
 const PROJECT_DIR = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
+// 实况脚本只控制自己启动的隔离实例，不影响正常运行版本。
+process.env.ROUTER_TEST_SHUTDOWN = '1';
 
 function listen(server) {
   return new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
@@ -58,10 +60,10 @@ await fs.writeFile(configPath, JSON.stringify({
       platform: 'deepseek',
       match: '^deepseek-v4-flash$',
       host: 'api.deepseek.com',
-      prefix: '',
+      prefix: '/v1',
       envKey: 'DEEPSEEK_API_KEY',
-      wireApi: 'chat',
-      vision: true,
+      wireApi: 'responses',
+      vision: false,
     },
     {
       name: 'bailian-live',

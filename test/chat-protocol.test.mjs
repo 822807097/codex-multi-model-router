@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import crypto from 'node:crypto';
 
 import {
   convertResponsesTools,
@@ -169,4 +170,48 @@ test('当前请求未重复工具定义时仍从恢复的调用历史建立别�
   const messages = responsesToChatMessages(input, { autonomy: false, toolContext: converted.context });
   assert.equal(converted.tools, undefined);
   assert.equal(messages[0].tool_calls[0].function.name, 'apply_patch');
+});
+
+test('工具别名追加哈希后发生二次碰撞时仍保持唯一', () => {
+  const hash = crypto.createHash('sha256').update('a_b').digest('hex').slice(0, 10);
+  const preoccupiedAlias = `a_b_${hash}`;
+  const converted = convertResponsesTools([
+    { type: 'function', name: preoccupiedAlias, parameters: { type: 'object' } },
+    { type: 'function', name: 'a b', parameters: { type: 'object' } },
+    { type: 'function', name: 'a_b', parameters: { type: 'object' } },
+  ]);
+  const names = converted.tools.map((tool) => tool.function.name);
+
+  assert.equal(names.length, 3);
+  assert.equal(new Set(names).size, 3);
+  assert.equal(Object.keys(converted.context.byChatName).length, 3);
+});
+
+test('顶层工具名与 namespace 结构键相同时不会静默丢弃', () => {
+  const converted = convertResponsesTools([
+    { type: 'function', name: 'ns___tool', parameters: { type: 'object' } },
+    {
+      type: 'namespace',
+      name: 'ns',
+      tools: [{ type: 'function', name: 'tool', parameters: { type: 'object' } }],
+    },
+  ]);
+
+  assert.equal(converted.tools.length, 2);
+  assert.equal(new Set(converted.tools.map((tool) => tool.function.name)).size, 2);
+  assert.ok(Object.values(converted.context.byChatName).some((metadata) => metadata.namespace === 'ns' && metadata.name === 'tool'));
+});
+
+test('同名 function 与 custom 工具使用不同结构身份', () => {
+  const converted = convertResponsesTools([
+    { type: 'function', name: 'execute', parameters: { type: 'object' } },
+    { type: 'custom', name: 'execute' },
+  ]);
+
+  assert.equal(converted.tools.length, 2);
+  assert.equal(new Set(converted.tools.map((tool) => tool.function.name)).size, 2);
+  assert.deepEqual(
+    new Set(Object.values(converted.context.byChatName).map((metadata) => metadata.type)),
+    new Set(['function', 'custom']),
+  );
 });

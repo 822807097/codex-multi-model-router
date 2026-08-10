@@ -14,8 +14,8 @@ async function convert(chunks, model = 'test-model') {
     .map((payload) => payload === '[DONE]' ? payload : JSON.parse(payload));
 }
 
-async function convertWithToolContext(chunks, toolContext) {
-  const transform = createChatSseToResponsesTransform('test-model', toolContext);
+async function convertWithToolContext(chunks, toolContext, options) {
+  const transform = createChatSseToResponsesTransform('test-model', toolContext, options);
   const output = [];
   for await (const chunk of Readable.from(chunks).pipe(transform)) output.push(chunk);
   return Buffer.concat(output).toString('utf8').split(/\r?\n/)
@@ -107,11 +107,11 @@ test('省略 tool_calls.index 时不同 call_id 不会合并', async () => {
 });
 
 test('网关重复完整工具名和累计参数时不会重复拼接', async () => {
-  const events = await convert([
+  const events = await convertWithToolContext([
     'data: {"choices":[{"delta":{"tool_calls":[{"id":"call_a","function":{"name":"read_file","arguments":"{\\"path\\":"}}]}}]}\n\n',
     'data: {"choices":[{"delta":{"tool_calls":[{"id":"call_a","function":{"name":"read_file","arguments":"{\\"path\\":\\"a.js\\"}"}}]},"finish_reason":"tool_calls"}]}\n\n',
     'data: [DONE]\n\n',
-  ]);
+  ], {}, { cumulativeToolCallDeltas: true });
   const item = events.find((event) => event.type === 'response.completed').response.output[0];
   assert.equal(item.name, 'read_file');
   assert.equal(item.arguments, '{"path":"a.js"}');
@@ -213,4 +213,149 @@ test('工具名恰好也是另一工具前缀时等待名称分片完成再发�
   const completed = events.find((event) => event.type === 'response.completed');
   assert.equal(added.item.name, 'read_file');
   assert.equal(completed.response.output[0].name, 'read_file');
+});
+
+test('真实 delta 的重复工具参数片段不会被当成累计帧吞掉', async () => {
+  const events = await convert([
+    'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_repeat","function":{"name":"echo","arguments":"a"}}]}}]}\n\n',
+    'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"a"}}]},"finish_reason":"tool_calls"}]}\n\n',
+    'data: [DONE]\n\n',
+  ]);
+
+  const item = events.find((event) => event.type === 'response.completed').response.output[0];
+  assert.equal(item.arguments, 'aa');
+});
+
+test('首帧有 index 而后续帧省略 index 和 id 时仍归并到同一工具', async () => {
+  const events = await convert([
+    'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_mixed","function":{"name":"read","arguments":"{\\"x\\":"}}]}}]}\n\n',
+    'data: {"choices":[{"delta":{"tool_calls":[{"function":{"arguments":"1}"}}]},"finish_reason":"tool_calls"}]}\n\n',
+    'data: [DONE]\n\n',
+  ]);
+
+  const output = events.find((event) => event.type === 'response.completed').response.output;
+  assert.equal(output.length, 1);
+  assert.equal(output[0].call_id, 'call_mixed');
+  assert.equal(output[0].arguments, '{"x":1}');
+});
+
+test('疑似 JSON 的畸形 data 帧会失败而不是静默丢失后成功', async () => {
+  const events = await convert([
+    'data: {"choices":[{"delta":{"content":"A"}}]}\n\n',
+    'data: {bad json}\n\n',
+    'data: {"choices":[{"delta":{"content":"C"},"finish_reason":"stop"}]}\n\n',
+    'data: [DONE]\n\n',
+  ]);
+
+  assert.equal(events.some((event) => event.type === 'response.completed'), false);
+  const failed = events.find((event) => event.type === 'response.failed');
+  assert.equal(failed.response.error.code, 'invalid_sse_json');
+});
+
+test('content_filter 终止原因返回 incomplete 而不是 completed 状态', async () => {
+  const events = await convert([
+    'data: {"choices":[{"delta":{},"finish_reason":"content_filter"}]}\n\n',
+    'data: [DONE]\n\n',
+  ]);
+
+  const completed = events.find((event) => event.type === 'response.completed');
+  assert.equal(completed.response.status, 'incomplete');
+  assert.deepEqual(completed.response.incomplete_details, { reason: 'content_filter' });
+});
+
+test('未知 finish_reason 保守失败而不是标记 completed', async () => {
+  const events = await convert([
+    'data: {"choices":[{"delta":{"content":"部分输出"},"finish_reason":"provider_abort"}]}\n\n',
+    'data: [DONE]\n\n',
+  ]);
+
+  assert.equal(events.some((event) => event.type === 'response.completed'), false);
+  const failed = events.find((event) => event.type === 'response.failed');
+  assert.equal(failed.response.error.code, 'unknown_finish_reason');
+});
+
+test('单个 SSE 事件超过硬上限时明确失败', async () => {
+  const events = await convert([
+    `data: ${'x'.repeat(1024 * 1024 + 1)}`,
+  ]);
+
+  const failed = events.find((event) => event.type === 'response.failed');
+  assert.equal(failed.response.error.code, 'sse_event_too_large');
+  assert.equal(events.some((event) => event.type === 'response.completed'), false);
+});
+
+test('标准真 delta 即使后片段以前片段为前缀也必须完整拼接', async () => {
+  const events = await convert([
+    'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_prefix","function":{"name":"echo","arguments":"a"}}]}}]}\n\n',
+    'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"ab"}}]},"finish_reason":"tool_calls"}]}\n\n',
+    'data: [DONE]\n\n',
+  ]);
+
+  const item = events.find((event) => event.type === 'response.completed').response.output[0];
+  assert.equal(item.arguments, 'aab');
+});
+
+test('标准真 delta 的重复工具名称片段不得被吞掉', async () => {
+  const events = await convert([
+    'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_name","function":{"name":"a","arguments":"{}"}}]}}]}\n\n',
+    'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"name":"a"}}]},"finish_reason":"tool_calls"}]}\n\n',
+    'data: [DONE]\n\n',
+  ]);
+
+  assert.equal(events.find((event) => event.type === 'response.completed').response.output[0].name, 'aa');
+});
+
+test('显式累计模式下重复的完整参数帧不得二次拼接', async () => {
+  const frame = '{\\"value\\":1}';
+  const events = await convertWithToolContext([
+    `data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_cumulative","function":{"name":"tool","arguments":"${frame}"}}]}}]}\n\n`,
+    `data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"${frame}"}}]},"finish_reason":"tool_calls"}]}\n\n`,
+    'data: [DONE]\n\n',
+  ], {}, { cumulativeToolCallDeltas: true });
+
+  assert.equal(events.find((event) => event.type === 'response.completed').response.output[0].arguments, '{"value":1}');
+});
+
+test('Chat SSE 的非 JSON data 帧必须失败而不是静默跳过', async () => {
+  const events = await convert([
+    'data: provider overloaded\n\n',
+    'data: {"choices":[{"delta":{"content":"错误后的文本"},"finish_reason":"stop"}]}\n\n',
+    'data: [DONE]\n\n',
+  ]);
+
+  assert.equal(events.some((event) => event.type === 'response.completed'), false);
+  assert.equal(events.find((event) => event.type === 'response.failed').response.error.code, 'invalid_sse_json');
+});
+
+test('累计正文、推理和工具参数共享响应级内存硬上限', async () => {
+  const transform = createChatSseToResponsesTransform('test-model', {}, { maxAccumulatedBytes: 8 });
+  const output = [];
+  for await (const chunk of Readable.from([
+    'data: {"choices":[{"delta":{"content":"12345"}}]}\n\n',
+    'data: {"choices":[{"delta":{"reasoning_content":"6789"},"finish_reason":"stop"}]}\n\n',
+    'data: [DONE]\n\n',
+  ]).pipe(transform)) output.push(chunk);
+  const events = Buffer.concat(output).toString('utf8').split(/\r?\n/)
+    .filter((line) => line.startsWith('data: '))
+    .map((line) => line.slice(6))
+    .map((payload) => payload === '[DONE]' ? payload : JSON.parse(payload));
+
+  assert.equal(events.some((event) => event.type === 'response.completed'), false);
+  assert.equal(events.find((event) => event.type === 'response.failed').response.error.code, 'response_too_large');
+});
+
+test('空参数工具调用数量也有独立硬上限', async () => {
+  const transform = createChatSseToResponsesTransform('test-model', {}, { maxToolCalls: 1 });
+  const output = [];
+  for await (const chunk of Readable.from([
+    'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","function":{"name":"a","arguments":""}},{"index":1,"id":"call_2","function":{"name":"b","arguments":""}}]},"finish_reason":"tool_calls"}]}\n\n',
+    'data: [DONE]\n\n',
+  ]).pipe(transform)) output.push(chunk);
+  const events = Buffer.concat(output).toString('utf8').split(/\r?\n/)
+    .filter((line) => line.startsWith('data: '))
+    .map((line) => line.slice(6))
+    .map((payload) => payload === '[DONE]' ? payload : JSON.parse(payload));
+
+  assert.equal(events.some((event) => event.type === 'response.completed'), false);
+  assert.equal(events.find((event) => event.type === 'response.failed').response.error.code, 'too_many_tool_calls');
 });

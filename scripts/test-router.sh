@@ -7,6 +7,8 @@ set -euo pipefail
 
 PORT="${ROUTER_PORT:-15730}"
 BASE="http://127.0.0.1:$PORT"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+CONFIG_PATH="${ROUTER_CONFIG_PATH:-$SCRIPT_DIR/../config.json}"
 SKIP_OFFICIAL=false
 SKIP_VISION=false
 
@@ -26,8 +28,17 @@ if ! curl -sf "$BASE/healthz" >/dev/null 2>&1; then
 fi
 echo "[路由] 运行中"
 
-# 1. 环境变量存在性（不打印值）
-KEY_NAMES="${ROUTER_ENV_KEYS:-DEEPSEEK_API_KEY BAILIAN_API_KEY}"
+# 1. 环境变量存在性（从实际配置读取名称，绝不打印值）
+CONFIG_KEY_NAMES="$(node -e '
+const fs = require("node:fs");
+const cfg = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
+const names = [...(cfg.targets || []), cfg.visionRelay]
+  .map((item) => item?.envKey)
+  .filter((name) => /^[A-Za-z_][A-Za-z0-9_]*$/.test(name || ""));
+process.stdout.write([...new Set(names)].join(" "));
+' "$CONFIG_PATH")"
+EXTRA_KEY_NAMES="${ROUTER_ENV_KEYS:-}"
+KEY_NAMES="$CONFIG_KEY_NAMES ${EXTRA_KEY_NAMES//,/ }"
 for k in $KEY_NAMES; do
     if [ -n "${!k:-}" ]; then
         echo "[env] $k 已设置"

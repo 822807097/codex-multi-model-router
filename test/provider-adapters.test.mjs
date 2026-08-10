@@ -37,6 +37,42 @@ test('DeepSeek Chat 保留 reasoning_effort 并启用 usage 流', () => {
   assert.equal(request.parallel_tool_calls, true);
 });
 
+test('Responses 强制工具选择转换为 Chat function 结构并使用工具别名', () => {
+  const provider = resolveProvider({ name: 'bailian', wireApi: 'chat' });
+  const toolContext = {
+    byChatName: {
+      read_file: { type: 'function', name: 'read file' },
+      apply_patch: { type: 'custom', name: 'apply patch' },
+      mcp__mail___search: { type: 'function', namespace: 'mcp__mail', name: 'search' },
+      tool_search: { type: 'tool_search', name: 'tool_search' },
+    },
+  };
+  const convert = (toolChoice) => applyChatProviderOptions(
+    { model: 'qwen', messages: [] },
+    { tool_choice: toolChoice },
+    provider,
+    toolContext,
+  ).tool_choice;
+
+  assert.deepEqual(convert({ type: 'function', name: 'read file' }), {
+    type: 'function',
+    function: { name: 'read_file' },
+  });
+  assert.deepEqual(convert({ type: 'custom', name: 'apply patch' }), {
+    type: 'function',
+    function: { name: 'apply_patch' },
+  });
+  assert.deepEqual(convert({ type: 'function', namespace: 'mcp__mail', name: 'search' }), {
+    type: 'function',
+    function: { name: 'mcp__mail___search' },
+  });
+  assert.deepEqual(convert({ type: 'tool_search' }), {
+    type: 'function',
+    function: { name: 'tool_search' },
+  });
+  assert.equal(convert('required'), 'required');
+});
+
 test('检查点非流式请求按供应商关闭推理以保留正文预算', () => {
   const base = { model: 'checkpoint-model', messages: [], stream: false };
   assert.equal(
@@ -97,6 +133,11 @@ test('compact 仅允许原生 Responses 通道透传', () => {
     allowed: true,
   });
   assert.deepEqual(resolveRequestProtocol({ wireApi: 'chat' }, '/v1/responses/compact'), {
+    isChat: true,
+    isCompact: true,
+    allowed: false,
+  });
+  assert.deepEqual(resolveRequestProtocol({ wireApi: 'chat' }, '/v1/responses/compact/?mode=safe'), {
     isChat: true,
     isCompact: true,
     allowed: false,
