@@ -11,12 +11,13 @@ $env:CODEX_HOME = $codexHome
 #   1. 自动从同目录 ../config.json 提取所有 envKey（targets + visionRelay），保证后加的 key 也能注入
 #   2. 再合并 ROUTER_ENV_KEYS（逗号分隔）作为补充
 function Get-EnvAny($name) {
-    $v = [Environment]::GetEnvironmentVariable($name, 'User')
+    $v = [Environment]::GetEnvironmentVariable($name, 'Process')
+    if (-not $v) { $v = [Environment]::GetEnvironmentVariable($name, 'User') }
     if (-not $v) { $v = [Environment]::GetEnvironmentVariable($name, 'Machine') }
     return $v
 }
 $keySet = @{}
-$cfgPath = Join-Path $PSScriptRoot '..\config.json'
+$cfgPath = if ($env:ROUTER_CONFIG_PATH) { $env:ROUTER_CONFIG_PATH } else { Join-Path $PSScriptRoot '..\config.json' }
 if (-not (Test-Path $cfgPath)) { $cfgPath = Join-Path $PSScriptRoot 'config.json' }
 if (Test-Path $cfgPath) {
     # 显式 UTF8：Windows PowerShell 5.1 的 Get-Content 默认按 ANSI 解码，会把中文注释读坏导致 JSON 解析失败

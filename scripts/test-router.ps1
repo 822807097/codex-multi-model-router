@@ -9,7 +9,8 @@ $base = "http://127.0.0.1:$port"
 $results = @()
 
 function Get-EnvAny($name) {
-    $v = [Environment]::GetEnvironmentVariable($name, 'User')
+    $v = [Environment]::GetEnvironmentVariable($name, 'Process')
+    if (-not $v) { $v = [Environment]::GetEnvironmentVariable($name, 'User') }
     if (-not $v) { $v = [Environment]::GetEnvironmentVariable($name, 'Machine') }
     return $v
 }
@@ -39,8 +40,19 @@ try {
     exit 1
 }
 
-# 1. 环境变量存在性（不打印值）
-$keyNames = if ($env:ROUTER_ENV_KEYS) { $env:ROUTER_ENV_KEYS.Split(',') } else { @('DEEPSEEK_API_KEY', 'BAILIAN_API_KEY') }
+# 1. 环境变量存在性（从实际配置读取名称，不打印值）
+$keySet = @{}
+$configPath = if ($env:ROUTER_CONFIG_PATH) { $env:ROUTER_CONFIG_PATH } else { Join-Path $PSScriptRoot '..\config.json' }
+if (-not (Test-Path $configPath)) { $configPath = Join-Path $PSScriptRoot 'config.json' }
+if (Test-Path $configPath) {
+    $cfg = Get-Content $configPath -Raw -Encoding UTF8 | ConvertFrom-Json
+    foreach ($target in @($cfg.targets)) { if ($target.envKey) { $keySet[$target.envKey] = $true } }
+    if ($cfg.visionRelay.envKey) { $keySet[$cfg.visionRelay.envKey] = $true }
+}
+if ($env:ROUTER_ENV_KEYS) {
+    foreach ($keyName in $env:ROUTER_ENV_KEYS.Split(',')) { if ($keyName.Trim()) { $keySet[$keyName.Trim()] = $true } }
+}
+$keyNames = $keySet.Keys
 foreach ($k in $keyNames) {
     if (Get-EnvAny $k) { Write-Host "[env] $k 已设置" -ForegroundColor Green }
     else { Write-Host "[env] $k 未设置！对应通道会失败" -ForegroundColor Red }

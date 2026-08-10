@@ -1,5 +1,5 @@
 {
-  "_comment": "路由配置文件：修改后执行 restart-router.ps1 生效",
+  "_comment": "路由配置文件：启动时会聚合预检；非法 target 正则或显式非法资源值会在监听前失败，缺少供应商 Key 仅告警；修改配置、更换 ChatGPT 账号/API key/组织租户身份后都必须重启路由，以清空内存状态",
   "port": 15730,
   "proxy": {
     "_comment": "所有 viaProxy=true 的官方或自定义 HTTPS 通道共用此 HTTP CONNECT 代理；v2rayN 请填写 HTTP/混合端口",
@@ -13,26 +13,44 @@
     "requestMs": 600000
   },
   "heartbeatMs": 15000,
+  "maxRequestBytes": 67108864,
+  "maxConcurrentRequests": 8,
+  "maxBufferedRequestBytes": 134217728,
   "providerPool": {
-    "_comment": "同一模型配置多条 target 时记录成功供应商；仅对连接错误、408、429、5xx 安全切换备用目标",
+    "_comment": "同一模型配置多条同 wireApi target 时记录成功供应商；stateDomain 只允许相同 wireApi 共享，Chat/Responses 始终分域；亲和键仅保存 SHA-256",
     "maxEntries": 2048,
-    "ttlMs": 86400000
+    "ttlMs": 86400000,
+    "allowDefaultTarget": false,
+    "modelAffinity": false
   },
   "responseHistory": {
-    "_comment": "只缓存 previous_response_id 对应的工具调用，不保存完整对话正文",
+    "_comment": "只缓存 previous_response_id 对应的工具调用；键仅保存 SHA-256，条目和全局字节均有硬上限，不保存完整对话正文",
     "maxEntries": 512,
+    "maxEntryBytes": 1048576,
+    "maxBytes": 16777216,
     "ttlMs": 86400000
   },
   "goalCheckpoint": {
-    "_comment": "仅在 Chat 裁剪旧轮次时生成九栏目目标检查点；来源和响应体均有硬上限，只缓存摘要、哈希及有界关联元数据",
+    "_comment": "仅在 Chat 裁剪旧轮次时生成九栏目目标检查点；task/exact/response 外部键均保存为带类型域 SHA-256，response 索引另有独立 TTL/LRU 上限",
     "enabled": true,
     "maxEntries": 128,
     "maxResponseIdsPerTask": 128,
+    "maxResponseIndexes": 16384,
     "ttlMs": 86400000,
     "sourceTokenBudget": 128000,
     "sourceWindowRatio": 0.2,
     "maxOutputTokens": 2048,
-    "requestMs": 120000
+    "requestMs": 120000,
+    "persistence": {
+      "_comment": "冷重启恢复默认关闭；启用时必须显式填写文件路径，只保存九栏目摘要和哈希索引，不保存完整历史或凭据",
+      "enabled": false,
+      "path": null,
+      "stateGeneration": "default",
+      "debounceMs": 1000,
+      "maxBytes": 16777216,
+      "lockHeartbeatMs": 5000,
+      "lockStaleMs": 30000
+    }
   },
   "paths": {
     "auth": null,
@@ -52,6 +70,7 @@
       "platform": "openai",
       "host": "chatgpt.com",
       "prefix": "/backend-api/codex",
+      "useOpenAiAuth": true,
       "viaProxy": true,
       "vision": true,
       "wireApi": "responses"
@@ -141,12 +160,16 @@
     ]
   },
   "visionRelay": {
-    "_comment": "视觉中继也可独立选择直连或共用顶层 HTTP CONNECT 代理",
+    "_comment": "视觉中继也可独立选择直连或共用顶层 HTTP CONNECT 代理；concurrency 为 1..8 的进程级总并发，相同图片并发请求使用 single-flight",
     "host": "token-plan.cn-beijing.maas.aliyuncs.com",
     "prefix": "/compatible-mode/v1",
     "model": "qwen3.8-max",
     "envKey": "aliyun_video_key",
     "viaProxy": false,
+    "concurrency": 3,
+    "maxImagesPerRequest": 8,
+    "cacheMaxEntries": 64,
+    "cacheMaxBytes": 1048576,
     "prompt": "Describe this image concisely (2-4 sentences) for a coding assistant that cannot see it. Focus on text/UI elements/code/error messages if present.",
     "maxTokens": 300
   }

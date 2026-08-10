@@ -17,3 +17,6 @@ models.json
 # OS
 .DS_Store
 Thumbs.db
+
+# �ܹ��������ļ�
+.env
