@@ -526,14 +526,6 @@ Token Plan 周配额耗尽，提示里带重置时间，到期自动恢复，无
 **Q17：更新路由会不会打断正在跑的任务**
 不会。`restart-router.ps1` 先让旧进程释放端口并排空在跑任务，新进程立即接管新请求。
 
-### 安全类
-
-**Q18：auth.json 会被误传到 Git 吗**
-不会。`.gitignore` 已排除 `auth.json`、`models.json`、日志、备份。请勿手动把它们复制进项目目录。
-
-**Q19：为什么仓库里有 `client_id`，是不是泄露**
-`app_EMoamEEZ73f0CkXaXp7hrann` 是 Codex 应用的**公开 OAuth 客户端标识**（类似应用 ID，GitHub 上所有同类项目都公开），不是机密；真正的凭据是本地 `auth.json` 里的令牌，从未进仓库。
-
 ---
 
 ## 九、技术细节
