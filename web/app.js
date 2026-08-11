@@ -6,6 +6,16 @@ import {
   serializeConfigState,
   updateConfigValue,
 } from './config-state.mjs';
+import {
+  addModelDraft,
+  createModelRoutingState,
+  isModelRoutingDirty,
+  isPersistedModelRoutingTarget,
+  removeModelDraft,
+  serializeModelRoutingOperations,
+  undoModelRoutingChange,
+  updateModelDraft,
+} from './model-routing-state.mjs';
 
 (() => {
   'use strict';
@@ -57,6 +67,18 @@ import {
     return true;
   };
 
+  const errorMessageForCode = (code, status) => ({
+    revision_conflict: '文件已被其他页面或进程修改。请重新载入后再操作。',
+    confirmation_invalid: '确认已失效。请重新预检并确认影响。',
+    request_invalid: '请求内容无效，请检查填写内容。',
+    target_not_dedicated: '该通道不是唯一的精确专属通道，无法删除。',
+    transaction_rolled_back: '保存未完成，系统已安全回滚。',
+    transaction_in_doubt: '保存状态暂时无法确认。请重新载入查看当前状态。',
+    transaction_failed: '保存没有完成。请稍后重新载入确认当前状态。',
+  })[code] || (status >= 500
+    ? '服务暂时无法完成操作。请稍后重新载入。'
+    : `请求没有完成（HTTP ${status}）。`);
+
   async function request(path, options = {}) {
     const response = await fetch(apiUrl(path), {
       cache: 'no-store',
@@ -67,11 +89,14 @@ import {
     try {
       body = await response.json();
     } catch {
-      throw new Error(`服务返回了无法识别的内容（HTTP ${response.status}）`);
+      const error = new Error('服务返回了无法识别的内容。请重新载入后重试。');
+      error.status = response.status;
+      throw error;
     }
     if (!response.ok) {
-      const error = new Error(body?.error?.message || `请求失败（HTTP ${response.status}）`);
-      error.code = body?.error?.code;
+      const code = typeof body?.error?.code === 'string' ? body.error.code : 'request_failed';
+      const error = new Error(errorMessageForCode(code, response.status));
+      error.code = code;
       error.status = response.status;
       throw error;
     }
@@ -85,11 +110,23 @@ import {
       this.configState = null;
       this.checkpoints = null;
       this.validation = null;
+      this.modelRoutingState = null;
+      this.modelValidationCache = null;
+      this.modelRoutingError = null;
+      this.modelDialogReturnFocus = null;
+      this.pendingDeleteSlug = null;
       this.dirty = false;
       this.busy = new Set();
+      this.initialized = false;
+      this.resyncRequired = false;
+      this.loadEpoch = 0;
+      this.activeReloadPromise = null;
+      this.activeResyncPromise = null;
     }
 
     connectedCallback() {
+      if (this.initialized) return;
+      this.initialized = true;
       this.renderShell();
       this.bindEvents();
       this.reload();
@@ -105,6 +142,7 @@ import {
           <nav aria-label="页面导航">
             <a href="#overview">总览</a>
             <a href="#channels">模型通道</a>
+            <a href="#custom-models">自定义模型</a>
             <a href="#configuration">配置</a>
             <a href="#checkpoints">检查点</a>
           </nav>
@@ -125,6 +163,12 @@ import {
             <span>新配置需要人工重启路由后生效。本页面不会自动重启进程。</span>
           </div>
           <div id="global-message" class="notice" role="alert" hidden></div>
+          <div id="resync-notice" class="notice" role="alert" hidden>
+            <strong>需要重新载入</strong>
+            <span>正在取得两份最新基线。为避免覆盖新配置，编辑与保存已冻结。</span>
+            <button class="button secondary compact" type="button" data-action="resync-reload">重新载入</button>
+          </div>
+          <div id="conflict-actions" class="notice" role="alert" hidden></div>
 
           <section id="overview" class="section" aria-labelledby="overview-title">
             <div class="section-heading"><div><p class="kicker">01 / OVERVIEW</p><h2 id="overview-title">运行总览</h2></div><span class="live-pill"><i></i>本机服务</span></div>
@@ -136,8 +180,26 @@ import {
             <div id="channel-grid" class="channel-grid" aria-live="polite"><div class="skeleton channel"></div><div class="skeleton channel"></div></div>
           </section>
 
+          <section id="custom-models" class="section" aria-labelledby="custom-models-title">
+            <div class="section-heading"><div><p class="kicker">03 / CUSTOM MODELS</p><h2 id="custom-models-title">自定义模型</h2></div><span id="model-dirty-badge" class="dirty-badge" hidden>有未保存更改</span></div>
+            <div class="privacy-note"><span aria-hidden="true">◈</span><p><strong>官方模型与自定义模型共存</strong><br>这里仅管理模型目录与通道关联；不会显示或收集凭据内容。保存后需手动重启路由与 Codex，页面不会自动重启。</p></div>
+            <div class="model-toolbar">
+              <button class="button primary" type="button" data-action="model-add" disabled>新增自定义模型</button>
+              <button class="button secondary" type="button" data-action="model-undo" disabled>撤销最近更改</button>
+            </div>
+            <div id="model-routing-panel" class="model-routing-panel" aria-live="polite"><div class="skeleton form"></div></div>
+            <div id="model-validation-results" class="validation-results" aria-live="polite"></div>
+            <div class="sticky-actions model-actions">
+              <span id="model-save-hint">正在载入自定义模型…</span>
+              <div>
+                <button class="button secondary" type="button" data-action="model-validate" disabled>预检更改</button>
+                <button class="button primary" type="button" data-action="model-save" disabled>保存自定义模型</button>
+              </div>
+            </div>
+          </section>
+
           <section id="configuration" class="section" aria-labelledby="configuration-title">
-            <div class="section-heading"><div><p class="kicker">03 / CONFIGURATION</p><h2 id="configuration-title">路由配置</h2></div><span id="dirty-badge" class="dirty-badge" hidden>有未保存更改</span></div>
+            <div class="section-heading"><div><p class="kicker">04 / CONFIGURATION</p><h2 id="configuration-title">路由配置</h2></div><span id="dirty-badge" class="dirty-badge" hidden>有未保存更改</span></div>
             <div class="privacy-note"><span aria-hidden="true">◈</span><p><strong>敏感信息已隔离</strong><br>API Key、Token、Authorization 等字段不会显示或提供编辑入口；保存时由路由安全保留原值。未知扩展字段和注释也会原样保留。</p></div>
             <form id="config-form" novalidate aria-describedby="config-help">
               <p id="config-help" class="sr-only">修改后先预检，确认无错误再保存。保存不会自动重启路由。</p>
@@ -154,7 +216,7 @@ import {
           </section>
 
           <section id="checkpoints" class="section" aria-labelledby="checkpoints-title">
-            <div class="section-heading"><div><p class="kicker">04 / CHECKPOINTS</p><h2 id="checkpoints-title">长任务检查点</h2></div><button class="button ghost compact" type="button" data-action="refresh-checkpoints">刷新</button></div>
+            <div class="section-heading"><div><p class="kicker">05 / CHECKPOINTS</p><h2 id="checkpoints-title">长任务检查点</h2></div><button class="button ghost compact" type="button" data-action="refresh-checkpoints">刷新</button></div>
             <div id="checkpoint-panel" class="checkpoint-panel" aria-live="polite"><div class="skeleton form"></div></div>
           </section>
         </main>
@@ -170,16 +232,31 @@ import {
               <button class="button danger" value="confirm">确认清空</button>
             </div>
           </form>
-        </dialog>`;
+        </dialog>
+
+        <dialog id="model-dialog" aria-labelledby="model-dialog-title"></dialog>
+        <dialog id="delete-model-dialog" aria-labelledby="delete-model-title"></dialog>`;
     }
 
     bindEvents() {
       this.addEventListener('click', (event) => {
         const action = event.target.closest('[data-action]')?.dataset.action;
         if (action === 'reload') this.reload();
+        if (action === 'resync-reload') this.resyncBaselines();
+        if (action === 'discard-model-drafts-reload') this.discardDraftsAndReload('model');
+        if (action === 'discard-config-drafts-reload') this.discardDraftsAndReload('config');
         if (action === 'validate') this.validateConfig();
         if (action === 'refresh-checkpoints') this.loadCheckpoints();
         if (action === 'clear-checkpoints') this.openClearDialog();
+        if (action === 'model-add') this.openModelDialog();
+        if (action === 'model-edit') this.openModelDialog(event.target.closest('[data-slug]')?.dataset.slug);
+        if (action === 'model-delete') this.openDeleteModelDialog(event.target.closest('[data-slug]')?.dataset.slug);
+        if (action === 'model-undo') this.undoModelChange();
+        if (action === 'model-validate') this.validateModelRouting();
+        if (action === 'model-save') this.saveModelRouting();
+        if (action === 'model-dialog-cancel') this.closeModelDialog();
+        if (action === 'delete-model-cancel') this.closeDeleteModelDialog();
+        if (action === 'delete-model-confirm') this.deleteModelDraft();
       });
       this.querySelector('#config-form').addEventListener('submit', (event) => {
         event.preventDefault();
@@ -190,6 +267,18 @@ import {
       this.querySelector('#clear-dialog').addEventListener('close', (event) => {
         if (event.target.returnValue === 'confirm') this.clearCheckpoints();
       });
+      this.querySelector('#model-dialog').addEventListener('close', () => this.restoreModelDialogFocus());
+      this.querySelector('#delete-model-dialog').addEventListener('close', () => this.restoreModelDialogFocus());
+      this.querySelector('#model-dialog').addEventListener('submit', (event) => {
+        event.preventDefault();
+        this.saveModelDialog();
+      });
+      this.querySelector('#model-dialog').addEventListener('change', (event) => {
+        if (event.target.matches('[data-model-target]')) this.fillModelTargetFields(event.target.value);
+        if (event.target.matches('#model-routing-mode')) this.fillModelTargetFields(
+          this.querySelector('#model-target-ref').value,
+        );
+      });
       window.addEventListener('beforeunload', (event) => {
         if (!this.dirty) return;
         event.preventDefault();
@@ -197,37 +286,203 @@ import {
       });
     }
 
+    isCurrentLoad(epoch) {
+      return epoch === this.loadEpoch;
+    }
+
     async reload() {
+      if (this.resyncRequired) return this.resyncBaselines();
       if (this.dirty) {
         this.showMessage('当前有未保存更改。请先保存，或重新打开页面以放弃这些更改。');
-        return;
+        return false;
       }
+      if (this.activeReloadPromise) return this.activeReloadPromise;
+      const epoch = ++this.loadEpoch;
+      const run = this.reloadAtEpoch(epoch);
+      this.activeReloadPromise = run;
+      try {
+        return await run;
+      } finally {
+        if (this.isCurrentLoad(epoch) && this.activeReloadPromise === run) this.activeReloadPromise = null;
+      }
+    }
+
+    async reloadAtEpoch(epoch) {
+      if (!this.isCurrentLoad(epoch)) return false;
       this.clearMessage();
       const results = await Promise.allSettled([
-        this.loadStatus(),
-        this.loadConfig(),
-        this.loadCheckpoints(),
+        this.loadStatus(epoch),
+        this.loadConfig(epoch),
+        this.loadModelRouting(epoch),
+        this.loadCheckpoints(epoch),
       ]);
+      if (!this.isCurrentLoad(epoch)) return false;
       const failed = results.find((result) => result.status === 'rejected');
       if (failed) this.showMessage(failed.reason.message);
+      return !failed;
     }
 
-    async loadStatus() {
-      this.status = await request('status');
+    freezeForResync() {
+      this.resyncRequired = true;
+      this.configState = null;
+      this.modelRoutingState = null;
+      this.validation = null;
+      this.modelValidationCache = null;
+      this.dirty = false;
+      this.modelRoutingError = '正在重新载入两份最新基线…';
+      this.renderConfigUnavailable('正在重新载入最新高级配置…');
+      this.renderModelRouting();
+      this.setDirty();
+      this.querySelector('#resync-notice').hidden = false;
+    }
+
+    async resyncBaselines() {
+      if (this.activeResyncPromise) return this.activeResyncPromise;
+      const epoch = ++this.loadEpoch;
+      // 新的 resync 使任何尚未完成的普通加载失效，不能再占用 reload 去重槽位。
+      this.activeReloadPromise = null;
+      const run = this.resyncAtEpoch(epoch);
+      this.activeResyncPromise = run;
+      try {
+        return await run;
+      } finally {
+        if (this.isCurrentLoad(epoch) && this.activeResyncPromise === run) this.activeResyncPromise = null;
+      }
+    }
+
+    async resyncAtEpoch(epoch) {
+      if (!this.isCurrentLoad(epoch)) return false;
+      this.freezeForResync();
+      const results = await Promise.allSettled([this.fetchConfigPayload(), this.fetchModelRoutingPayload()]);
+      if (!this.isCurrentLoad(epoch)) return false;
+      if (results.every((result) => result.status === 'fulfilled')) {
+        try {
+          this.commitConfigPayload(results[0].value, epoch);
+          this.commitModelRoutingPayload(results[1].value, epoch);
+        } catch {
+          return this.keepResyncFrozen();
+        }
+        if (!this.isCurrentLoad(epoch)) return false;
+        this.resyncRequired = false;
+        this.modelRoutingError = null;
+        this.querySelector('#resync-notice').hidden = true;
+        this.clearConflictActions();
+        this.setDirty();
+        this.renderConfig();
+        this.renderModelRouting();
+        return true;
+      }
+      return this.keepResyncFrozen();
+    }
+
+    keepResyncFrozen() {
+      // 任一读取或解析失败时，不保留可能已经更新的单侧状态，防止旧基线被再次保存。
+      this.configState = null;
+      this.modelRoutingState = null;
+      this.validation = null;
+      this.modelValidationCache = null;
+      this.modelRoutingError = '重新载入未完成；编辑与保存继续冻结。';
+      this.renderConfigUnavailable('重新载入未完成；请使用“重新载入”再次尝试。');
+      this.renderModelRouting();
+      this.setDirty();
+      this.showMessage('重新载入未完成；为避免覆盖新配置，页面仍处于冻结状态。');
+      return false;
+    }
+
+    async discardDraftsAndReload(scope) {
+      const configDirty = this.configState && isConfigDirty(this.configState);
+      const modelDirty = this.modelRoutingState && isModelRoutingDirty(this.modelRoutingState);
+      if (scope === 'model' && configDirty) {
+        this.showMessage('高级配置另一侧仍有未保存更改；请先处理高级配置，模型草稿未被放弃。');
+        return false;
+      }
+      if (scope === 'config' && modelDirty) {
+        this.showMessage('自定义模型另一侧仍有未保存更改；请先处理模型草稿，高级配置未被放弃。');
+        return false;
+      }
+      if (scope === 'model') {
+        this.modelRoutingState = null;
+        this.modelValidationCache = null;
+      } else {
+        this.configState = null;
+        this.validation = null;
+      }
+      this.clearConflictActions();
+      this.showMessage(scope === 'model'
+        ? '已放弃当前模型草稿，正在重新载入。'
+        : '已放弃当前高级配置草稿，正在重新载入。');
+      return this.resyncBaselines();
+    }
+
+    async loadStatus(epoch = this.loadEpoch) {
+      const payload = await request('status');
+      if (!this.isCurrentLoad(epoch)) return false;
+      this.status = payload;
       this.renderOverview();
       this.renderChannels();
+      return true;
     }
 
-    async loadConfig() {
-      this.configState = createConfigState(await request('config'));
+    async fetchConfigPayload() {
+      return request('config');
+    }
+
+    commitConfigPayload(payload, epoch) {
+      if (!this.isCurrentLoad(epoch)) return false;
+      this.configState = createConfigState(payload);
       this.validation = null;
       this.setDirty();
       this.renderConfig();
+      return true;
     }
 
-    async loadCheckpoints() {
-      this.checkpoints = await request('checkpoints');
+    async loadConfig(epoch = this.loadEpoch) {
+      const payload = await this.fetchConfigPayload();
+      return this.commitConfigPayload(payload, epoch);
+    }
+
+    renderConfigUnavailable(message) {
+      const root = this.querySelector('#config-fields');
+      root.replaceChildren(el('p', 'empty-state', message));
+      this.updateConfigControls();
+    }
+
+    async fetchModelRoutingPayload() {
+      return request('model-routing');
+    }
+
+    commitModelRoutingPayload(payload, epoch) {
+      if (!this.isCurrentLoad(epoch)) return false;
+      this.modelRoutingState = createModelRoutingState(payload);
+      this.modelRoutingError = null;
+      this.modelValidationCache = null;
+      this.setDirty();
+      this.renderModelRouting();
+      return true;
+    }
+
+    async loadModelRouting(epoch = this.loadEpoch) {
+      try {
+        const payload = await this.fetchModelRoutingPayload();
+        return this.commitModelRoutingPayload(payload, epoch);
+      } catch (error) {
+        if (!this.isCurrentLoad(epoch)) return false;
+        this.modelRoutingState = null;
+        this.modelValidationCache = null;
+        this.modelRoutingError = '自定义模型暂时无法载入，请刷新后重试。';
+        this.renderModelRouting();
+        const safeError = new Error(this.modelRoutingError);
+        safeError.status = error.status;
+        throw safeError;
+      }
+    }
+
+    async loadCheckpoints(epoch = this.loadEpoch) {
+      const payload = await request('checkpoints');
+      if (!this.isCurrentLoad(epoch)) return false;
+      this.checkpoints = payload;
       this.renderCheckpoints();
+      return true;
     }
 
     renderOverview() {
@@ -324,9 +579,8 @@ import {
       channels.body.append(list);
       root.append(channels.node);
 
-      this.querySelector('[data-action="validate"]').disabled = false;
-      this.querySelector('#config-form button[type="submit"]').disabled = false;
       this.querySelector('#save-hint').textContent = '建议先预检，再保存到 config.json';
+      this.updateConfigControls();
     }
 
     renderModelContextGroups(root, config) {
@@ -636,6 +890,16 @@ import {
     updateConfig(event) {
       const control = event.target.closest('[data-path]');
       if (!control || !this.configState?.config) return;
+      if (this.resyncRequired) {
+        this.showMessage('页面正在重新载入最新基线，暂不能编辑高级配置。');
+        this.renderConfigUnavailable('正在重新载入最新高级配置…');
+        return;
+      }
+      if (this.modelRoutingState && isModelRoutingDirty(this.modelRoutingState)) {
+        this.showMessage('自定义模型有未保存更改。请先保存或撤销，再编辑高级配置，避免相互覆盖。');
+        this.renderConfig();
+        return;
+      }
       const path = JSON.parse(control.dataset.path);
       const rawValue = control.value;
       const exists = hasOwnPath(this.configState.config, path);
@@ -679,6 +943,14 @@ import {
 
     async validateConfig() {
       if (!this.configState || this.busy.has('config')) return;
+      if (this.resyncRequired) {
+        this.showMessage('页面正在重新载入最新基线，暂不能预检高级配置。');
+        return;
+      }
+      if (this.modelRoutingState && isModelRoutingDirty(this.modelRoutingState)) {
+        this.showMessage('请先处理自定义模型的未保存更改，再预检高级配置。');
+        return;
+      }
       this.setBusy('config', true);
       this.clearMessage();
       try {
@@ -689,6 +961,7 @@ import {
         this.renderValidation();
       } catch (error) {
         this.showMessage(error.message);
+        if (error.code === 'revision_conflict') this.showConflictAction('config');
       } finally {
         this.setBusy('config', false);
       }
@@ -696,6 +969,15 @@ import {
 
     async saveConfig() {
       if (!this.configState || this.busy.has('config')) return;
+      if (this.resyncRequired) {
+        this.showMessage('页面正在重新载入最新基线，暂不能保存高级配置。');
+        return;
+      }
+      if (!isConfigDirty(this.configState)) return;
+      if (this.modelRoutingState && isModelRoutingDirty(this.modelRoutingState)) {
+        this.showMessage('请先处理自定义模型的未保存更改，再保存高级配置。');
+        return;
+      }
       this.setBusy('config', true);
       this.clearMessage();
       try {
@@ -709,7 +991,8 @@ import {
           method: 'PUT',
           body: JSON.stringify(this.payload()),
         });
-        await this.loadConfig();
+        const resynced = await this.resyncBaselines();
+        if (!resynced) return;
         this.validation = { errors: [], warnings: saved.warnings || [] };
         this.renderValidation();
         this.querySelector('#restart-notice').hidden = !saved.restartRequired;
@@ -717,6 +1000,7 @@ import {
       } catch (error) {
         if (error.code === 'revision_conflict') {
           this.showMessage('配置已在其他页面或进程中变化。请刷新后重新修改，避免覆盖新内容。');
+          this.showConflictAction('config');
         } else {
           this.showMessage(error.message);
         }
@@ -748,6 +1032,515 @@ import {
         });
         root.append(list);
       }
+    }
+
+    modelBindings(slug) {
+      return this.modelRoutingState?.bindings?.find((binding) => binding.slug === slug)?.targetRefs || [];
+    }
+
+    modelTargetStatus(slug, targetRef) {
+      const target = this.modelRoutingState?.targets?.find((item) => item.targetRef === targetRef);
+      const bindings = this.modelRoutingState?.bindings || [];
+      const owners = bindings.filter((item) => item.targetRefs.includes(targetRef));
+      const exact = target?.match === `^${slug.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`;
+      if (owners.length === 1 && exact) return '专属精确通道';
+      if (owners.length > 1) return '共享通道';
+      return '宽泛匹配通道';
+    }
+
+    modelActionAllowed(notify = true) {
+      if (this.resyncRequired) {
+        if (notify) this.showMessage('页面正在等待两份最新基线；请先重新载入。');
+        return false;
+      }
+      if (!this.modelRoutingState) {
+        if (notify) this.showMessage(this.modelRoutingError || '自定义模型尚未载入完成，请稍后重试。');
+        return false;
+      }
+      if (this.configState && isConfigDirty(this.configState)) {
+        if (notify) this.showMessage('高级配置有未保存更改。请先保存或放弃，再操作自定义模型，避免相互覆盖。');
+        return false;
+      }
+      return true;
+    }
+
+    invalidateModelValidation() {
+      this.modelValidationCache = null;
+      this.renderModelValidation();
+    }
+
+    modelOperationSignature() {
+      const state = this.modelRoutingState;
+      return state ? JSON.stringify({
+        configRevision: state.configRevision,
+        catalogRevision: state.catalogRevision,
+        operations: serializeModelRoutingOperations(state),
+      }) : '';
+    }
+
+    cacheModelValidation(validation) {
+      const state = this.modelRoutingState;
+      this.modelValidationCache = {
+        configRevision: state.configRevision,
+        catalogRevision: state.catalogRevision,
+        operationDigest: validation.operationDigest,
+        confirmation: validation.confirmation,
+        impact: validation.impact,
+        errors: validation.errors || [],
+        warnings: validation.warnings || [],
+        signature: this.modelOperationSignature(),
+      };
+      return this.modelValidationCache;
+    }
+
+    currentModelValidation() {
+      const cache = this.modelValidationCache;
+      if (!cache || cache.signature !== this.modelOperationSignature()) return null;
+      return cache;
+    }
+
+    updateModelControls() {
+      const state = this.modelRoutingState;
+      const blocked = this.resyncRequired || !this.modelActionAllowed(false) || this.busy.has('model-routing');
+      const dirty = state ? isModelRoutingDirty(state) : false;
+      const validation = this.currentModelValidation();
+      this.querySelectorAll('[data-action="model-add"], [data-action="model-edit"], [data-action="model-delete"]').forEach((button) => {
+        button.disabled = blocked;
+      });
+      this.querySelector('[data-action="model-undo"]').disabled = blocked || !dirty;
+      this.querySelector('[data-action="model-validate"]').disabled = blocked || !dirty;
+      this.querySelector('[data-action="model-save"]').disabled = blocked || !dirty || Boolean(validation?.errors?.length);
+      const hint = this.querySelector('#model-save-hint');
+      if (!state) hint.textContent = this.modelRoutingError || '正在载入自定义模型…';
+      else if (this.configState && isConfigDirty(this.configState)) hint.textContent = '高级配置有未保存更改；请先处理高级配置。';
+      else hint.textContent = dirty ? '更改尚未写入模型目录与路由配置' : '当前模型列表与本机文件一致';
+    }
+
+    renderModelRouting() {
+      const panel = this.querySelector('#model-routing-panel');
+      const state = this.modelRoutingState;
+      if (!state) {
+        panel.replaceChildren(el('p', 'empty-state', this.modelRoutingError || '正在载入自定义模型…'));
+        this.updateModelControls();
+        return;
+      }
+      if (!state.models.length) {
+        panel.replaceChildren(el('p', 'empty-state', '还没有自定义模型。可通过“新增自定义模型”开始。'));
+      } else {
+        const cards = el('div', 'model-card-grid');
+        state.models.forEach((model) => {
+          const refs = this.modelBindings(model.slug);
+          const targets = refs.map((ref) => state.targets.find((item) => item.targetRef === ref)).filter(Boolean);
+          const envReady = refs.length > 0 && targets.length === refs.length && targets.every((target) => target.envSet);
+          const card = el('article', 'model-card');
+          const head = el('div', 'model-card-head');
+          const title = el('div');
+          title.append(el('h3', '', model.display_name || model.slug), el('p', 'model-slug', model.slug));
+          const status = el('span', `status-dot ${envReady ? 'ready' : 'warning'}`, envReady ? '凭据环境已就绪' : '凭据环境待配置');
+          head.append(title, status);
+          const facts = el('dl', 'model-facts');
+          const modalities = Array.isArray(model.input_modalities) && model.input_modalities.length
+            ? model.input_modalities.map((item) => item === 'image' ? '图片' : '文本').join('、')
+            : '文本';
+          const context = model.context_window ?? model.max_context_window ?? '未设置';
+          const routeText = refs.length
+            ? refs.map((ref) => this.modelTargetStatus(model.slug, ref)).join('；')
+            : '尚未绑定通道';
+          [
+            ['输入模态', modalities],
+            ['上下文', `${context}${context === '未设置' ? '' : ' tokens'}`],
+            ['绑定通道', `${refs.length} 个`],
+            ['通道类型', routeText],
+          ].forEach(([term, value]) => facts.append(el('dt', '', term), el('dd', '', value)));
+          const actions = el('div', 'model-card-actions');
+          for (const [action, label, style] of [
+            ['model-edit', '编辑', 'secondary'],
+            ['model-delete', '删除', 'danger-outline'],
+          ]) {
+            const button = el('button', `button ${style} compact`, label);
+            button.type = 'button';
+            button.dataset.action = action;
+            button.dataset.slug = model.slug;
+            actions.append(button);
+          }
+          card.append(head, facts, actions);
+          cards.append(card);
+        });
+        panel.replaceChildren(cards);
+      }
+      this.updateModelControls();
+    }
+
+    openModelDialog(slug = null) {
+      if (!this.modelActionAllowed() || this.busy.has('model-routing')) return;
+      const model = slug ? this.modelRoutingState.models.find((item) => item.slug === slug) : null;
+      if (slug && !model) return;
+      this.modelDialogReturnFocus = document.activeElement;
+      const dialog = this.querySelector('#model-dialog');
+      dialog.innerHTML = `
+        <form id="model-dialog-form" novalidate aria-describedby="model-dialog-error">
+          <p class="kicker">${model ? '编辑模型' : '新增模型'}</p>
+          <h2 id="model-dialog-title">${model ? '编辑自定义模型' : '新增自定义模型'}</h2>
+          <p class="dialog-copy">基础信息只描述模型能力；第二步选择已有通道或填写新专属通道。凭据内容不会出现在这里。</p>
+          <div id="model-dialog-error" class="form-error" role="alert" hidden></div>
+          <div class="field-grid dialog-fields">
+            <label class="field"><span class="field-label">模型标识（slug）</span><input id="model-slug" required autocomplete="off" aria-describedby="model-dialog-error"><small class="field-help">用于 Codex 调用，建议使用稳定、易识别的名称。</small></label>
+            <label class="field"><span class="field-label">显示名称</span><input id="model-display-name" required autocomplete="off" aria-describedby="model-dialog-error"><small class="field-help">必填，显示给使用者的友好名称。</small></label>
+            <label class="field"><span class="field-label">上下文窗口（tokens）</span><input id="model-context" inputmode="numeric" type="number" min="1" aria-describedby="model-dialog-error"><small class="field-help">留空表示沿用目录默认值。</small></label>
+            <fieldset class="field modality-field"><legend class="field-label">输入能力</legend><label><input id="model-text" type="checkbox" checked> 文本</label><label><input id="model-image" type="checkbox"> 图片</label><small class="field-help">只勾选模型实际支持的输入。</small></fieldset>
+          </div>
+          <details class="route-details" open><summary>第二步：通道与高级设置</summary>
+            <p>新模型默认新建一个仅匹配该 slug 的专属通道；复用时不会修改既有通道的匹配规则，因此只能选择已匹配该模型的通道。</p>
+            <label class="field"><span class="field-label">通道方式</span><select id="model-routing-mode"><option value="dedicated">新建专属通道</option><option value="reuse">复用已匹配通道</option></select></label>
+            <label class="field"><span class="field-label">选择通道</span><select id="model-target-ref" data-model-target></select><small id="model-target-help" class="field-help">编辑已有模型时，可在它已绑定的多个通道间选择。</small></label>
+            <div id="model-target-fields" class="field-grid dialog-fields target-dialog-fields">
+              <label class="field"><span class="field-label">安全名称</span><input id="route-name" autocomplete="off"></label>
+              <label class="field"><span class="field-label">上游主机</span><input id="route-host" autocomplete="off"></label>
+              <label class="field"><span class="field-label">协议</span><select id="route-protocol"><option value="https">HTTPS</option><option value="http">HTTP（仅可信本机）</option></select></label>
+              <label class="field"><span class="field-label">路径前缀</span><input id="route-prefix" placeholder="/v1" autocomplete="off"></label>
+              <label class="field"><span class="field-label">凭据环境变量名称</span><input id="route-env" autocomplete="off"><small class="field-help">只填写本机变量名称，不填写其内容。</small></label>
+              <label class="field"><span class="field-label">上游接口</span><select id="route-wire"><option value="responses">Responses</option><option value="chat">Chat Completions</option></select></label>
+              <label class="field"><span class="field-label">认证方式</span><input id="route-auth-type" placeholder="bearer" autocomplete="off"></label>
+              <label class="field"><span class="field-label">认证头名称</span><input id="route-auth-header" placeholder="标准认证头名称" autocomplete="off"><small class="field-help">只允许名称，不填写认证内容。</small></label>
+              <label class="field"><span class="field-label">网络方式</span><select id="route-proxy"><option value="false">直接连接</option><option value="true">走公共代理</option></select></label>
+            </div>
+          </details>
+          <div class="dialog-actions"><button class="button secondary" type="button" data-action="model-dialog-cancel">取消</button><button class="button primary" type="submit">${model ? '更新草稿' : '加入草稿'}</button></div>
+        </form>`;
+      dialog.dataset.editSlug = model?.slug || '';
+      const refs = model
+        ? this.modelBindings(model.slug)
+        : this.modelRoutingState.targets
+          .map((target) => target.targetRef)
+          .filter((targetRef) => isPersistedModelRoutingTarget(this.modelRoutingState, targetRef));
+      const select = dialog.querySelector('#model-target-ref');
+      refs.forEach((ref) => {
+        const target = this.modelRoutingState.targets.find((item) => item.targetRef === ref);
+        const option = el('option', '', `${target?.name || '未命名通道'} · ${target?.envSet ? '环境就绪' : '环境待配置'} · ${target?.match || '未配置匹配规则'}`);
+        option.value = ref;
+        select.append(option);
+      });
+      dialog.querySelector('#model-slug').value = model?.slug || '';
+      dialog.querySelector('#model-display-name').value = model?.display_name || '';
+      dialog.querySelector('#model-context').value = model?.context_window ?? '';
+      dialog.querySelector('#model-text').checked = !model?.input_modalities || model.input_modalities.includes('text');
+      dialog.querySelector('#model-image').checked = Boolean(model?.input_modalities?.includes('image'));
+      const mode = dialog.querySelector('#model-routing-mode');
+      if (model) {
+        mode.value = 'reuse';
+        mode.disabled = true;
+        select.disabled = !refs.length;
+      } else {
+        select.disabled = false;
+      }
+      this.fillModelTargetFields(select.value, model ? 'edit' : 'dedicated');
+      dialog.showModal();
+      dialog.querySelector('#model-slug').focus();
+    }
+
+    fillModelTargetFields(targetRef, mode = null) {
+      const dialog = this.querySelector('#model-dialog');
+      const editing = dialog.dataset.editSlug !== '';
+      const routingMode = mode || dialog.querySelector('#model-routing-mode')?.value;
+      const fields = dialog.querySelector('#model-target-fields');
+      const select = dialog.querySelector('#model-target-ref');
+      if (!fields || !select) return;
+      fields.hidden = !editing && routingMode === 'reuse';
+      select.closest('.field').hidden = !editing && routingMode === 'dedicated';
+      // 新建专属通道不能悄然继承下拉框中默认 target 的认证语义或路由字段。
+      const target = !editing && routingMode === 'dedicated'
+        ? {}
+        : this.modelRoutingState?.targets?.find((item) => item.targetRef === targetRef) || {};
+      const help = dialog.querySelector('#model-target-help');
+      if (help && !editing) {
+        help.textContent = routingMode === 'reuse'
+          ? '复用不会改动匹配规则；预检会确认所选通道已匹配当前 slug。'
+          : '专属通道会自动生成只匹配当前 slug 的规则。';
+      }
+      const requireDedicated = !editing && routingMode === 'dedicated';
+      ['#route-name', '#route-host', '#route-env'].forEach((selector) => {
+        const input = dialog.querySelector(selector);
+        if (input) input.required = requireDedicated;
+      });
+      const set = (id, value) => { const input = dialog.querySelector(id); if (input) input.value = value ?? ''; };
+      set('#route-name', target.name);
+      set('#route-host', target.host);
+      set('#route-protocol', target.protocol || 'https');
+      set('#route-prefix', target.prefix);
+      set('#route-env', target.envKey);
+      set('#route-wire', target.wireApi || target.apiFormat || 'responses');
+      set('#route-auth-type', target.authType);
+      set('#route-auth-header', target.authHeader);
+      set('#route-proxy', String(target.viaProxy === true));
+    }
+
+    readModelDialog() {
+      const dialog = this.querySelector('#model-dialog');
+      const read = (selector) => dialog.querySelector(selector).value.trim();
+      const slug = read('#model-slug');
+      const context = read('#model-context');
+      const model = {
+        slug,
+        ...(read('#model-display-name') ? { display_name: read('#model-display-name') } : {}),
+        ...(context ? { context_window: Number(context) } : {}),
+        input_modalities: ['text', ...(dialog.querySelector('#model-image').checked ? ['image'] : [])],
+      };
+      if (!dialog.querySelector('#model-text').checked) model.input_modalities = model.input_modalities.filter((item) => item !== 'text');
+      const targetRef = dialog.querySelector('#model-target-ref').value;
+      const target = {
+        ...(read('#route-name') ? { name: read('#route-name') } : {}),
+        ...(read('#route-host') ? { host: read('#route-host') } : {}),
+        protocol: read('#route-protocol') || 'https',
+        ...(read('#route-prefix') ? { prefix: read('#route-prefix') } : {}),
+        ...(read('#route-env') ? { envKey: read('#route-env') } : {}),
+        wireApi: read('#route-wire') || 'responses',
+        ...(read('#route-auth-type') ? { authType: read('#route-auth-type') } : {}),
+        ...(read('#route-auth-header') ? { authHeader: read('#route-auth-header') } : {}),
+        viaProxy: dialog.querySelector('#route-proxy').value === 'true',
+      };
+      return { model, target, targetRef, dedicated: dialog.querySelector('#model-routing-mode').value === 'dedicated', editSlug: dialog.dataset.editSlug };
+    }
+
+    saveModelDialog() {
+      try {
+        if (!this.modelActionAllowed()) return;
+        const draft = this.readModelDialog();
+        if (!draft.model.slug) throw new Error('请填写模型标识。');
+        if (!draft.model.display_name) throw new Error('请填写显示名称。');
+        if (draft.dedicated && (!draft.target.name || !draft.target.host || !draft.target.envKey)) {
+          throw new Error('新建专属通道请填写安全名称、上游主机和凭据环境变量名称。');
+        }
+        if (draft.editSlug) {
+          // 新建专属通道尚未落盘，其临时引用不能作为 target.update 的 targetRef 回传。
+          const routing = { patch: draft.target };
+          if (isPersistedModelRoutingTarget(this.modelRoutingState, draft.targetRef)) {
+            routing.targetRef = draft.targetRef;
+          }
+          this.modelRoutingState = updateModelDraft(this.modelRoutingState, draft.editSlug, {
+            model: draft.model,
+            routing,
+          });
+        } else if (draft.dedicated) {
+          this.modelRoutingState = addModelDraft(this.modelRoutingState, {
+            model: draft.model,
+            routing: { mode: 'dedicated', target: draft.target },
+          });
+        } else {
+          this.modelRoutingState = addModelDraft(this.modelRoutingState, {
+            model: draft.model,
+            routing: { mode: 'reuse', targetRef: draft.targetRef },
+          });
+        }
+        this.invalidateModelValidation();
+        this.querySelector('#model-dialog').close();
+        this.renderModelRouting();
+        this.setDirty();
+        this.validateModelRouting();
+      } catch (error) {
+        const root = this.querySelector('#model-dialog-error');
+        root.textContent = error?.message?.startsWith('新建专属通道请填写')
+          ? error.message
+          : '模型草稿无法保存。请检查必填项与通道设置。';
+        root.hidden = false;
+      }
+    }
+
+    closeModelDialog() { this.querySelector('#model-dialog').close(); }
+
+    restoreModelDialogFocus() {
+      const previous = this.modelDialogReturnFocus;
+      this.modelDialogReturnFocus = null;
+      if (previous?.isConnected) previous.focus();
+    }
+
+    openDeleteModelDialog(slug) {
+      if (!this.modelActionAllowed() || this.busy.has('model-routing')) return;
+      const model = this.modelRoutingState?.models.find((item) => item.slug === slug);
+      if (!model) return;
+      this.pendingDeleteSlug = slug;
+      this.modelDialogReturnFocus = document.activeElement;
+      const refs = this.modelBindings(slug);
+      const targets = refs.map((ref) => this.modelRoutingState.targets.find((item) => item.targetRef === ref)).filter(Boolean);
+      const dedicated = refs.length === 1 && this.modelTargetStatus(slug, refs[0]) === '专属精确通道';
+      const dialog = this.querySelector('#delete-model-dialog');
+      dialog.innerHTML = `
+        <form method="dialog"><div class="dialog-icon" aria-hidden="true">!</div><h2 id="delete-model-title">删除模型吗？</h2>
+        <p id="delete-model-message"></p>
+        <p class="dialog-copy">共享通道和宽泛匹配通道会强制保留，避免影响其他模型。</p>
+        <div id="delete-model-option"></div>
+        <div class="dialog-actions"><button class="button secondary" type="button" data-action="delete-model-cancel">取消</button><button class="button danger" type="button" data-action="delete-model-confirm">删除模型</button></div></form>`;
+      dialog.querySelector('#delete-model-title').textContent = `删除“${model.display_name || model.slug}”吗？`;
+      dialog.querySelector('#delete-model-message').textContent = `将移除模型目录和所有精确引用。${targets.length ? `关联通道：${targets.map((target) => target.name || '未命名通道').join('、')}。` : '当前没有关联通道。'}`;
+      if (dedicated) {
+        const label = el('label', 'delete-target-option');
+        const checkbox = el('input');
+        checkbox.id = 'delete-dedicated-target';
+        checkbox.type = 'checkbox';
+        label.append(checkbox, document.createTextNode(' 同时删除唯一的精确专属通道'));
+        dialog.querySelector('#delete-model-option').append(label);
+      }
+      dialog.showModal();
+      dialog.querySelector('[data-action="delete-model-cancel"]').focus();
+    }
+
+    closeDeleteModelDialog() { this.querySelector('#delete-model-dialog').close(); }
+
+    deleteModelDraft() {
+      try {
+        if (!this.modelActionAllowed()) return;
+        const dialog = this.querySelector('#delete-model-dialog');
+        const removeTarget = dialog.querySelector('#delete-dedicated-target')?.checked === true;
+        const ref = this.modelBindings(this.pendingDeleteSlug)[0];
+        this.modelRoutingState = removeModelDraft(this.modelRoutingState, this.pendingDeleteSlug, removeTarget
+          ? { deleteDedicatedTarget: true, targetRef: ref }
+          : undefined);
+        this.invalidateModelValidation();
+        dialog.close();
+        this.renderModelRouting();
+        this.setDirty();
+        this.validateModelRouting();
+      } catch (error) {
+        this.showMessage('无法删除该模型；共享或宽泛匹配通道会被保留。');
+      }
+    }
+
+    undoModelChange() {
+      if (!this.modelActionAllowed() || !isModelRoutingDirty(this.modelRoutingState)) return;
+      this.modelRoutingState = undoModelRoutingChange(this.modelRoutingState);
+      this.invalidateModelValidation();
+      this.renderModelRouting();
+      this.setDirty();
+      this.validateModelRouting();
+    }
+
+    modelRoutingPayload(confirmation) {
+      const state = this.modelRoutingState;
+      return {
+        configRevision: state.configRevision,
+        catalogRevision: state.catalogRevision,
+        operations: serializeModelRoutingOperations(state),
+        ...(confirmation ? { confirmation } : {}),
+      };
+    }
+
+    async validateModelRouting() {
+      if (!this.modelActionAllowed() || this.busy.has('model-routing')) return;
+      this.setBusy('model-routing', true);
+      try {
+        const validation = await request('model-routing/validate', {
+          method: 'POST', body: JSON.stringify(this.modelRoutingPayload()),
+        });
+        this.cacheModelValidation(validation);
+        this.renderModelValidation();
+        this.renderModelRouting();
+      } catch (error) {
+        this.invalidateModelValidation();
+        this.showModelRoutingError(error);
+      } finally {
+        this.setBusy('model-routing', false);
+      }
+    }
+
+    async saveModelRouting() {
+      if (!this.modelActionAllowed() || this.busy.has('model-routing')) return;
+      this.setBusy('model-routing', true);
+      try {
+        let validation = this.currentModelValidation();
+        if (!validation) {
+          const response = await request('model-routing/validate', {
+            method: 'POST', body: JSON.stringify(this.modelRoutingPayload()),
+          });
+          validation = this.cacheModelValidation(response);
+          this.renderModelValidation();
+          // 新确认必须让用户亲自勾选；不可在同一次点击中消耗确认值。
+          if (validation.errors.length || validation.confirmation?.token) return;
+        }
+        if (validation.errors.length) return;
+        const confirmation = validation.confirmation?.token;
+        if (confirmation && !this.querySelector('#model-save-confirmation')?.checked) {
+          this.showMessage('这次更改会移除或替换现有引用，请勾选确认后再保存。');
+          return;
+        }
+        await request('model-routing', {
+          method: 'PUT', body: JSON.stringify(this.modelRoutingPayload(confirmation)),
+        });
+        const resynced = await this.resyncBaselines();
+        if (!resynced) return;
+        this.invalidateModelValidation();
+        this.showMessage('自定义模型已保存。请手动重启路由与 Codex 后再使用新配置。');
+      } catch (error) {
+        if (error.status === 409 || error.status === 422) this.invalidateModelValidation();
+        this.showModelRoutingError(error);
+      } finally {
+        this.setBusy('model-routing', false);
+        this.renderModelRouting();
+      }
+    }
+
+    showModelRoutingError(error) {
+      if (error.status === 409 || error.code === 'revision_conflict') {
+        this.showMessage('模型目录或路由配置已变化。请重新载入后再修改。');
+        this.showConflictAction('model');
+      } else if (error.status === 422) {
+        this.showMessage('预检未通过；请查看模型更改中的错误提示。');
+      } else if (error.status >= 500) {
+        this.showMessage('保存没有完成。请稍后重新载入确认当前状态。');
+      } else {
+        this.showMessage('自定义模型操作没有完成。请检查表单并重新预检。');
+      }
+    }
+
+    renderModelValidation() {
+      const root = this.querySelector('#model-validation-results');
+      root.replaceChildren();
+      const validation = this.currentModelValidation();
+      if (!validation) return;
+      const errors = validation.errors || [];
+      const warnings = validation.warnings || [];
+      const summary = el('div', `validation-summary ${errors.length ? 'has-errors' : 'is-valid'}`);
+      summary.append(el('strong', '', errors.length ? `预检发现 ${errors.length} 个错误` : '模型更改预检通过'), el('span', '', warnings.length ? `另有 ${warnings.length} 条提醒` : '没有发现提醒'));
+      root.append(summary);
+      this.renderModelImpact(root, validation.impact);
+      if (errors.length || warnings.length) {
+        const list = el('ul', 'issue-list');
+        [...errors, ...warnings].forEach((issue) => {
+          const item = el('li', issue.severity === 'warning' ? 'warning' : 'error');
+          item.append(el('i', '', issue.severity === 'warning' ? '!' : '×'), el('span', '', `${issue.path || '模型'} — ${issue.message || issue.code}`));
+          list.append(item);
+        });
+        root.append(list);
+      }
+      if (validation.confirmation?.token) {
+        const label = el('label', 'delete-target-option');
+        const checkbox = el('input');
+        checkbox.type = 'checkbox';
+        checkbox.id = 'model-save-confirmation';
+        label.append(checkbox, document.createTextNode(' 我已确认本次删除或替换的模型、引用和通道影响'));
+        root.append(label);
+      }
+    }
+
+    renderModelImpact(root, impact) {
+      if (!impact || typeof impact !== 'object') return;
+      const items = [];
+      const models = impact.models || {};
+      const targets = impact.targets || {};
+      const references = impact.references || {};
+      (models.created || []).forEach((slug) => items.push(`新增模型：${slug}`));
+      (models.updated || []).forEach((item) => items.push(`修改模型：${item.from}${item.to && item.to !== item.from ? ` → ${item.to}` : ''}`));
+      (models.deleted || []).forEach((slug) => items.push(`删除模型：${slug}`));
+      (targets.created || []).forEach((name) => items.push(`新增通道：${name || '未命名通道'}`));
+      (targets.updated || []).forEach(() => items.push('修改已绑定通道'));
+      (targets.deleted || []).forEach(() => items.push('删除专属通道'));
+      (references.replaced || []).forEach((item) => items.push(`替换精确引用：${item.from} → ${item.to}`));
+      (references.removed || []).forEach((slug) => items.push(`移除精确引用：${slug}`));
+      if (!items.length) return;
+      const section = el('section', 'model-impact');
+      section.append(el('h3', '', '本次更改影响'));
+      const list = el('ul');
+      items.forEach((item) => list.append(el('li', '', item)));
+      section.append(list);
+      root.append(section);
     }
 
     renderCheckpoints() {
@@ -800,22 +1593,37 @@ import {
     }
 
     setDirty() {
-      const dirty = this.configState ? isConfigDirty(this.configState) : false;
-      this.dirty = dirty;
-      this.querySelector('#dirty-badge').hidden = !dirty;
+      const configDirty = this.configState ? isConfigDirty(this.configState) : false;
+      const modelDirty = this.modelRoutingState ? isModelRoutingDirty(this.modelRoutingState) : false;
+      this.dirty = configDirty || modelDirty;
+      this.querySelector('#dirty-badge').hidden = !configDirty;
+      this.querySelector('#model-dirty-badge').hidden = !modelDirty;
       if (this.configState) {
-        this.querySelector('#save-hint').textContent = dirty ? '更改尚未写入配置文件' : '当前表单与配置文件一致';
+        this.querySelector('#save-hint').textContent = configDirty ? '更改尚未写入配置文件' : '当前表单与配置文件一致';
       }
+      this.updateModelControls();
+      this.updateConfigControls();
+    }
+
+    updateConfigControls() {
+      const modelDirty = this.modelRoutingState ? isModelRoutingDirty(this.modelRoutingState) : false;
+      const blocked = this.resyncRequired || !this.configState || this.busy.has('config') || modelDirty;
+      const validate = this.querySelector('[data-action="validate"]');
+      const save = this.querySelector('#config-form button[type="submit"]');
+      if (validate) validate.disabled = blocked;
+      if (save) save.disabled = blocked || !isConfigDirty(this.configState);
     }
 
     setBusy(area, busy) {
       if (busy) this.busy.add(area);
       else this.busy.delete(area);
       if (area === 'config') {
-        this.querySelectorAll('[data-action="validate"], #config-form button[type="submit"]').forEach((button) => {
-          button.disabled = busy || !this.configState;
-          button.setAttribute('aria-busy', String(busy));
-        });
+        this.updateConfigControls();
+        this.querySelectorAll('[data-action="validate"], #config-form button[type="submit"]').forEach((button) => button.setAttribute('aria-busy', String(busy)));
+      }
+      if (area === 'model-routing') {
+        this.updateModelControls();
+        this.querySelectorAll('[data-action^="model-"]').forEach((button) => button.setAttribute('aria-busy', String(busy)));
       }
     }
 
@@ -823,6 +1631,25 @@ import {
       const notice = this.querySelector('#global-message');
       notice.textContent = message;
       notice.hidden = false;
+    }
+
+    showConflictAction(scope) {
+      const root = this.querySelector('#conflict-actions');
+      root.replaceChildren();
+      const text = el('span', '', scope === 'model'
+        ? '模型草稿基线已过期。可放弃当前模型草稿并重新载入最新内容。'
+        : '高级配置草稿基线已过期。可放弃当前高级配置草稿并重新载入最新内容。');
+      const button = el('button', 'button danger-outline compact', '放弃草稿并重新载入');
+      button.type = 'button';
+      button.dataset.action = scope === 'model' ? 'discard-model-drafts-reload' : 'discard-config-drafts-reload';
+      root.append(text, button);
+      root.hidden = false;
+    }
+
+    clearConflictActions() {
+      const root = this.querySelector('#conflict-actions');
+      root.replaceChildren();
+      root.hidden = true;
     }
 
     clearMessage() {

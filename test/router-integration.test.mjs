@@ -8,6 +8,15 @@ import path from 'node:path';
 import { once } from 'node:events';
 import { fileURLToPath } from 'node:url';
 
+import {
+  transactionJournalPath,
+} from '../lib/model-routing-transaction.mjs';
+import {
+  encodeJson,
+  readRevisionedJson,
+  sha256Bytes,
+} from '../lib/json-file-store.mjs';
+
 const PROJECT_DIR = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 // 隔离子进程显式开启测试专用关闭端点；正常运行实例不会暴露进程控制。
 process.env.ROUTER_TEST_SHUTDOWN = '1';
@@ -98,6 +107,53 @@ async function cleanupIsolatedRouter({ routerPort, child, childExit, childOutput
   if (cleanupError) throw cleanupError;
 }
 
+async function createStartupRecoveryJournal({ configPath, catalogPath, newConfig, newCatalog }) {
+  const oldConfig = readRevisionedJson(configPath);
+  const oldCatalog = readRevisionedJson(catalogPath);
+  const txid = 'startup-recover-1';
+  const newConfigBytes = encodeJson(newConfig);
+  const newCatalogBytes = encodeJson(newCatalog);
+  const configNewHash = sha256Bytes(newConfigBytes);
+  const catalogNewHash = sha256Bytes(newCatalogBytes);
+  const configTempPath = `${configPath}.tmp-${process.pid}-${txid}-config`;
+  const catalogTempPath = `${catalogPath}.tmp-${process.pid}-${txid}-catalog`;
+  const configBackupPath = `${configPath}.model-routing.bak-${txid}-${oldConfig.revision}`;
+  const catalogBackupPath = `${catalogPath}.model-routing.bak-${txid}-${oldCatalog.revision}`;
+  const journal = {
+    version: 1,
+    txid,
+    phase: 'config-replaced',
+    configPath: path.resolve(configPath),
+    catalogPath: path.resolve(catalogPath),
+    config: {
+      oldHash: oldConfig.revision,
+      newHash: configNewHash,
+      tempPath: configTempPath,
+      backupPath: configBackupPath,
+      quarantinePath: `${configPath}.model-routing.quarantine-${txid}-${oldConfig.revision}-config`,
+      displacedPath: `${configPath}.model-routing.displaced-${txid}-${configNewHash}-config`,
+    },
+    catalog: {
+      oldHash: oldCatalog.revision,
+      newHash: catalogNewHash,
+      tempPath: catalogTempPath,
+      backupPath: catalogBackupPath,
+      quarantinePath: `${catalogPath}.model-routing.quarantine-${txid}-${oldCatalog.revision}-catalog`,
+      displacedPath: `${catalogPath}.model-routing.displaced-${txid}-${catalogNewHash}-catalog`,
+    },
+  };
+
+  await Promise.all([
+    fs.writeFile(configBackupPath, oldConfig.bytes),
+    fs.writeFile(catalogBackupPath, oldCatalog.bytes),
+    fs.writeFile(configTempPath, newConfigBytes),
+    fs.writeFile(catalogTempPath, newCatalogBytes),
+  ]);
+  await fs.writeFile(configPath, newConfigBytes);
+  await fs.writeFile(transactionJournalPath(configPath), encodeJson(journal));
+  return { journalPath: transactionJournalPath(configPath) };
+}
+
 test('非法配置在监听端口前聚合失败', async () => {
   const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'codex-router-invalid-config-'));
   const routerPort = await freePort();
@@ -129,6 +185,240 @@ test('非法配置在监听端口前聚合失败', async () => {
     assert.match(childOutput, /target_name_invalid/);
     assert.match(childOutput, /target_match_invalid/);
     assert.doesNotMatch(childOutput, /SyntaxError|RouterConfigError/);
+  } finally {
+    if (child.exitCode === null) {
+      try { await request(routerPort, 'POST', '/_admin/shutdown'); } catch { /* 未监听时无需关闭 */ }
+      await waitForChildExit(child, childExit, childOutput);
+    }
+    await fs.rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test('非法或超预算 catalog 快照在监听前固定失败', async (t) => {
+  const cases = [
+    {
+      name: 'inspect 合法但未知 metadata 超节点预算',
+      catalog: {
+        marker: 'CATALOG_BUDGET_SECRET_MUST_NOT_LEAK',
+        models: [{
+          slug: 'startup-budget-model',
+          display_name: '启动预算模型',
+          metadata: { values: new Array(100_001).fill(null) },
+        }],
+      },
+      diagnostic: /模型目录启动快照失败.*catalog_snapshot_invalid/,
+    },
+    {
+      name: '普通结构非法',
+      catalog: {
+        marker: 'CATALOG_INVALID_SECRET_MUST_NOT_LEAK',
+        models: 'not-an-array',
+      },
+      diagnostic: /模型目录启动预检失败.*catalog_invalid/,
+    },
+  ];
+
+  for (const entry of cases) {
+    await t.test(entry.name, async () => {
+      const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'codex-router-startup-catalog-'));
+      const routerPort = await freePort();
+      const configPath = path.join(tempDir, 'config.json');
+      const catalogPath = path.join(tempDir, 'models.json');
+      await fs.writeFile(configPath, encodeJson({
+        port: routerPort,
+        modelContext: { enabled: false },
+        targets: [{
+          name: 'startup-catalog-target',
+          match: '^startup-budget-model$',
+          host: '127.0.0.1',
+          port: 1,
+          protocol: 'http',
+          envKey: 'TEST_ROUTER_KEY',
+          wireApi: 'chat',
+        }],
+      }));
+      const catalogBytes = encodeJson(entry.catalog);
+      assert.ok(catalogBytes.length < 16 * 1024 * 1024, 'fixture 必须低于 catalog 文件上限');
+      await fs.writeFile(catalogPath, catalogBytes);
+
+      const child = spawn(process.execPath, [path.join(PROJECT_DIR, 'codex-router.mjs')], {
+        cwd: PROJECT_DIR,
+        env: {
+          ...process.env,
+          ROUTER_TEST_SHUTDOWN: '1',
+          ROUTER_CONFIG_PATH: configPath,
+          ROUTER_PORT: String(routerPort),
+          CODEX_CATALOG_PATH: catalogPath,
+          TEST_ROUTER_KEY: 'test-only-key',
+        },
+        stdio: ['ignore', 'pipe', 'pipe'],
+      });
+      const childExit = once(child, 'exit');
+      let childOutput = '';
+      child.stdout.on('data', (chunk) => { childOutput += chunk; });
+      child.stderr.on('data', (chunk) => { childOutput += chunk; });
+
+      try {
+        const outcome = await Promise.race([
+          childExit.then(([exitCode]) => ({ type: 'exit', exitCode })),
+          waitUntilHealthy(routerPort, child).then(() => ({ type: 'listening' })),
+        ]);
+        assert.equal(outcome.type, 'exit', `非法 catalog 不应开始监听：${childOutput}`);
+        assert.notEqual(outcome.exitCode, 0);
+        assert.match(childOutput, entry.diagnostic);
+        assert.doesNotMatch(
+          childOutput,
+          /CATALOG_BUDGET_SECRET_MUST_NOT_LEAK|CATALOG_INVALID_SECRET_MUST_NOT_LEAK|SyntaxError/,
+        );
+        await assert.rejects(request(routerPort, 'GET', '/healthz'));
+      } finally {
+        if (child.exitCode === null) {
+          try { await request(routerPort, 'POST', '/_admin/shutdown'); } catch { /* 未监听时无需关闭 */ }
+          await waitForChildExit(child, childExit, childOutput);
+        }
+        await fs.rm(tempDir, { recursive: true, force: true });
+      }
+    });
+  }
+});
+
+test('隔离入口先恢复单边模型路由事务再监听并固定最终 catalog 快照', async () => {
+  const upstream = http.createServer((req, res) => {
+    req.resume();
+    res.writeHead(503, { 'content-type': 'application/json' });
+    res.end('{}');
+  });
+  await listen(upstream);
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'codex-router-startup-recovery-'));
+  const routerPort = await freePort();
+  const configPath = path.join(tempDir, 'config.json');
+  const catalogPath = path.join(tempDir, 'models.json');
+  const oldConfig = {
+    port: routerPort,
+    modelContext: { enabled: false },
+    targets: [{
+      name: 'generation-old',
+      match: '^generation-old$',
+      host: '127.0.0.1',
+      port: upstream.address().port,
+      protocol: 'http',
+      envKey: 'TEST_ROUTER_KEY',
+      wireApi: 'chat',
+    }],
+  };
+  const newConfig = {
+    ...oldConfig,
+    targets: [{
+      ...oldConfig.targets[0],
+      name: 'generation-new',
+      match: '^generation-new$',
+    }],
+  };
+  const oldCatalog = {
+    models: [{ slug: 'generation-old', display_name: '旧 generation' }],
+  };
+  const newCatalog = {
+    models: [{ slug: 'generation-new', display_name: '新 generation' }],
+  };
+  await fs.writeFile(configPath, encodeJson(oldConfig));
+  await fs.writeFile(catalogPath, encodeJson(oldCatalog));
+  const { journalPath } = await createStartupRecoveryJournal({
+    configPath,
+    catalogPath,
+    newConfig,
+    newCatalog,
+  });
+
+  const child = spawn(process.execPath, [path.join(PROJECT_DIR, 'codex-router.mjs')], {
+    cwd: PROJECT_DIR,
+    env: {
+      ...process.env,
+      ROUTER_TEST_SHUTDOWN: '1',
+      ROUTER_CONFIG_PATH: configPath,
+      ROUTER_PORT: String(routerPort),
+      CODEX_CATALOG_PATH: catalogPath,
+      TEST_ROUTER_KEY: 'test-only-key',
+    },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  const childExit = once(child, 'exit');
+  let childOutput = '';
+  child.stdout.on('data', (chunk) => { childOutput += chunk; });
+  child.stderr.on('data', (chunk) => { childOutput += chunk; });
+
+  try {
+    await waitUntilHealthy(routerPort, child);
+    const models = JSON.parse((await request(routerPort, 'GET', '/v1/models')).text);
+    const config = JSON.parse((await request(routerPort, 'GET', '/_admin/api/config')).text);
+    assert.equal(models.data[0].id, 'generation-new');
+    assert.equal(config.config.targets[0].name, 'generation-new');
+    assert.equal(await fs.stat(journalPath).then(() => true, () => false), false);
+
+    await fs.writeFile(catalogPath, encodeJson({
+      models: [{ slug: 'generation-after-start', display_name: '启动后磁盘变更' }],
+    }));
+    const stableModels = JSON.parse((await request(routerPort, 'GET', '/models')).text);
+    assert.equal(stableModels.data[0].id, 'generation-new');
+  } finally {
+    await cleanupIsolatedRouter({ routerPort, child, childExit, childOutput, upstream, tempDir });
+  }
+});
+
+test('未知事务 journal 在监听前稳定失败且原样保留', async () => {
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'codex-router-startup-in-doubt-'));
+  const routerPort = await freePort();
+  const configPath = path.join(tempDir, 'config.json');
+  const catalogPath = path.join(tempDir, 'models.json');
+  const journalPath = transactionJournalPath(configPath);
+  await fs.writeFile(configPath, encodeJson({
+    port: routerPort,
+    modelContext: { enabled: false },
+    targets: [{
+      name: 'unknown-journal-target',
+      match: '^unknown-journal-model$',
+      host: '127.0.0.1',
+      port: 1,
+      protocol: 'http',
+      envKey: 'TEST_ROUTER_KEY',
+      wireApi: 'chat',
+    }],
+  }));
+  await fs.writeFile(catalogPath, encodeJson({
+    models: [{ slug: 'unknown-journal-model', display_name: '未知事务模型' }],
+  }));
+  const unknownJournal = {
+    version: 999,
+    txid: 'unknown-startup-1',
+    marker: 'JOURNAL_SECRET_MUST_NOT_LEAK',
+  };
+  await fs.writeFile(journalPath, encodeJson(unknownJournal));
+
+  const child = spawn(process.execPath, [path.join(PROJECT_DIR, 'codex-router.mjs')], {
+    cwd: PROJECT_DIR,
+    env: {
+      ...process.env,
+      ROUTER_TEST_SHUTDOWN: '1',
+      ROUTER_CONFIG_PATH: configPath,
+      ROUTER_PORT: String(routerPort),
+      CODEX_CATALOG_PATH: catalogPath,
+    },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  const childExit = once(child, 'exit');
+  let childOutput = '';
+  child.stdout.on('data', (chunk) => { childOutput += chunk; });
+  child.stderr.on('data', (chunk) => { childOutput += chunk; });
+
+  try {
+    const outcome = await Promise.race([
+      childExit.then(([exitCode]) => ({ type: 'exit', exitCode })),
+      waitUntilHealthy(routerPort, child).then(() => ({ type: 'listening' })),
+    ]);
+    assert.equal(outcome.type, 'exit', `未知 journal 不应开始监听：${childOutput}`);
+    assert.notEqual(outcome.exitCode, 0);
+    assert.match(childOutput, /模型路由事务恢复失败.*transaction_in_doubt/);
+    assert.doesNotMatch(childOutput, /JOURNAL_SECRET_MUST_NOT_LEAK|SyntaxError/);
+    assert.deepEqual(JSON.parse(await fs.readFile(journalPath, 'utf8')), unknownJournal);
   } finally {
     if (child.exitCode === null) {
       try { await request(routerPort, 'POST', '/_admin/shutdown'); } catch { /* 未监听时无需关闭 */ }
@@ -170,7 +460,9 @@ test('隔离路由完成心跳、failover、工具历史和 compact 拒绝', asy
   const routerPort = await freePort();
   const catalogPath = path.join(tempDir, 'models.json');
   const configPath = path.join(tempDir, 'config.json');
-  await fs.writeFile(catalogPath, JSON.stringify({ models: [{ slug: 'test-model' }] }));
+  await fs.writeFile(catalogPath, JSON.stringify({
+    models: [{ slug: 'test-model', display_name: '测试模型' }],
+  }));
   await fs.writeFile(configPath, JSON.stringify({
     port: routerPort,
     heartbeatMs: 20,
@@ -282,7 +574,11 @@ test('裁剪时生成目标检查点并在同一任务跨模型接力', async ()
   const catalogPath = path.join(tempDir, 'models.json');
   const configPath = path.join(tempDir, 'config.json');
   await fs.writeFile(catalogPath, JSON.stringify({
-    models: [{ slug: 'checkpoint-a' }, { slug: 'checkpoint-b' }, { slug: 'checkpoint-c' }],
+    models: [
+      { slug: 'checkpoint-a', display_name: '检查点 A' },
+      { slug: 'checkpoint-b', display_name: '检查点 B' },
+      { slug: 'checkpoint-c', display_name: '检查点 C' },
+    ],
   }));
   await fs.writeFile(configPath, JSON.stringify({
     port: routerPort,
@@ -433,7 +729,9 @@ test('自定义 openai 名称不启用 ChatGPT 登录态并拒绝未知或畸形
   const catalogPath = path.join(tempDir, 'models.json');
   const configPath = path.join(tempDir, 'config.json');
   const missingAuthPath = path.join(tempDir, 'missing-auth.json');
-  await fs.writeFile(catalogPath, JSON.stringify({ models: [{ slug: 'custom-openai-model' }] }));
+  await fs.writeFile(catalogPath, JSON.stringify({
+    models: [{ slug: 'custom-openai-model', display_name: '自定义 OpenAI 模型' }],
+  }));
   await fs.writeFile(configPath, JSON.stringify({
     port: routerPort,
     modelContext: { enabled: false },
@@ -472,7 +770,14 @@ test('自定义 openai 名称不启用 ChatGPT 登录态并拒绝未知或畸形
       model: 'custom-openai-model',
       stream: true,
       max_output_tokens: 123,
-      input: [{ role: 'user', content: [{ type: 'input_text', text: '测试策略' }] }],
+      input: [
+        { role: 'user', content: [{ type: 'input_text', text: '测试策略' }] },
+        {
+          id: 'rs_native',
+          type: 'reasoning',
+          content: [{ type: 'reasoning_text', text: '原生 Responses 推理正文' }],
+        },
+      ],
     }, {
       cookie: 'private-cookie=1',
       'chatgpt-account-id': 'private-account',
@@ -486,6 +791,9 @@ test('自定义 openai 名称不启用 ChatGPT 登录态并拒绝未知或畸形
     assert.equal(captured[0].headers['x-codex-session-id'], undefined);
     assert.equal(captured[0].body.max_output_tokens, 123);
     assert.equal(captured[0].body.store, undefined);
+    assert.deepEqual(captured[0].body.input[1].content, [
+      { type: 'reasoning_text', text: '原生 Responses 推理正文' },
+    ]);
 
     const unknown = await request(routerPort, 'POST', '/v1/responses', {
       model: 'custom-openai-model-typo',
@@ -505,6 +813,126 @@ test('自定义 openai 名称不启用 ChatGPT 登录态并拒绝未知或畸形
     assert.equal(malformed.status, 400);
     assert.equal(JSON.parse(malformed.text).error.code, 'invalid_request');
     assert.equal(captured.length, 1);
+  } finally {
+    await cleanupIsolatedRouter({ routerPort, child, childExit, childOutput, upstream, tempDir });
+  }
+});
+
+test('从自定义模型切到官方模型时清理不可回放的 reasoning content', async () => {
+  const captured = [];
+  const upstream = http.createServer((req, res) => {
+    const chunks = [];
+    req.on('data', (chunk) => chunks.push(chunk));
+    req.on('end', () => {
+      captured.push(JSON.parse(Buffer.concat(chunks).toString('utf8')));
+      res.writeHead(200, { 'content-type': 'text/event-stream' });
+      res.end([
+        'event: response.completed',
+        'data: {"type":"response.completed","response":{"id":"resp_official","status":"completed","output":[]}}',
+        '',
+        'data: [DONE]',
+        '',
+      ].join('\n'));
+    });
+  });
+  await listen(upstream);
+
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'codex-router-model-switch-'));
+  const routerPort = await freePort();
+  const catalogPath = path.join(tempDir, 'models.json');
+  const configPath = path.join(tempDir, 'config.json');
+  const authPath = path.join(tempDir, 'auth.json');
+  const jwtPayload = Buffer.from(JSON.stringify({
+    exp: Math.floor(Date.now() / 1000) + 3600,
+  })).toString('base64url');
+  await fs.writeFile(catalogPath, JSON.stringify({
+    models: [{ slug: 'gpt-official', display_name: '官方 GPT' }],
+  }));
+  await fs.writeFile(authPath, JSON.stringify({
+    tokens: {
+      access_token: `header.${jwtPayload}.signature`,
+      account_id: 'test-account',
+    },
+  }));
+  await fs.writeFile(configPath, JSON.stringify({
+    port: routerPort,
+    modelContext: { enabled: false },
+    targets: [{
+      name: 'official-test',
+      match: '^gpt-official$',
+      host: '127.0.0.1',
+      port: upstream.address().port,
+      protocol: 'http',
+      wireApi: 'responses',
+      useOpenAiAuth: true,
+    }],
+  }));
+
+  const child = spawn(process.execPath, [path.join(PROJECT_DIR, 'codex-router.mjs')], {
+    cwd: PROJECT_DIR,
+    env: {
+      ...process.env,
+      ROUTER_CONFIG_PATH: configPath,
+      ROUTER_PORT: String(routerPort),
+      CODEX_CATALOG_PATH: catalogPath,
+      CODEX_AUTH_PATH: authPath,
+    },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  const childExit = once(child, 'exit');
+  let childOutput = '';
+  child.stdout.on('data', (chunk) => { childOutput += chunk; });
+  child.stderr.on('data', (chunk) => { childOutput += chunk; });
+
+  try {
+    await waitUntilHealthy(routerPort, child);
+    const routed = await request(routerPort, 'POST', '/v1/responses', {
+      model: 'gpt-official',
+      stream: true,
+      max_output_tokens: 123,
+      input: [
+        { role: 'user', content: [{ type: 'input_text', text: '继续任务' }] },
+        {
+          id: 'rs_custom',
+          type: 'reasoning',
+          summary: [{ type: 'summary_text', text: '第三方模型的推理摘要' }],
+          content: [{ type: 'reasoning_text', text: '第三方模型的推理正文' }],
+        },
+        {
+          id: 'msg_custom',
+          type: 'message',
+          role: 'assistant',
+          status: 'completed',
+          content: [{ type: 'output_text', text: '第三方模型的回答' }],
+        },
+        {
+          id: 'fc_custom',
+          type: 'function_call',
+          call_id: 'call_custom',
+          name: 'shell_command',
+          arguments: '{"command":"Get-Location"}',
+        },
+      ],
+    });
+
+    assert.equal(routed.status, 200);
+    assert.equal(captured.length, 1);
+    assert.equal(captured[0].store, false);
+    assert.equal('max_output_tokens' in captured[0], false);
+    assert.equal('content' in captured[0].input[1], false);
+    assert.deepEqual(captured[0].input[1].summary, [
+      { type: 'summary_text', text: '第三方模型的推理摘要' },
+    ]);
+    assert.deepEqual(captured[0].input[2].content, [
+      { type: 'output_text', text: '第三方模型的回答' },
+    ]);
+    assert.deepEqual(captured[0].input[3], {
+      id: 'fc_custom',
+      type: 'function_call',
+      call_id: 'call_custom',
+      name: 'shell_command',
+      arguments: '{"command":"Get-Location"}',
+    });
   } finally {
     await cleanupIsolatedRouter({ routerPort, child, childExit, childOutput, upstream, tempDir });
   }
@@ -617,7 +1045,16 @@ test('跨 wire API 或未知供应商状态域只在完整历史下移除私有 
   const routerPort = await freePort();
   const catalogPath = path.join(tempDir, 'models.json');
   const configPath = path.join(tempDir, 'config.json');
-  await fs.writeFile(catalogPath, JSON.stringify({ models: [{ slug: 'chat-model' }, { slug: 'native-model' }, { slug: 'mixed-model' }, { slug: 'same-wire-model' }, { slug: 'shared-state-model' }, { slug: 'collision-model' }] }));
+  await fs.writeFile(catalogPath, JSON.stringify({
+    models: [
+      { slug: 'chat-model', display_name: 'Chat 模型' },
+      { slug: 'native-model', display_name: 'Native 模型' },
+      { slug: 'mixed-model', display_name: '混合模型' },
+      { slug: 'same-wire-model', display_name: '同 Wire 模型' },
+      { slug: 'shared-state-model', display_name: '共享状态模型' },
+      { slug: 'collision-model', display_name: '冲突模型' },
+    ],
+  }));
   await fs.writeFile(configPath, JSON.stringify({
     port: routerPort,
     modelContext: { enabled: false },
@@ -906,7 +1343,9 @@ test('并发请求名额保持到流式响应结束', async () => {
   const routerPort = await freePort();
   const catalogPath = path.join(tempDir, 'models.json');
   const configPath = path.join(tempDir, 'config.json');
-  await fs.writeFile(catalogPath, JSON.stringify({ models: [{ slug: 'limited-model' }] }));
+  await fs.writeFile(catalogPath, JSON.stringify({
+    models: [{ slug: 'limited-model', display_name: '并发受限模型' }],
+  }));
   await fs.writeFile(configPath, JSON.stringify({
     port: routerPort,
     maxConcurrentRequests: 1,
@@ -1018,7 +1457,10 @@ test('同一任务的新请求无需裁剪时仍阻止旧摘要晚到覆盖进�
   const catalogPath = path.join(tempDir, 'models.json');
   const configPath = path.join(tempDir, 'config.json');
   await fs.writeFile(catalogPath, JSON.stringify({
-    models: [{ slug: 'checkpoint-race' }, { slug: 'checkpoint-race-native' }],
+    models: [
+      { slug: 'checkpoint-race', display_name: '检查点竞态模型' },
+      { slug: 'checkpoint-race-native', display_name: '检查点竞态原生模型' },
+    ],
   }));
   await fs.writeFile(configPath, JSON.stringify({
     port: routerPort,

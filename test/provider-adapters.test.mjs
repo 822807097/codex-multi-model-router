@@ -126,6 +126,52 @@ test('官方 Responses 通道适配 chatgpt.com 参数限制（store:false 注�
   assert.equal(adaptOfficialResponsesBody(null), null);
 });
 
+test('官方 Responses 通道移除跨模型历史中的 reasoning content 并保留其他输入项', () => {
+  const body = {
+    input: [
+      { role: 'user', content: [{ type: 'input_text', text: '继续任务' }] },
+      {
+        id: 'rs_custom',
+        type: 'reasoning',
+        summary: [{ type: 'summary_text', text: '第三方模型的推理摘要' }],
+        content: [{ type: 'reasoning_text', text: '第三方模型的推理正文' }],
+        encrypted_content: 'encrypted-context',
+      },
+      {
+        id: 'msg_custom',
+        type: 'message',
+        role: 'assistant',
+        status: 'completed',
+        content: [{ type: 'output_text', text: '第三方模型的回答' }],
+      },
+      {
+        id: 'fc_custom',
+        type: 'function_call',
+        call_id: 'call_custom',
+        name: 'shell_command',
+        arguments: '{"command":"Get-Location"}',
+      },
+    ],
+  };
+
+  const adapted = adaptOfficialResponsesBody(body);
+
+  assert.equal('content' in adapted.input[1], false);
+  assert.deepEqual(adapted.input[1].summary, [
+    { type: 'summary_text', text: '第三方模型的推理摘要' },
+  ]);
+  assert.equal(adapted.input[1].encrypted_content, 'encrypted-context');
+  assert.deepEqual(adapted.input[0].content, [{ type: 'input_text', text: '继续任务' }]);
+  assert.deepEqual(adapted.input[2].content, [{ type: 'output_text', text: '第三方模型的回答' }]);
+  assert.deepEqual(adapted.input[3], {
+    id: 'fc_custom',
+    type: 'function_call',
+    call_id: 'call_custom',
+    name: 'shell_command',
+    arguments: '{"command":"Get-Location"}',
+  });
+});
+
 test('compact 仅允许原生 Responses 通道透传', () => {
   assert.deepEqual(resolveRequestProtocol({ wireApi: 'responses' }, '/v1/responses/compact'), {
     isChat: false,

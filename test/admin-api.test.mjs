@@ -35,6 +35,32 @@ function request(port, method, requestPath, body) {
   });
 }
 
+function rawRequest(port, method, requestPath, bytes) {
+  return new Promise((resolve, reject) => {
+    const payload = Buffer.from(bytes);
+    const req = http.request({
+      host: '127.0.0.1',
+      port,
+      method,
+      path: requestPath,
+      headers: {
+        'content-type': 'application/json',
+        'content-length': payload.length,
+      },
+    }, (res) => {
+      const chunks = [];
+      res.on('data', (chunk) => chunks.push(chunk));
+      res.on('end', () => resolve({
+        status: res.statusCode,
+        headers: res.headers,
+        text: Buffer.concat(chunks).toString('utf8'),
+      }));
+    });
+    req.on('error', reject);
+    req.end(payload);
+  });
+}
+
 function validConfig(port) {
   return {
     port,
@@ -62,10 +88,19 @@ function validConfig(port) {
   };
 }
 
-async function startAdmin(tempDir) {
+async function startAdmin(tempDir, overrides = {}) {
   const configPath = path.join(tempDir, 'config.json');
+  const catalogPath = path.join(tempDir, 'models.json');
   const config = validConfig(15730);
+  const catalog = {
+    models: [{
+      slug: 'custom',
+      display_name: 'Custom',
+      input_modalities: ['text'],
+    }],
+  };
   await fs.writeFile(configPath, JSON.stringify(config, null, 2));
+  await fs.writeFile(catalogPath, JSON.stringify(catalog, null, 2));
   const checkpointStore = new GoalCheckpointStore();
   checkpointStore.remember({ taskKey: 'task', checkpoint: 'checkpoint text' });
   const persistence = {
@@ -91,6 +126,8 @@ async function startAdmin(tempDir) {
     startedAt: Date.now() - 1000,
     checkpointStore,
     persistence,
+    catalogPath,
+    ...overrides,
   });
   const server = http.createServer(async (req, res) => {
     if (!await handler(req, res)) {
@@ -103,11 +140,1179 @@ async function startAdmin(tempDir) {
     server,
     port: server.address().port,
     configPath,
+    catalogPath,
     config,
+    catalog,
     checkpointStore,
     persistence,
   };
 }
+
+async function routingState(admin) {
+  const response = await request(admin.port, 'GET', '/_admin/api/model-routing');
+  assert.equal(response.status, 200);
+  return { response, body: JSON.parse(response.text) };
+}
+
+test('联合模型路由 GET 返回双 revision、安全视图与环境变量是否已设置', async () => {
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'router-admin-routing-state-'));
+  const admin = await startAdmin(tempDir);
+  try {
+    const { response, body } = await routingState(admin);
+    assert.match(body.configRevision, /^[a-f0-9]{64}$/);
+    assert.match(body.catalogRevision, /^[a-f0-9]{64}$/);
+    assert.equal(body.models[0].slug, 'custom');
+    assert.equal(body.targets[0].name, 'custom');
+    assert.match(body.targets[0].targetRef, /^target:[a-f0-9]{64}$/);
+    assert.equal(body.targets[0].envSet, true);
+    assert.deepEqual(body.bindings, [{ slug: 'custom', targetRefs: [body.targets[0].targetRef] }]);
+    assert.deepEqual(body.references, { modelContext: [], supportsResponses: [] });
+    assert.doesNotMatch(
+      response.text,
+      /configPath|catalogPath|runtime-secret|static-secret|custom-static-secret|authorization|headers|cookie|oauth/i,
+    );
+  } finally {
+    await new Promise((resolve) => admin.server.close(resolve));
+    await fs.rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test('联合模型路由正文严格限制为 UTF-8 JSON 且不超过 2 MiB', async () => {
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'router-admin-routing-body-'));
+  const admin = await startAdmin(tempDir);
+  try {
+    const invalidUtf8 = await rawRequest(
+      admin.port,
+      'POST',
+      '/_admin/api/model-routing/validate',
+      Buffer.from([0x7b, 0x22, 0x78, 0x22, 0x3a, 0x22, 0xc3, 0x28, 0x22, 0x7d]),
+    );
+    assert.equal(invalidUtf8.status, 400);
+    assert.equal(JSON.parse(invalidUtf8.text).error.code, 'invalid_json');
+
+    const oversized = await rawRequest(
+      admin.port,
+      'PUT',
+      '/_admin/api/model-routing',
+      Buffer.alloc(2 * 1024 * 1024 + 1, 0x20),
+    );
+    assert.equal(oversized.status, 413);
+    assert.equal(JSON.parse(oversized.text).error.code, 'admin_body_too_large');
+
+    const multibyteText = `{"padding":"${'你'.repeat(700_000)}"}`;
+    assert.equal(multibyteText.length < 2 * 1024 * 1024, true);
+    assert.equal(Buffer.byteLength(multibyteText) > 2 * 1024 * 1024, true);
+    const multibyteOversized = await rawRequest(
+      admin.port,
+      'POST',
+      '/_admin/api/model-routing/validate',
+      Buffer.from(multibyteText),
+    );
+    assert.equal(multibyteOversized.status, 413);
+    assert.equal(JSON.parse(multibyteOversized.text).error.code, 'admin_body_too_large');
+
+    const trailingBytes = await rawRequest(
+      admin.port,
+      'POST',
+      '/_admin/api/model-routing/validate',
+      Buffer.from('{}non-empty-trailer'),
+    );
+    assert.equal(trailingBytes.status, 400);
+    assert.equal(JSON.parse(trailingBytes.text).error.code, 'invalid_json');
+  } finally {
+    await new Promise((resolve) => admin.server.close(resolve));
+    await fs.rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test('超限分块正文排空到 end 后稳定返回 413 并保持同一 keep-alive 连接', async () => {
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'router-admin-routing-drain-'));
+  const admin = await startAdmin(tempDir);
+  const agent = new http.Agent({ keepAlive: true, maxSockets: 1 });
+  let upload;
+  try {
+    let uploadSocket;
+    let responseSeen = false;
+    const responsePromise = new Promise((resolve, reject) => {
+      upload = http.request({
+        host: '127.0.0.1',
+        port: admin.port,
+        method: 'POST',
+        path: '/_admin/api/model-routing/validate',
+        agent,
+        headers: { 'content-type': 'application/json' },
+      }, (res) => {
+        responseSeen = true;
+        const chunks = [];
+        res.on('data', (chunk) => chunks.push(chunk));
+        res.on('end', () => resolve({
+          status: res.statusCode,
+          text: Buffer.concat(chunks).toString('utf8'),
+        }));
+      });
+      upload.once('socket', (socket) => { uploadSocket = socket; });
+      upload.once('error', reject);
+    });
+    const write = (bytes) => new Promise((resolve, reject) => {
+      upload.write(bytes, (error) => (error ? reject(error) : resolve()));
+    });
+
+    await write(Buffer.alloc(2 * 1024 * 1024, 0x20));
+    await write(Buffer.from('x'));
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    const respondedBeforeEnd = responseSeen;
+    upload.end(Buffer.from('tail'));
+    const oversized = await responsePromise;
+
+    let followSocket;
+    const follow = await new Promise((resolve, reject) => {
+      const req = http.request({
+        host: '127.0.0.1',
+        port: admin.port,
+        method: 'GET',
+        path: '/_admin/api/model-routing',
+        agent,
+      }, (res) => {
+        const chunks = [];
+        res.on('data', (chunk) => chunks.push(chunk));
+        res.on('end', () => resolve({ status: res.statusCode, text: Buffer.concat(chunks) }));
+      });
+      req.once('socket', (socket) => { followSocket = socket; });
+      req.once('error', reject);
+      req.end();
+    });
+
+    assert.equal(respondedBeforeEnd, false);
+    assert.equal(oversized.status, 413);
+    assert.equal(JSON.parse(oversized.text).error.code, 'admin_body_too_large');
+    assert.equal(follow.status, 200);
+    assert.equal(followSocket, uploadSocket);
+  } finally {
+    if (upload && !upload.writableEnded) upload.destroy();
+    agent.destroy();
+    await new Promise((resolve) => admin.server.close(resolve));
+    await fs.rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test('联合模型路由 validate 区分无破坏操作与需要一次性确认的删除', async () => {
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'router-admin-routing-validate-'));
+  let now = 1_000;
+  const admin = await startAdmin(tempDir, {
+    now: () => now,
+    randomUUID: () => 'confirmation-token',
+  });
+  try {
+    const { body: state } = await routingState(admin);
+    const base = {
+      configRevision: state.configRevision,
+      catalogRevision: state.catalogRevision,
+    };
+    const safe = await request(admin.port, 'POST', '/_admin/api/model-routing/validate', {
+      ...base,
+      operations: [{ kind: 'model.update', slug: 'custom', patch: { display_name: 'Renamed' } }],
+    });
+    assert.equal(safe.status, 200);
+    const safeBody = JSON.parse(safe.text);
+    assert.deepEqual(safeBody.errors, []);
+    assert.match(safeBody.operationDigest, /^[a-f0-9]{64}$/);
+    assert.equal(Object.hasOwn(safeBody, 'confirmation'), false);
+
+    const destructivePayload = {
+      ...base,
+      operations: [{ kind: 'model.delete', slug: 'custom' }],
+    };
+    const destructive = await request(
+      admin.port,
+      'POST',
+      '/_admin/api/model-routing/validate',
+      destructivePayload,
+    );
+    assert.equal(destructive.status, 200);
+    const destructiveBody = JSON.parse(destructive.text);
+    assert.equal(destructiveBody.confirmation.token, 'confirmation-token');
+    assert.equal(destructiveBody.confirmation.expiresAt, 61_000);
+    assert.deepEqual(destructiveBody.impact.models.deleted, ['custom']);
+
+    now = 61_001;
+    const expired = await request(admin.port, 'PUT', '/_admin/api/model-routing', {
+      ...destructivePayload,
+      confirmation: destructiveBody.confirmation.token,
+    });
+    assert.equal(expired.status, 409);
+    assert.equal(JSON.parse(expired.text).error.code, 'confirmation_invalid');
+  } finally {
+    await new Promise((resolve) => admin.server.close(resolve));
+    await fs.rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test('破坏性确认令牌绑定双 revision 和操作摘要，错误令牌不消耗、正确令牌仅可使用一次', async () => {
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'router-admin-routing-token-'));
+  let commits = 0;
+  const admin = await startAdmin(tempDir, {
+    randomUUID: () => 'one-time-token',
+    transactionFactory: () => ({
+      commit: async ({ configRevision, catalogRevision }) => {
+        commits += 1;
+        return {
+          configRevision: 'a'.repeat(64),
+          catalogRevision: 'b'.repeat(64),
+          txid: `tx-${commits}`,
+        };
+      },
+    }),
+  });
+  try {
+    const { body: state } = await routingState(admin);
+    const payload = {
+      configRevision: state.configRevision,
+      catalogRevision: state.catalogRevision,
+      operations: [{ kind: 'model.delete', slug: 'custom' }],
+    };
+    const validated = JSON.parse((await request(
+      admin.port, 'POST', '/_admin/api/model-routing/validate', payload,
+    )).text);
+
+    const wrongDigest = await request(admin.port, 'PUT', '/_admin/api/model-routing', {
+      ...payload,
+      operations: [
+        ...payload.operations,
+        { kind: 'reference.removeSlug', slug: 'custom' },
+      ],
+      confirmation: validated.confirmation.token,
+    });
+    assert.equal(wrongDigest.status, 409);
+    assert.equal(JSON.parse(wrongDigest.text).error.code, 'confirmation_invalid');
+    assert.equal(commits, 0);
+
+    const wrong = await request(admin.port, 'PUT', '/_admin/api/model-routing', {
+      ...payload,
+      confirmation: 'wrong-token',
+    });
+    assert.equal(wrong.status, 409);
+    assert.equal(commits, 0);
+
+    const saved = await request(admin.port, 'PUT', '/_admin/api/model-routing', {
+      ...payload,
+      confirmation: validated.confirmation.token,
+    });
+    assert.equal(saved.status, 200);
+    assert.deepEqual(JSON.parse(saved.text), {
+      configRevision: 'a'.repeat(64),
+      catalogRevision: 'b'.repeat(64),
+      txid: 'tx-1',
+      warnings: [],
+      restartRequired: true,
+      clientRestartRequired: true,
+    });
+    assert.equal(commits, 1);
+
+    const repeated = await request(admin.port, 'PUT', '/_admin/api/model-routing', {
+      ...payload,
+      confirmation: validated.confirmation.token,
+    });
+    assert.equal(repeated.status, 409);
+    assert.equal(JSON.parse(repeated.text).error.code, 'confirmation_invalid');
+    assert.equal(commits, 1);
+  } finally {
+    await new Promise((resolve) => admin.server.close(resolve));
+    await fs.rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test('模型路由确认缓存只保留最近 128 项并淘汰最旧 token', async () => {
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'router-admin-routing-token-bound-'));
+  let sequence = 0;
+  let commits = 0;
+  const admin = await startAdmin(tempDir, {
+    randomUUID: () => `bounded-token-${++sequence}`,
+    transactionFactory: () => ({
+      commit: async () => {
+        commits += 1;
+        return {
+          configRevision: 'a'.repeat(64),
+          catalogRevision: 'b'.repeat(64),
+          txid: 'bounded-tx',
+        };
+      },
+    }),
+  });
+  try {
+    const { body: state } = await routingState(admin);
+    const payload = {
+      configRevision: state.configRevision,
+      catalogRevision: state.catalogRevision,
+      operations: [{ kind: 'model.delete', slug: 'custom' }],
+    };
+    const tokens = [];
+    for (let index = 0; index < 129; index += 1) {
+      const validated = await request(
+        admin.port, 'POST', '/_admin/api/model-routing/validate', payload,
+      );
+      assert.equal(validated.status, 200);
+      tokens.push(JSON.parse(validated.text).confirmation.token);
+    }
+
+    const oldest = await request(admin.port, 'PUT', '/_admin/api/model-routing', {
+      ...payload,
+      confirmation: tokens[0],
+    });
+    assert.equal(oldest.status, 409);
+    assert.equal(JSON.parse(oldest.text).error.code, 'confirmation_invalid');
+    assert.equal(commits, 0);
+
+    const newest = await request(admin.port, 'PUT', '/_admin/api/model-routing', {
+      ...payload,
+      confirmation: tokens.at(-1),
+    });
+    assert.equal(newest.status, 200);
+    assert.equal(commits, 1);
+  } finally {
+    await new Promise((resolve) => admin.server.close(resolve));
+    await fs.rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test('同一确认 token 的并发双 PUT 只有一个能在事务 await 前进入提交', async () => {
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'router-admin-routing-token-race-'));
+  let enterCommit;
+  const entered = new Promise((resolve) => { enterCommit = resolve; });
+  let releaseCommit;
+  const release = new Promise((resolve) => { releaseCommit = resolve; });
+  let commits = 0;
+  const admin = await startAdmin(tempDir, {
+    randomUUID: () => 'race-token',
+    transactionFactory: () => ({
+      commit: async () => {
+        commits += 1;
+        enterCommit();
+        if (commits === 1) await release;
+        return {
+          configRevision: 'a'.repeat(64),
+          catalogRevision: 'b'.repeat(64),
+          txid: 'race-tx',
+        };
+      },
+    }),
+  });
+  try {
+    const { body: state } = await routingState(admin);
+    const payload = {
+      configRevision: state.configRevision,
+      catalogRevision: state.catalogRevision,
+      operations: [{ kind: 'model.delete', slug: 'custom' }],
+    };
+    const validated = JSON.parse((await request(
+      admin.port, 'POST', '/_admin/api/model-routing/validate', payload,
+    )).text);
+    const savePayload = { ...payload, confirmation: validated.confirmation.token };
+
+    const first = request(admin.port, 'PUT', '/_admin/api/model-routing', savePayload);
+    await entered;
+    const second = await request(admin.port, 'PUT', '/_admin/api/model-routing', savePayload);
+    assert.equal(second.status, 409);
+    assert.equal(JSON.parse(second.text).error.code, 'confirmation_invalid');
+    assert.equal(commits, 1);
+    releaseCommit();
+    assert.equal((await first).status, 200);
+    assert.equal(commits, 1);
+  } finally {
+    releaseCommit();
+    await new Promise((resolve) => admin.server.close(resolve));
+    await fs.rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test('确认 token 分别绑定 configRevision、catalogRevision 和 operationDigest 且失败不消耗', async () => {
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'router-admin-routing-token-binding-'));
+  let commits = 0;
+  const admin = await startAdmin(tempDir, {
+    randomUUID: () => 'triple-binding-token',
+    transactionFactory: () => ({
+      commit: async () => {
+        commits += 1;
+        return {
+          configRevision: 'a'.repeat(64),
+          catalogRevision: 'b'.repeat(64),
+          txid: 'binding-tx',
+        };
+      },
+    }),
+  });
+  try {
+    const { body: state } = await routingState(admin);
+    const payload = {
+      configRevision: state.configRevision,
+      catalogRevision: state.catalogRevision,
+      operations: [{ kind: 'model.delete', slug: 'custom' }],
+    };
+    const validated = JSON.parse((await request(
+      admin.port, 'POST', '/_admin/api/model-routing/validate', payload,
+    )).text);
+    const confirmation = validated.confirmation.token;
+    const originalConfigText = await fs.readFile(admin.configPath, 'utf8');
+    await fs.writeFile(admin.configPath, `${JSON.stringify({
+      ...admin.config,
+      _revisionProbe: 'config',
+    }, null, 2)}\n`);
+    const configChanged = (await routingState(admin)).body;
+    const wrongConfig = await request(admin.port, 'PUT', '/_admin/api/model-routing', {
+      ...payload,
+      configRevision: configChanged.configRevision,
+      confirmation,
+    });
+    assert.equal(wrongConfig.status, 409);
+    assert.equal(JSON.parse(wrongConfig.text).error.code, 'confirmation_invalid');
+    await fs.writeFile(admin.configPath, originalConfigText);
+
+    const originalCatalogText = await fs.readFile(admin.catalogPath, 'utf8');
+    await fs.writeFile(admin.catalogPath, `${JSON.stringify({
+      ...admin.catalog,
+      _revisionProbe: 'catalog',
+    }, null, 2)}\n`);
+    const catalogChanged = (await routingState(admin)).body;
+    const wrongCatalog = await request(admin.port, 'PUT', '/_admin/api/model-routing', {
+      ...payload,
+      catalogRevision: catalogChanged.catalogRevision,
+      confirmation,
+    });
+    assert.equal(wrongCatalog.status, 409);
+    assert.equal(JSON.parse(wrongCatalog.text).error.code, 'confirmation_invalid');
+    await fs.writeFile(admin.catalogPath, originalCatalogText);
+
+    const wrongDigest = await request(admin.port, 'PUT', '/_admin/api/model-routing', {
+      ...payload,
+      operations: [...payload.operations, { kind: 'reference.removeSlug', slug: 'custom' }],
+      confirmation,
+    });
+    assert.equal(wrongDigest.status, 409);
+    assert.equal(JSON.parse(wrongDigest.text).error.code, 'confirmation_invalid');
+    assert.equal(commits, 0);
+
+    const saved = await request(admin.port, 'PUT', '/_admin/api/model-routing', {
+      ...payload,
+      confirmation,
+    });
+    assert.equal(saved.status, 200);
+    assert.equal(commits, 1);
+  } finally {
+    await new Promise((resolve) => admin.server.close(resolve));
+    await fs.rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test('联合模型路由将非法正文和 operation 映射为 400、语义预检错误映射为 422', async () => {
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'router-admin-routing-errors-'));
+  const admin = await startAdmin(tempDir);
+  try {
+    const { body: state } = await routingState(admin);
+    const base = {
+      configRevision: state.configRevision,
+      catalogRevision: state.catalogRevision,
+    };
+    const unknownBody = await request(admin.port, 'POST', '/_admin/api/model-routing/validate', {
+      ...base,
+      operations: [],
+      catalogPath: admin.catalogPath,
+    });
+    assert.equal(unknownBody.status, 400);
+    assert.equal(JSON.parse(unknownBody.text).error.code, 'request_invalid');
+    assert.doesNotMatch(unknownBody.text, /catalogPath|models\.json/);
+
+    const unknownOperation = await request(
+      admin.port,
+      'POST',
+      '/_admin/api/model-routing/validate',
+      { ...base, operations: [{ kind: 'model.execute-Bearer-leaked' }] },
+    );
+    assert.equal(unknownOperation.status, 400);
+    assert.equal(JSON.parse(unknownOperation.text).error.code, 'operation_kind_unknown');
+    assert.doesNotMatch(unknownOperation.text, /Bearer-leaked/);
+
+    const invalidPlan = await request(admin.port, 'PUT', '/_admin/api/model-routing', {
+      ...base,
+      operations: [{
+        kind: 'model.create',
+        model: { slug: 'missing-display-name', input_modalities: ['text'] },
+      }, {
+        kind: 'target.create',
+        target: { name: 'route', match: '^missing-display-name$', host: 'example.test' },
+      }],
+    });
+    assert.equal(invalidPlan.status, 422);
+    const invalidPlanBody = JSON.parse(invalidPlan.text);
+    assert.equal(
+      invalidPlanBody.errors.some((issue) => issue.code === 'catalog_display_name_invalid'),
+      true,
+    );
+  } finally {
+    await new Promise((resolve) => admin.server.close(resolve));
+    await fs.rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test('联合模型路由 HTTP 拒绝非专属精确 target.create 且允许规范 exact', async () => {
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'router-admin-routing-target-create-'));
+  const admin = await startAdmin(tempDir);
+  try {
+    const { body: state } = await routingState(admin);
+    const base = {
+      configRevision: state.configRevision,
+      catalogRevision: state.catalogRevision,
+    };
+    const targetBody = (name, match) => ({
+      name,
+      ...(match === undefined ? {} : { match }),
+      host: 'new-target.example.test',
+      envKey: 'TEST_KEY',
+      wireApi: 'chat',
+    });
+    for (const [name, match] of [
+      ['missing', undefined],
+      ['wide', '^custom'],
+      ['mismatch', '^other$'],
+      ['non-canonical', '^(?:custom)$'],
+    ]) {
+      const rejected = await request(admin.port, 'POST', '/_admin/api/model-routing/validate', {
+        ...base,
+        operations: [{ kind: 'target.create', target: targetBody(name, match) }],
+      });
+      assert.equal(rejected.status, 400, name);
+      assert.equal(JSON.parse(rejected.text).error.code, 'target_create_not_dedicated', name);
+    }
+
+    const accepted = await request(admin.port, 'POST', '/_admin/api/model-routing/validate', {
+      ...base,
+      operations: [{ kind: 'target.create', target: targetBody('exact', '^custom$') }],
+    });
+    assert.equal(accepted.status, 200);
+    assert.deepEqual(JSON.parse(accepted.text).errors, []);
+
+    const beforeConfig = await fs.readFile(admin.configPath, 'utf8');
+    const putRejected = await request(admin.port, 'PUT', '/_admin/api/model-routing', {
+      ...base,
+      operations: [{ kind: 'target.create', target: targetBody('put-wide', '^custom') }],
+    });
+    assert.equal(putRejected.status, 400);
+    assert.equal(JSON.parse(putRejected.text).error.code, 'target_create_not_dedicated');
+    assert.equal(await fs.readFile(admin.configPath, 'utf8'), beforeConfig);
+  } finally {
+    await new Promise((resolve) => admin.server.close(resolve));
+    await fs.rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test('联合模型路由 HTTP 拒绝绕过 UI 删除非专属 target 并允许 UI 删除顺序', async () => {
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'router-admin-routing-target-delete-'));
+  const admin = await startAdmin(tempDir);
+  const route = (name, match) => ({
+    name,
+    ...(match === undefined ? {} : { match }),
+    host: 'delete-target.example.test',
+    envKey: 'TEST_KEY',
+    wireApi: 'chat',
+  });
+  const cases = [
+    {
+      name: 'single-owner-wide-with-backup',
+      models: [admin.catalog.models[0]],
+      targets: [route('wide', '^custom'), route('backup', '^custom$')],
+    },
+    {
+      name: 'non-canonical-exact',
+      models: [admin.catalog.models[0]],
+      targets: [route('non-canonical', '^(?:custom)$')],
+    },
+    {
+      name: 'array-match',
+      models: [admin.catalog.models[0]],
+      targets: [route('array', ['^custom$'])],
+    },
+    {
+      name: 'missing-match',
+      models: [admin.catalog.models[0]],
+      targets: [route('missing', undefined)],
+    },
+    {
+      name: 'no-owner',
+      models: [admin.catalog.models[0]],
+      targets: [route('orphan', '^missing$')],
+    },
+    {
+      name: 'duplicate-owner',
+      models: [admin.catalog.models[0], admin.catalog.models[0]],
+      targets: [route('duplicate', '^custom$')],
+    },
+  ];
+
+  try {
+    for (const scenario of cases) {
+      await fs.writeFile(admin.configPath, JSON.stringify({
+        ...admin.config,
+        targets: scenario.targets,
+      }, null, 2));
+      await fs.writeFile(admin.catalogPath, JSON.stringify({ models: scenario.models }, null, 2));
+      const { body: state } = await routingState(admin);
+      const payload = {
+        configRevision: state.configRevision,
+        catalogRevision: state.catalogRevision,
+        operations: [{ kind: 'target.delete', targetRef: state.targets[0].targetRef }],
+      };
+      const rejected = await request(
+        admin.port,
+        'POST',
+        '/_admin/api/model-routing/validate',
+        payload,
+      );
+      assert.equal(rejected.status, 400, scenario.name);
+      assert.equal(JSON.parse(rejected.text).error.code, 'target_not_dedicated', scenario.name);
+
+      if (scenario.name === 'single-owner-wide-with-backup') {
+        const beforeConfig = await fs.readFile(admin.configPath, 'utf8');
+        const putRejected = await request(
+          admin.port,
+          'PUT',
+          '/_admin/api/model-routing',
+          payload,
+        );
+        assert.equal(putRejected.status, 400);
+        assert.equal(JSON.parse(putRejected.text).error.code, 'target_not_dedicated');
+        assert.equal(await fs.readFile(admin.configPath, 'utf8'), beforeConfig);
+      }
+    }
+
+    await fs.writeFile(admin.configPath, JSON.stringify({
+      ...admin.config,
+      modelContext: { slugs: ['custom'] },
+      targets: [route('exact', '^custom$'), route('other', '^other$')],
+    }, null, 2));
+    await fs.writeFile(admin.catalogPath, JSON.stringify({
+      models: [
+        ...admin.catalog.models,
+        { slug: 'other', display_name: 'Other', input_modalities: ['text'] },
+      ],
+    }, null, 2));
+    const { body: state } = await routingState(admin);
+    const base = {
+      configRevision: state.configRevision,
+      catalogRevision: state.catalogRevision,
+    };
+    const targetRef = state.targets[0].targetRef;
+    const deletedFirst = await request(
+      admin.port,
+      'POST',
+      '/_admin/api/model-routing/validate',
+      {
+        ...base,
+        operations: [
+          { kind: 'model.delete', slug: 'custom' },
+          { kind: 'target.delete', targetRef },
+        ],
+      },
+    );
+    assert.equal(deletedFirst.status, 400);
+    assert.equal(JSON.parse(deletedFirst.text).error.code, 'target_not_dedicated');
+
+    const uiOrder = await request(
+      admin.port,
+      'POST',
+      '/_admin/api/model-routing/validate',
+      {
+        ...base,
+        operations: [
+          { kind: 'reference.removeSlug', slug: 'custom' },
+          { kind: 'target.delete', targetRef },
+          { kind: 'model.delete', slug: 'custom' },
+        ],
+      },
+    );
+    assert.equal(uiOrder.status, 200);
+    assert.deepEqual(JSON.parse(uiOrder.text).errors, []);
+  } finally {
+    await new Promise((resolve) => admin.server.close(resolve));
+    await fs.rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test('联合模型路由 HTTP 校验新草稿连续改名不替换孤立引用或要求确认', async () => {
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'router-admin-routing-new-draft-rename-'));
+  const admin = await startAdmin(tempDir);
+  try {
+    await fs.writeFile(admin.configPath, JSON.stringify({
+      ...admin.config,
+      modelContext: { slugs: ['new.model'] },
+    }, null, 2));
+    const { body: state } = await routingState(admin);
+    const validated = await request(
+      admin.port,
+      'POST',
+      '/_admin/api/model-routing/validate',
+      {
+        configRevision: state.configRevision,
+        catalogRevision: state.catalogRevision,
+        operations: [
+          {
+            kind: 'model.create',
+            model: {
+              slug: 'new-model-v3',
+              display_name: 'New Model',
+              input_modalities: ['text'],
+            },
+          },
+          {
+            kind: 'target.create',
+            target: {
+              name: 'new-model',
+              match: '^new-model-v3$',
+              host: 'new.example.test',
+              envKey: 'TEST_KEY',
+              wireApi: 'chat',
+            },
+          },
+        ],
+      },
+    );
+    assert.equal(validated.status, 200);
+    const body = JSON.parse(validated.text);
+    assert.deepEqual(body.errors, []);
+    assert.deepEqual(body.impact.references.replaced, []);
+    assert.equal(Object.hasOwn(body, 'confirmation'), false);
+  } finally {
+    await new Promise((resolve) => admin.server.close(resolve));
+    await fs.rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test('联合模型路由在 config 或 catalog 任一 revision 变化时稳定返回冲突', async () => {
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'router-admin-routing-conflict-'));
+  const admin = await startAdmin(tempDir);
+  try {
+    const { body: state } = await routingState(admin);
+    const payload = {
+      configRevision: state.configRevision,
+      catalogRevision: state.catalogRevision,
+      operations: [],
+    };
+    await fs.writeFile(admin.configPath, `${JSON.stringify({ ...admin.config, port: 15731 }, null, 2)}\n`);
+    const configConflict = await request(
+      admin.port, 'POST', '/_admin/api/model-routing/validate', payload,
+    );
+    assert.equal(configConflict.status, 409);
+    assert.equal(JSON.parse(configConflict.text).error.code, 'revision_conflict');
+
+    await fs.writeFile(admin.configPath, `${JSON.stringify(admin.config, null, 2)}\n`);
+    const fresh = (await routingState(admin)).body;
+    await fs.writeFile(admin.catalogPath, `${JSON.stringify({ models: [] }, null, 2)}\n`);
+    const catalogConflict = await request(admin.port, 'PUT', '/_admin/api/model-routing', {
+      configRevision: fresh.configRevision,
+      catalogRevision: fresh.catalogRevision,
+      operations: [],
+    });
+    assert.equal(catalogConflict.status, 409);
+    assert.equal(JSON.parse(catalogConflict.text).error.code, 'revision_conflict');
+  } finally {
+    await new Promise((resolve) => admin.server.close(resolve));
+    await fs.rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test('联合模型路由拒绝 operation 中的认证字段与嵌套秘密', async () => {
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'router-admin-routing-secret-'));
+  const admin = await startAdmin(tempDir);
+  try {
+    const { body: state } = await routingState(admin);
+    const operations = [
+      { kind: 'target.create', target: { name: 'bad', match: '^bad$', headers: { authorization: 'Bearer leaked' } } },
+      { kind: 'target.create', target: { name: 'bad', match: '^bad$', auth: { token: 'leaked' } } },
+      { kind: 'target.create', target: { name: 'bad', match: '^bad$', apiKey: 'leaked' } },
+      { kind: 'target.create', target: { name: 'bad', match: '^bad$', vision: { nested: { cookie: 'leaked' } } } },
+      {
+        kind: 'model.update',
+        slug: 'custom',
+        patch: { experimental_supported_tools: [{ metadata: { oauth: { refresh: 'OAUTH-LEAK' } } }] },
+      },
+      {
+        kind: 'model.update',
+        slug: 'custom',
+        patch: { experimental_supported_tools: [{ metadata: { api: { key: 'API-LEAK' } } }] },
+      },
+      {
+        kind: 'model.update',
+        slug: 'custom',
+        patch: {
+          experimental_supported_tools: [{
+            nested: {
+              authorization: 'AUTH-LEAK',
+              cookie: 'COOKIE-LEAK',
+              token: 'TOKEN-LEAK',
+              privateKey: 'PRIVATE-KEY-LEAK',
+            },
+          }],
+        },
+      },
+    ];
+    for (const operation of operations) {
+      const rejected = await request(admin.port, 'POST', '/_admin/api/model-routing/validate', {
+        configRevision: state.configRevision,
+        catalogRevision: state.catalogRevision,
+        operations: [operation],
+      });
+      assert.equal(rejected.status, 400);
+      assert.equal(JSON.parse(rejected.text).error.code, 'operation_sensitive_field');
+      assert.doesNotMatch(
+        rejected.text,
+        /Bearer leaked|"leaked"|OAUTH-LEAK|API-LEAK|AUTH-LEAK|COOKIE-LEAK|TOKEN-LEAK|PRIVATE-KEY-LEAK/,
+      );
+    }
+  } finally {
+    await new Promise((resolve) => admin.server.close(resolve));
+    await fs.rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test('联合模型路由 GET 和 operation 对 Key 家族 fail closed 且不误伤普通单词', async () => {
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'router-admin-routing-key-family-'));
+  const admin = await startAdmin(tempDir);
+  const getSentinel = 'SENTINEL-HTTP-GET-KEY-FAMILY';
+  const operationSentinel = 'SENTINEL-HTTP-OPERATION-KEY-FAMILY';
+  const sensitiveNames = [
+    'key', 'Key', 'keyId', 'key_id', 'key-id', 'key.value',
+    'access_key', 'auth-key', 'api-key', 'private-key', 'client-key', 'session-key',
+    'publicKey', 'public_key', 'master_key', 'provider-key', 'displayKey', 'signing_key',
+    'encryption-key', 'consumerKey', 'publishable_key', 'sshKey',
+    'api', 'oauth', 'auth', 'credentials', 'headers', 'cookies', 'secrets', 'bearer',
+  ];
+  const safeNames = ['keyboard', 'monkey', 'keynote', 'tokenizer'];
+  try {
+    const catalog = structuredClone(admin.catalog);
+    catalog.models[0].metadata = Object.fromEntries([
+      ...sensitiveNames.map((name) => [name, getSentinel]),
+      ...safeNames.map((name) => [name, `safe-${name}`]),
+    ]);
+    await fs.writeFile(admin.catalogPath, `${JSON.stringify(catalog, null, 2)}\n`);
+    const { response, body: state } = await routingState(admin);
+    assert.doesNotMatch(response.text, /SENTINEL-HTTP-GET-KEY-FAMILY/);
+    assert.deepEqual(state.models[0].metadata, Object.fromEntries(
+      safeNames.map((name) => [name, `safe-${name}`]),
+    ));
+
+    for (const name of sensitiveNames) {
+      const operation = {
+        kind: 'model.update',
+        slug: 'custom',
+        patch: { experimental_supported_tools: [{ metadata: { [name]: operationSentinel } }] },
+      };
+      const rejected = await request(admin.port, 'POST', '/_admin/api/model-routing/validate', {
+        configRevision: state.configRevision,
+        catalogRevision: state.catalogRevision,
+        operations: [operation],
+      });
+      assert.equal(rejected.status, 400);
+      assert.equal(JSON.parse(rejected.text).error.code, 'operation_sensitive_field');
+      assert.doesNotMatch(rejected.text, /SENTINEL-HTTP-OPERATION-KEY-FAMILY/);
+    }
+    const putRejected = await request(admin.port, 'PUT', '/_admin/api/model-routing', {
+      configRevision: state.configRevision,
+      catalogRevision: state.catalogRevision,
+      operations: [{
+        kind: 'model.update',
+        slug: 'custom',
+        patch: { experimental_supported_tools: [{ metadata: { key: operationSentinel } }] },
+      }],
+    });
+    assert.equal(putRejected.status, 400);
+    assert.equal(JSON.parse(putRejected.text).error.code, 'operation_sensitive_field');
+    assert.doesNotMatch(putRejected.text, /SENTINEL-HTTP-OPERATION-KEY-FAMILY/);
+    assert.doesNotMatch(
+      await fs.readFile(admin.catalogPath, 'utf8'),
+      /SENTINEL-HTTP-OPERATION-KEY-FAMILY/,
+    );
+  } finally {
+    await new Promise((resolve) => admin.server.close(resolve));
+    await fs.rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test('联合模型路由 HTTP 按路径限制 target 认证字段且拒绝模型全树变体落盘', async () => {
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'router-admin-routing-path-scope-'));
+  const admin = await startAdmin(tempDir);
+  const getSentinel = 'SENTINEL-HTTP-GET-PATH-SCOPE';
+  const operationSentinel = 'SENTINEL-HTTP-OPERATION-PATH-SCOPE';
+  const sensitiveNames = [
+    'envKey', 'ENV_KEY', 'env-key', 'eNv.Key',
+    'authHeader', 'AUTH_HEADER', 'auth-header', 'aUtH.Header',
+    'forwardHeaders', 'FORWARD_HEADERS', 'forward-headers', 'fOrWaRd.Headers',
+  ];
+  const placements = (field, value) => [
+    { [field]: value },
+    { extension: { [field]: value } },
+    { experimental_supported_tools: [{ metadata: { [field]: value } }] },
+  ];
+  try {
+    const catalog = structuredClone(admin.catalog);
+    catalog.models[0].extension = {};
+    catalog.models[0].experimental_supported_tools = [];
+    for (const name of sensitiveNames) {
+      catalog.models[0][name] = getSentinel;
+      catalog.models[0].extension[name] = getSentinel;
+      catalog.models[0].experimental_supported_tools.push({
+        metadata: { [name]: getSentinel },
+      });
+    }
+    await fs.writeFile(admin.catalogPath, `${JSON.stringify(catalog, null, 2)}\n`);
+
+    const { response, body: state } = await routingState(admin);
+    assert.doesNotMatch(response.text, /SENTINEL-HTTP-GET-PATH-SCOPE/);
+
+    for (const name of sensitiveNames) {
+      for (const placement of placements(name, operationSentinel)) {
+        const operation = { kind: 'model.update', slug: 'custom', patch: placement };
+        const rejected = await request(admin.port, 'POST', '/_admin/api/model-routing/validate', {
+          configRevision: state.configRevision,
+          catalogRevision: state.catalogRevision,
+          operations: [operation],
+        });
+        assert.equal(rejected.status, 400, name);
+        assert.equal(JSON.parse(rejected.text).error.code, 'operation_sensitive_field', name);
+        assert.doesNotMatch(rejected.text, /SENTINEL-HTTP-OPERATION-PATH-SCOPE/);
+      }
+    }
+
+    const putRejected = await request(admin.port, 'PUT', '/_admin/api/model-routing', {
+      configRevision: state.configRevision,
+      catalogRevision: state.catalogRevision,
+      operations: [{
+        kind: 'model.update',
+        slug: 'custom',
+        patch: { extension: { envKey: operationSentinel } },
+      }],
+    });
+    assert.equal(putRejected.status, 400);
+    assert.equal(JSON.parse(putRejected.text).error.code, 'operation_sensitive_field');
+    assert.doesNotMatch(putRejected.text, /SENTINEL-HTTP-OPERATION-PATH-SCOPE/);
+    assert.doesNotMatch(
+      await fs.readFile(admin.catalogPath, 'utf8'),
+      /SENTINEL-HTTP-OPERATION-PATH-SCOPE/,
+    );
+  } finally {
+    await new Promise((resolve) => admin.server.close(resolve));
+    await fs.rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test('联合模型路由 GET 省略分层认证容器但保留非敏感未知模型字段', async () => {
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'router-admin-routing-exposure-'));
+  const admin = await startAdmin(tempDir);
+  try {
+    const catalog = structuredClone(admin.catalog);
+    catalog.models[0].metadata = {
+      oauth: { refresh: 'GET-OAUTH-LEAK' },
+      api: { key: 'GET-API-LEAK' },
+      nested: {
+        authorization: 'GET-AUTH-LEAK',
+        cookie: 'GET-COOKIE-LEAK',
+        token: 'GET-TOKEN-LEAK',
+        privateKey: 'GET-PRIVATE-KEY-LEAK',
+      },
+      safeUnknown: { enabled: true, value: 'safe-model-value' },
+      safeApi: { api: { format: 'responses', value: 'safe-api-value' } },
+    };
+    await fs.writeFile(admin.catalogPath, `${JSON.stringify(catalog, null, 2)}\n`);
+
+    const { response, body } = await routingState(admin);
+    assert.deepEqual(body.models[0].metadata, {
+      nested: {},
+      safeUnknown: { enabled: true, value: 'safe-model-value' },
+      safeApi: {},
+    });
+    assert.doesNotMatch(
+      response.text,
+      /GET-OAUTH-LEAK|GET-API-LEAK|GET-AUTH-LEAK|GET-COOKIE-LEAK|GET-TOKEN-LEAK|GET-PRIVATE-KEY-LEAK/,
+    );
+  } finally {
+    await new Promise((resolve) => admin.server.close(resolve));
+    await fs.rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test('联合模型路由 HTTP 对精确敏感容器的 primitive、数组和名称变体 fail closed', async () => {
+  const cases = [
+    ['oauth', 'HTTP-OAUTH-STRING-LEAK'],
+    ['auth', 42],
+    ['credentials', ['HTTP-CREDENTIALS-ARRAY-LEAK', 7]],
+    ['headers', [['HTTP-HEADERS-NESTED-ARRAY-LEAK']]],
+    ['cookies', 'HTTP-COOKIES-STRING-LEAK'],
+    ['secrets', 73],
+    ['api', ['HTTP-API-ARRAY-LEAK']],
+    ['oAu-Th', [['HTTP-OAUTH-VARIANT-LEAK']]],
+    ['cre_den-tials', 'HTTP-CREDENTIALS-VARIANT-LEAK'],
+    ['oauth', { mode: 'pkce', value: 'HTTP-OAUTH-OBJECT-LEAK' }],
+    ['api', { format: 'responses', value: 'HTTP-API-OBJECT-LEAK' }],
+  ];
+  const safeMetadata = {
+    apiFormat: 'responses',
+    authType: 'header',
+    tokenizer: 'safe-tokenizer',
+    tokenCount: 12,
+    max_output_tokens: 1_024,
+    value: 'safe-value',
+    format: 'safe-format',
+    mode: 'safe-mode',
+    unknown: { value: 'safe-unknown-value' },
+  };
+
+  for (const [index, [field, value]] of cases.entries()) {
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), `router-admin-container-${index}-`));
+    const admin = await startAdmin(tempDir);
+    try {
+      const catalog = structuredClone(admin.catalog);
+      catalog.models[0].metadata = { ...safeMetadata, [field]: value };
+      await fs.writeFile(admin.catalogPath, `${JSON.stringify(catalog, null, 2)}\n`);
+
+      const { response, body: state } = await routingState(admin);
+      assert.equal(Object.hasOwn(state.models[0].metadata, field), false, field);
+      assert.deepEqual(state.models[0].metadata, safeMetadata);
+      assert.doesNotMatch(response.text, /HTTP-(?:OAUTH|CREDENTIALS|HEADERS|COOKIES|API)/);
+
+      const rejected = await request(admin.port, 'POST', '/_admin/api/model-routing/validate', {
+        configRevision: state.configRevision,
+        catalogRevision: state.catalogRevision,
+        operations: [{
+          kind: 'model.update',
+          slug: 'custom',
+          patch: {
+            experimental_supported_tools: [{ metadata: { ...safeMetadata, [field]: value } }],
+          },
+        }],
+      });
+      assert.equal(rejected.status, 400, field);
+      assert.equal(JSON.parse(rejected.text).error.code, 'operation_sensitive_field');
+      assert.doesNotMatch(rejected.text, /HTTP-(?:OAUTH|CREDENTIALS|HEADERS|COOKIES|API)/);
+    } finally {
+      await new Promise((resolve) => admin.server.close(resolve));
+      await fs.rm(tempDir, { recursive: true, force: true });
+    }
+  }
+});
+
+test('联合模型路由事务错误保持稳定 code 且不泄漏路径或秘密', async () => {
+  for (const [code, expectedStatus, publicCode, txid] of [
+    ['transaction_rolled_back', 409, 'transaction_rolled_back', 'safe-txid'],
+    ['transaction_in_doubt', 500, 'transaction_in_doubt', 'safe-txid'],
+    ['transaction_in_doubt', 500, 'transaction_in_doubt', '..\\config.json\nTXID-LEAK'],
+    ['private_secret_code', 500, 'transaction_failed', 'safe-txid'],
+  ]) {
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), `router-admin-routing-${code}-`));
+    const admin = await startAdmin(tempDir, {
+      transactionFactory: () => ({
+        commit: async () => {
+          const error = new Error(`secret at ${tempDir}`);
+          error.code = code;
+          error.txid = txid;
+          throw error;
+        },
+      }),
+    });
+    try {
+      const { body: state } = await routingState(admin);
+      const failed = await request(admin.port, 'PUT', '/_admin/api/model-routing', {
+        configRevision: state.configRevision,
+        catalogRevision: state.catalogRevision,
+        operations: [{ kind: 'model.update', slug: 'custom', patch: { display_name: 'Safe' } }],
+      });
+      assert.equal(failed.status, expectedStatus);
+      const body = JSON.parse(failed.text);
+      assert.equal(body.error.code, publicCode);
+      if (code === 'transaction_in_doubt' && txid === 'safe-txid') {
+        assert.equal(body.error.txid, 'safe-txid');
+      }
+      if (txid !== 'safe-txid') assert.equal(Object.hasOwn(body.error, 'txid'), false);
+      assert.doesNotMatch(
+        failed.text,
+        /secret at|private_secret_code|TXID-LEAK|router-admin-routing|config\.json|models\.json/,
+      );
+    } finally {
+      await new Promise((resolve) => admin.server.close(resolve));
+      await fs.rm(tempDir, { recursive: true, force: true });
+    }
+  }
+});
+
+test('事务 factory 同步抛错时净化恶意 code、message 和 txid', async () => {
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'router-admin-routing-factory-throw-'));
+  const admin = await startAdmin(tempDir, {
+    transactionFactory: () => {
+      const error = new Error(`FACTORY-MESSAGE-LEAK ${path.join(tempDir, 'config.json')}`);
+      error.code = 'FACTORY-CODE-LEAK';
+      error.txid = '..\\models.json\r\nFACTORY-TXID-LEAK';
+      throw error;
+    },
+  });
+  try {
+    const { body: state } = await routingState(admin);
+    const failed = await request(admin.port, 'PUT', '/_admin/api/model-routing', {
+      configRevision: state.configRevision,
+      catalogRevision: state.catalogRevision,
+      operations: [{ kind: 'model.update', slug: 'custom', patch: { display_name: 'Safe' } }],
+    });
+    assert.equal(failed.status, 500);
+    assert.deepEqual(JSON.parse(failed.text), {
+      error: { code: 'transaction_failed', message: '模型路由事务未提交' },
+    });
+    assert.doesNotMatch(
+      failed.text,
+      /FACTORY-MESSAGE-LEAK|FACTORY-CODE-LEAK|FACTORY-TXID-LEAK|config\.json|models\.json/,
+    );
+  } finally {
+    await new Promise((resolve) => admin.server.close(resolve));
+    await fs.rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test('事务成功返回值必须含合法双 revision 和事务层格式 txid', async () => {
+  for (const committed of [
+    {
+      configRevision: 'BAD-CONFIG-REVISION-LEAK',
+      catalogRevision: 'b'.repeat(64),
+      txid: 'valid-txid',
+    },
+    {
+      configRevision: 'a'.repeat(64),
+      catalogRevision: 'BAD-CATALOG-REVISION-LEAK',
+      txid: 'valid-txid',
+    },
+    {
+      configRevision: 'a'.repeat(64),
+      catalogRevision: 'b'.repeat(64),
+      txid: '..\\models.json\r\nBAD-TXID-LEAK',
+    },
+  ]) {
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'router-admin-routing-result-'));
+    const admin = await startAdmin(tempDir, {
+      transactionFactory: () => ({ commit: async () => committed }),
+    });
+    try {
+      const { body: state } = await routingState(admin);
+      const failed = await request(admin.port, 'PUT', '/_admin/api/model-routing', {
+        configRevision: state.configRevision,
+        catalogRevision: state.catalogRevision,
+        operations: [{ kind: 'model.update', slug: 'custom', patch: { display_name: 'Safe' } }],
+      });
+      assert.equal(failed.status, 500);
+      assert.deepEqual(JSON.parse(failed.text), {
+        error: { code: 'transaction_failed', message: '模型路由事务未提交' },
+      });
+      assert.doesNotMatch(
+        failed.text,
+        /BAD-CONFIG-REVISION-LEAK|BAD-CATALOG-REVISION-LEAK|BAD-TXID-LEAK|models\.json/,
+      );
+    } finally {
+      await new Promise((resolve) => admin.server.close(resolve));
+      await fs.rm(tempDir, { recursive: true, force: true });
+    }
+  }
+});
 
 test('管理 API 返回脱敏状态和带不可伪造占位的配置', async () => {
   const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'router-admin-api-'));
