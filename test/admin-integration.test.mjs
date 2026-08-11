@@ -11,14 +11,22 @@ import { fileURLToPath } from 'node:url';
 const PROJECT_DIR = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 
 test('管理页加载自定义模型状态模块且不提供敏感凭据输入', async () => {
-  const [page, app] = await Promise.all([
+  const [page, app, styles] = await Promise.all([
     fs.readFile(path.join(PROJECT_DIR, 'web', 'index.html'), 'utf8'),
     fs.readFile(path.join(PROJECT_DIR, 'web', 'app.js'), 'utf8'),
+    fs.readFile(path.join(PROJECT_DIR, 'web', 'styles.css'), 'utf8'),
   ]);
 
   assert.match(page, /自定义模型/u);
   assert.match(app, /from '\.\/model-routing-state\.mjs'/u);
   assert.match(app, /新增自定义模型/u);
+  assert.match(app, /model-dialog-form[^>]+model-dialog-form/u, '模型弹窗必须使用独立表单布局');
+  assert.match(app, /route-summary/u, '复用通道必须提供可读摘要，而非直接展开完整配置');
+  assert.match(app, /route-editor-details/u, '编辑关联通道设置必须与复用摘要分层');
+  assert.match(app, /fillModelTargetFields\(select\.value, model \? 'reuse' : 'dedicated'\)/u, '编辑模型必须按复用通道展示摘要');
+  assert.match(app, /当前模型已关联已有通道/u, '编辑模型时必须显示准确的通道说明');
+  assert.match(styles, /dialog\.model-dialog/u, '模型弹窗必须使用独立宽屏样式钩子');
+  assert.match(styles, /\.dialog-section-heading \{ flex-direction: column;/u, '手机端模型分区标题必须纵向排列');
   assert.match(app, /保存后需手动重启路由与 Codex/u);
   assert.match(app, /modelValidationCache/u, '保存前必须缓存一次预检的确认信息');
   assert.match(app, /await this\.resyncBaselines\(\)/u, '任一保存后必须重新载入两侧基线');

@@ -172,6 +172,75 @@ test('官方 Responses 通道移除跨模型历史中的 reasoning content 并�
   });
 });
 
+test('官方 Responses 通道丢弃第三方遗留的 tool_search 调用对并保留正常工具历史', () => {
+  const body = {
+    input: [
+      { role: 'user', content: [{ type: 'input_text', text: '继续任务' }] },
+      {
+        id: 'fc_third_party_search',
+        type: 'tool_search_call',
+        call_id: 'call_third_party_search',
+        execution: 'client',
+        query: '查询第三方模型',
+      },
+      {
+        type: 'tool_search_output',
+        call_id: 'call_third_party_search',
+        output: [],
+      },
+      {
+        id: 'ws_official_search',
+        type: 'tool_search_call',
+        call_id: 'call_official_search',
+        execution: 'client',
+        query: '查询官方模型',
+      },
+      {
+        type: 'tool_search_output',
+        call_id: 'call_official_search',
+        output: [],
+      },
+      {
+        id: 'fc_shell',
+        type: 'function_call',
+        call_id: 'call_shell',
+        name: 'shell_command',
+        arguments: '{}',
+      },
+      { type: 'function_call_output', call_id: 'call_shell', output: '完成' },
+    ],
+  };
+  const expectedInput = [
+    body.input[0],
+    body.input[3],
+    body.input[4],
+    body.input[5],
+    body.input[6],
+  ];
+
+  const adapted = adaptOfficialResponsesBody(body);
+
+  assert.deepEqual(adapted.input, expectedInput);
+});
+
+test('官方 Responses 通道即使无法配对输出也丢弃非法 ID 的 tool_search 调用', () => {
+  const body = {
+    input: [
+      { role: 'user', content: [{ type: 'input_text', text: '继续任务' }] },
+      {
+        id: 'fc_incomplete_search',
+        type: 'tool_search_call',
+        execution: 'client',
+        query: '缺少调用 ID 的历史项',
+      },
+    ],
+  };
+
+  const adapted = adaptOfficialResponsesBody(body);
+
+  assert.deepEqual(adapted.input, [body.input[0]]);
+});
+
 test('compact 仅允许原生 Responses 通道透传', () => {
   assert.deepEqual(resolveRequestProtocol({ wireApi: 'responses' }, '/v1/responses/compact'), {
     isChat: false,

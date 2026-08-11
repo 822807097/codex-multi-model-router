@@ -18,17 +18,25 @@ public static class RouterCtrlC {
   [DllImport("kernel32.dll", SetLastError = true)] public static extern bool FreeConsole();
   [DllImport("kernel32.dll", SetLastError = true)] public static extern bool AttachConsole(uint pid);
   [DllImport("kernel32.dll", SetLastError = true)] public static extern bool GenerateConsoleCtrlEvent(uint ctrlEvent, uint pid);
+  [DllImport("kernel32.dll", SetLastError = true)] public static extern bool SetConsoleCtrlHandler(IntPtr handler, bool add);
 }
 '@
 
 function Send-CtrlC($targetPid) {
-    [RouterCtrlC]::FreeConsole() | Out-Null
-    $attached = [RouterCtrlC]::AttachConsole([uint32]$targetPid)
-    if (-not $attached) { [RouterCtrlC]::FreeConsole() | Out-Null; return $false }
-    # 进程组 0 = 目标控制台内所有进程（路由进程无子进程，仅它自己）
-    $sent = [RouterCtrlC]::GenerateConsoleCtrlEvent(0, 0)
-    [RouterCtrlC]::FreeConsole() | Out-Null
-    return $sent
+    # 发送前让本进程忽略 Ctrl+C，避免被同一控制台广播信号中断；
+    # 目标进程（node）不受影响，仍会收到 SIGINT 走优雅排空。
+    [RouterCtrlC]::SetConsoleCtrlHandler([IntPtr]::Zero, $true) | Out-Null
+    try {
+        [RouterCtrlC]::FreeConsole() | Out-Null
+        $attached = [RouterCtrlC]::AttachConsole([uint32]$targetPid)
+        if (-not $attached) { return $false }
+        # 进程组 0 = 目标控制台内所有进程（路由进程无子进程，仅它自己）
+        $sent = [RouterCtrlC]::GenerateConsoleCtrlEvent(0, 0)
+        return $sent
+    } finally {
+        [RouterCtrlC]::FreeConsole() | Out-Null
+        [RouterCtrlC]::SetConsoleCtrlHandler([IntPtr]::Zero, $false) | Out-Null
+    }
 }
 
 foreach ($p in $pids) {

@@ -1177,35 +1177,54 @@ import {
       if (slug && !model) return;
       this.modelDialogReturnFocus = document.activeElement;
       const dialog = this.querySelector('#model-dialog');
+      dialog.classList.add('model-dialog');
       dialog.innerHTML = `
-        <form id="model-dialog-form" novalidate aria-describedby="model-dialog-error">
-          <p class="kicker">${model ? '编辑模型' : '新增模型'}</p>
-          <h2 id="model-dialog-title">${model ? '编辑自定义模型' : '新增自定义模型'}</h2>
-          <p class="dialog-copy">基础信息只描述模型能力；第二步选择已有通道或填写新专属通道。凭据内容不会出现在这里。</p>
-          <div id="model-dialog-error" class="form-error" role="alert" hidden></div>
-          <div class="field-grid dialog-fields">
-            <label class="field"><span class="field-label">模型标识（slug）</span><input id="model-slug" required autocomplete="off" aria-describedby="model-dialog-error"><small class="field-help">用于 Codex 调用，建议使用稳定、易识别的名称。</small></label>
-            <label class="field"><span class="field-label">显示名称</span><input id="model-display-name" required autocomplete="off" aria-describedby="model-dialog-error"><small class="field-help">必填，显示给使用者的友好名称。</small></label>
-            <label class="field"><span class="field-label">上下文窗口（tokens）</span><input id="model-context" inputmode="numeric" type="number" min="1" aria-describedby="model-dialog-error"><small class="field-help">留空表示沿用目录默认值。</small></label>
-            <fieldset class="field modality-field"><legend class="field-label">输入能力</legend><label><input id="model-text" type="checkbox" checked> 文本</label><label><input id="model-image" type="checkbox"> 图片</label><small class="field-help">只勾选模型实际支持的输入。</small></fieldset>
+        <form id="model-dialog-form" class="model-dialog-form" novalidate aria-describedby="model-dialog-error">
+          <header class="model-dialog-header">
+            <p class="kicker">${model ? '编辑模型' : '新增模型'}</p>
+            <h2 id="model-dialog-title">${model ? '编辑自定义模型' : '新增自定义模型'}</h2>
+            <p class="dialog-copy">模型信息与通道设置分开填写；凭据内容始终不会出现在此页面。</p>
+          </header>
+          <div class="model-dialog-body">
+            <div id="model-dialog-error" class="form-error" role="alert" hidden></div>
+            <section class="dialog-section" aria-labelledby="model-details-title">
+              <div class="dialog-section-heading"><div><p class="section-step">第一步</p><h3 id="model-details-title">模型信息</h3></div><p>这些信息决定 Codex 如何识别并使用模型。</p></div>
+              <div class="field-grid dialog-fields model-details-fields">
+                <label class="field"><span class="field-label">模型标识（slug）</span><input id="model-slug" required autocomplete="off" aria-describedby="model-dialog-error"><small class="field-help">用于 Codex 调用，建议使用稳定、易识别的名称。</small></label>
+                <label class="field"><span class="field-label">显示名称</span><input id="model-display-name" required autocomplete="off" aria-describedby="model-dialog-error"><small class="field-help">必填，显示给使用者的友好名称。</small></label>
+                <label class="field"><span class="field-label">上下文窗口（tokens）</span><input id="model-context" inputmode="numeric" type="number" min="1" aria-describedby="model-dialog-error"><small class="field-help">留空表示沿用目录默认值。</small></label>
+                <fieldset class="field modality-field"><legend class="field-label">输入能力</legend><label><input id="model-text" type="checkbox" checked> 文本</label><label><input id="model-image" type="checkbox"> 图片</label><small class="field-help">只勾选模型实际支持的输入。</small></fieldset>
+              </div>
+            </section>
+            <section class="dialog-section route-section" aria-labelledby="model-route-title">
+              <div class="dialog-section-heading"><div><p class="section-step">第二步</p><h3 id="model-route-title">通道</h3></div><p>${model ? '当前模型已关联已有通道；如需修改连接设置，请展开下方设置。' : '新模型默认创建专属通道；复用不会改变既有匹配规则。'}</p></div>
+              <div class="route-mode-grid">
+                <label class="field"><span class="field-label">通道方式</span><select id="model-routing-mode"><option value="dedicated">新建专属通道</option><option value="reuse">复用已匹配通道</option></select></label>
+                <label class="field"><span class="field-label">选择通道</span><select id="model-target-ref" data-model-target></select><small id="model-target-help" class="field-help">编辑已有模型时，可在它已绑定的多个通道间选择。</small></label>
+              </div>
+              <div id="model-target-summary" class="route-summary" aria-live="polite" hidden>
+                <div><span class="field-label">当前关联通道</span><strong id="model-target-summary-name">—</strong></div>
+                <dl><div><dt>连接</dt><dd id="model-target-summary-host">—</dd></div><div><dt>接口</dt><dd id="model-target-summary-wire">—</dd></div><div><dt>匹配规则</dt><dd id="model-target-summary-match">—</dd></div></dl>
+              </div>
+              <details id="model-target-editor" class="route-editor-details">
+                <summary><span>连接设置</span><small>编辑关联通道会影响所有使用它的模型</small></summary>
+                <div id="model-target-fields" class="field-grid dialog-fields target-dialog-fields">
+                  <label class="field"><span class="field-label">安全名称</span><input id="route-name" autocomplete="off"></label>
+                  <label class="field"><span class="field-label">上游主机</span><input id="route-host" autocomplete="off"></label>
+                  <label class="field"><span class="field-label">协议</span><select id="route-protocol"><option value="https">HTTPS</option><option value="http">HTTP（仅可信本机）</option></select></label>
+                  <label class="field"><span class="field-label">路径前缀</span><input id="route-prefix" placeholder="/v1" autocomplete="off"></label>
+                  <label class="field"><span class="field-label">凭据环境变量名称</span><input id="route-env" autocomplete="off"><small class="field-help">只填写本机变量名称，不填写其内容。</small></label>
+                  <label class="field"><span class="field-label">上游接口</span><select id="route-wire"><option value="responses">Responses</option><option value="chat">Chat Completions</option></select></label>
+                  <label class="field"><span class="field-label">网络方式</span><select id="route-proxy"><option value="false">直接连接</option><option value="true">走公共代理</option></select></label>
+                </div>
+                <details class="route-advanced-details"><summary>高级选项</summary><div class="field-grid route-advanced-fields">
+                  <label class="field"><span class="field-label">认证方式</span><input id="route-auth-type" placeholder="bearer" autocomplete="off"></label>
+                  <label class="field"><span class="field-label">认证头名称</span><input id="route-auth-header" placeholder="标准认证头名称" autocomplete="off"><small class="field-help">只允许名称，不填写认证内容。</small></label>
+                </div></details>
+              </details>
+            </section>
           </div>
-          <details class="route-details" open><summary>第二步：通道与高级设置</summary>
-            <p>新模型默认新建一个仅匹配该 slug 的专属通道；复用时不会修改既有通道的匹配规则，因此只能选择已匹配该模型的通道。</p>
-            <label class="field"><span class="field-label">通道方式</span><select id="model-routing-mode"><option value="dedicated">新建专属通道</option><option value="reuse">复用已匹配通道</option></select></label>
-            <label class="field"><span class="field-label">选择通道</span><select id="model-target-ref" data-model-target></select><small id="model-target-help" class="field-help">编辑已有模型时，可在它已绑定的多个通道间选择。</small></label>
-            <div id="model-target-fields" class="field-grid dialog-fields target-dialog-fields">
-              <label class="field"><span class="field-label">安全名称</span><input id="route-name" autocomplete="off"></label>
-              <label class="field"><span class="field-label">上游主机</span><input id="route-host" autocomplete="off"></label>
-              <label class="field"><span class="field-label">协议</span><select id="route-protocol"><option value="https">HTTPS</option><option value="http">HTTP（仅可信本机）</option></select></label>
-              <label class="field"><span class="field-label">路径前缀</span><input id="route-prefix" placeholder="/v1" autocomplete="off"></label>
-              <label class="field"><span class="field-label">凭据环境变量名称</span><input id="route-env" autocomplete="off"><small class="field-help">只填写本机变量名称，不填写其内容。</small></label>
-              <label class="field"><span class="field-label">上游接口</span><select id="route-wire"><option value="responses">Responses</option><option value="chat">Chat Completions</option></select></label>
-              <label class="field"><span class="field-label">认证方式</span><input id="route-auth-type" placeholder="bearer" autocomplete="off"></label>
-              <label class="field"><span class="field-label">认证头名称</span><input id="route-auth-header" placeholder="标准认证头名称" autocomplete="off"><small class="field-help">只允许名称，不填写认证内容。</small></label>
-              <label class="field"><span class="field-label">网络方式</span><select id="route-proxy"><option value="false">直接连接</option><option value="true">走公共代理</option></select></label>
-            </div>
-          </details>
-          <div class="dialog-actions"><button class="button secondary" type="button" data-action="model-dialog-cancel">取消</button><button class="button primary" type="submit">${model ? '更新草稿' : '加入草稿'}</button></div>
+          <div class="dialog-actions model-dialog-actions"><button class="button secondary" type="button" data-action="model-dialog-cancel">取消</button><button class="button primary" type="submit">${model ? '更新草稿' : '加入草稿'}</button></div>
         </form>`;
       dialog.dataset.editSlug = model?.slug || '';
       const refs = model
@@ -1216,7 +1235,7 @@ import {
       const select = dialog.querySelector('#model-target-ref');
       refs.forEach((ref) => {
         const target = this.modelRoutingState.targets.find((item) => item.targetRef === ref);
-        const option = el('option', '', `${target?.name || '未命名通道'} · ${target?.envSet ? '环境就绪' : '环境待配置'} · ${target?.match || '未配置匹配规则'}`);
+        const option = el('option', '', `${target?.name || '未命名通道'} · ${target?.wireApi === 'chat' ? 'Chat' : 'Responses'} · ${target?.envSet ? '就绪' : '待配置'}`);
         option.value = ref;
         select.append(option);
       });
@@ -1233,7 +1252,8 @@ import {
       } else {
         select.disabled = false;
       }
-      this.fillModelTargetFields(select.value, model ? 'edit' : 'dedicated');
+      // 已有模型绑定的是既有通道，初始状态必须先显示摘要，避免打开弹窗就展开共享通道配置。
+      this.fillModelTargetFields(select.value, model ? 'reuse' : 'dedicated');
       dialog.showModal();
       dialog.querySelector('#model-slug').focus();
     }
@@ -1245,8 +1265,16 @@ import {
       const fields = dialog.querySelector('#model-target-fields');
       const select = dialog.querySelector('#model-target-ref');
       if (!fields || !select) return;
-      fields.hidden = !editing && routingMode === 'reuse';
+      const reusing = routingMode === 'reuse';
+      const targetEditor = dialog.querySelector('#model-target-editor');
+      const targetSummary = dialog.querySelector('#model-target-summary');
       select.closest('.field').hidden = !editing && routingMode === 'dedicated';
+      // 复用通道时先显示完整摘要，避免将共享通道配置误认为模型字段；编辑模型仍可按需展开设置。
+      if (targetEditor) {
+        targetEditor.hidden = !editing && reusing;
+        targetEditor.open = !reusing;
+      }
+      if (targetSummary) targetSummary.hidden = !reusing;
       // 新建专属通道不能悄然继承下拉框中默认 target 的认证语义或路由字段。
       const target = !editing && routingMode === 'dedicated'
         ? {}
@@ -1272,6 +1300,21 @@ import {
       set('#route-auth-type', target.authType);
       set('#route-auth-header', target.authHeader);
       set('#route-proxy', String(target.viaProxy === true));
+      if (targetSummary) {
+        const setSummary = (selector, value, title = value) => {
+          const node = dialog.querySelector(selector);
+          if (!node) return;
+          node.textContent = value;
+          node.title = title || '';
+        };
+        const protocol = target.protocol || 'https';
+        const host = target.host || '未配置上游主机';
+        const prefix = target.prefix || '/';
+        setSummary('#model-target-summary-name', target.name || '未命名通道');
+        setSummary('#model-target-summary-host', `${protocol}://${host}${prefix}`, `${protocol}://${host}${prefix}`);
+        setSummary('#model-target-summary-wire', target.wireApi === 'chat' ? 'Chat Completions' : 'Responses');
+        setSummary('#model-target-summary-match', target.match || '未配置匹配规则');
+      }
     }
 
     readModelDialog() {
