@@ -126,7 +126,7 @@ test('官方 Responses 通道适配 chatgpt.com 参数限制（store:false 注�
   assert.equal(adaptOfficialResponsesBody(null), null);
 });
 
-test('官方 Responses 通道移除跨模型历史中的 reasoning content 并保留其他输入项', () => {
+test('官方 Responses 通道移除 reasoning content 并保留可无状态回放的加密项', () => {
   const body = {
     input: [
       { role: 'user', content: [{ type: 'input_text', text: '继续任务' }] },
@@ -157,6 +157,7 @@ test('官方 Responses 通道移除跨模型历史中的 reasoning content 并�
   const adapted = adaptOfficialResponsesBody(body);
 
   assert.equal('content' in adapted.input[1], false);
+  assert.equal(adapted.input[1].id, 'rs_custom');
   assert.deepEqual(adapted.input[1].summary, [
     { type: 'summary_text', text: '第三方模型的推理摘要' },
   ]);
@@ -170,6 +171,32 @@ test('官方 Responses 通道移除跨模型历史中的 reasoning content 并�
     name: 'shell_command',
     arguments: '{"command":"Get-Location"}',
   });
+});
+
+test('官方 Responses 通道丢弃 store:false 下没有加密内容的第三方 reasoning 项', () => {
+  const body = {
+    store: false,
+    input: [
+      { role: 'user', content: [{ type: 'input_text', text: '继续任务' }] },
+      {
+        id: 'rs_third_party',
+        type: 'reasoning',
+        summary: [{ type: 'summary_text', text: '第三方模型的推理摘要' }],
+      },
+      {
+        id: 'msg_custom',
+        type: 'message',
+        role: 'assistant',
+        status: 'completed',
+        content: [{ type: 'output_text', text: '保留第三方模型的回答' }],
+      },
+    ],
+  };
+  const expectedInput = [body.input[0], body.input[2]];
+
+  const adapted = adaptOfficialResponsesBody(body);
+
+  assert.deepEqual(adapted.input, expectedInput);
 });
 
 test('官方 Responses 通道丢弃第三方遗留的 tool_search 调用对并保留正常工具历史', () => {

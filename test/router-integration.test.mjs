@@ -818,13 +818,19 @@ test('自定义 openai 名称不启用 ChatGPT 登录态并拒绝未知或畸形
   }
 });
 
-test('从自定义模型切到官方模型时清理不可回放的 reasoning content', async () => {
+test('从自定义模型切到官方模型时丢弃不可无状态回放的 reasoning 项', async () => {
   const captured = [];
   const upstream = http.createServer((req, res) => {
     const chunks = [];
     req.on('data', (chunk) => chunks.push(chunk));
     req.on('end', () => {
-      captured.push(JSON.parse(Buffer.concat(chunks).toString('utf8')));
+      const body = JSON.parse(Buffer.concat(chunks).toString('utf8'));
+      captured.push(body);
+      if (body.input.some((item) => item?.type === 'reasoning' && !item.encrypted_content)) {
+        res.writeHead(404, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ error: { message: 'reasoning item is not persisted' } }));
+        return;
+      }
       res.writeHead(200, { 'content-type': 'text/event-stream' });
       res.end([
         'event: response.completed',
@@ -924,14 +930,11 @@ test('从自定义模型切到官方模型时清理不可回放的 reasoning con
     assert.equal(captured.length, 1);
     assert.equal(captured[0].store, false);
     assert.equal('max_output_tokens' in captured[0], false);
-    assert.equal('content' in captured[0].input[1], false);
-    assert.deepEqual(captured[0].input[1].summary, [
-      { type: 'summary_text', text: '第三方模型的推理摘要' },
-    ]);
-    assert.deepEqual(captured[0].input[2].content, [
+    assert.equal(captured[0].input.some((item) => item?.type === 'reasoning'), false);
+    assert.deepEqual(captured[0].input[1].content, [
       { type: 'output_text', text: '第三方模型的回答' },
     ]);
-    assert.deepEqual(captured[0].input[3], {
+    assert.deepEqual(captured[0].input[2], {
       id: 'fc_custom',
       type: 'function_call',
       call_id: 'call_custom',
