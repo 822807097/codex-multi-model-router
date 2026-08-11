@@ -33,6 +33,7 @@ foreach ($k in $keySet.Keys) {
 
 $router = Join-Path $PSScriptRoot '..\codex-router.mjs'
 if (-not (Test-Path $router)) { $router = Join-Path $PSScriptRoot 'codex-router.mjs' }
-# 诊断日志：记录请求形状，排查闪跳/上下文问题（见 codex-router.mjs 的 flog）
+# 核心诊断日志；上下文维护日志默认自动派生为 router-context.log。
+# 两类 JSONL 都按 UTC 日轮转，并自动清理超过 72 小时的归档。
 $env:ROUTER_LOG = Join-Path $PSScriptRoot 'router.log'
 node $router

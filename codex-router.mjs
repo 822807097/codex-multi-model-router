@@ -29,11 +29,12 @@
 //   ROUTER_CONFIG_PATH  覆盖 config.json 路径（用于隔离测试或多实例）
 //   ROUTER_PORT         监听端口（默认 15730）
 //   ROUTER_HEARTBEAT_MS 覆盖 Chat SSE 心跳间隔（默认 15000 毫秒）
+//   ROUTER_LOG          核心请求生命周期 JSONL 活动文件
+//   ROUTER_CONTEXT_LOG  上下文维护 JSONL 活动文件（默认由 ROUTER_LOG 派生）
 //   V2RAY_PORT          本地代理混合端口（默认 10808，仅 viaProxy 的通道使用）
 //   各通道 key 见下方 TARGETS 的 envKey 字段
 // ============================================================================
 import http from 'node:http';
-import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -58,6 +59,7 @@ import { createAdminHandler } from './lib/admin-api.mjs';
 import { readRevisionedJson } from './lib/json-file-store.mjs';
 import { inspectModelCatalog } from './lib/model-routing-plan.mjs';
 import { recoverModelRoutingTransaction } from './lib/model-routing-transaction.mjs';
+import { createDiagnosticLog } from './lib/diagnostic-log.mjs';
 import {
   computeCheckpointNamespace,
   createCheckpointPersistence,
@@ -150,24 +152,25 @@ const ROUTER_STARTED_AT = Date.now();
 // 配置项见 config.json 的 visionRelay 字段
 
 const log = (...a) => console.log(`[${new Date().toISOString()}]`, ...a);
-// 诊断日志（可选）：ROUTER_LOG 指向文件时记录请求形状，用于排查闪跳/上下文问题
-// 异步链式追加：同步磁盘 IO 会把事件循环卡在系统调用上（慢盘/文件锁时所有请求一起挂），
-// 因此写入全部走 libuv 线程池，并按 promise 链保持顺序；超过上限时轮转保留一份旧日志。
+// 诊断日志（可选）：ROUTER_LOG 指向活动 JSONL 文件；模块负责顺序异步写入、
+// UTC 每日轮转、50MB 兜底轮转及超过 72 小时的归档清理。
 const LOG_FILE = process.env.ROUTER_LOG || null;
-const LOG_MAX_BYTES = 50 * 1024 * 1024;
-let logChain = Promise.resolve();
-const flog = (m) => {
-  if (!LOG_FILE) return;
-  logChain = logChain.then(async () => {
-    try {
-      const line = `[${new Date().toISOString()}] ${m}\n`;
-      const stat = await fs.promises.stat(LOG_FILE).catch(() => null);
-      if (stat && stat.size > LOG_MAX_BYTES) {
-        await fs.promises.rename(LOG_FILE, `${LOG_FILE}.1`).catch(() => {});
-      }
-      await fs.promises.appendFile(LOG_FILE, line);
-    } catch { /* 日志失败不影响路由 */ }
-  }).catch(() => {});
+const diagnosticLog = createDiagnosticLog({ filePath: LOG_FILE });
+const parsedLogPath = LOG_FILE ? path.parse(LOG_FILE) : null;
+const CONTEXT_LOG_FILE = process.env.ROUTER_CONTEXT_LOG || (parsedLogPath
+  ? path.join(
+      parsedLogPath.dir,
+      `${parsedLogPath.name}-context${parsedLogPath.ext || '.log'}`,
+    )
+  : null);
+const contextDiagnosticLog = createDiagnosticLog({ filePath: CONTEXT_LOG_FILE });
+const flog = (event) => {
+  const eventName = event && typeof event === 'object' ? event.event : '';
+  if (typeof eventName === 'string' && /^(?:context|history)\./.test(eventName)) {
+    contextDiagnosticLog.write(event);
+    return;
+  }
+  diagnosticLog.write(event);
 };
 
 // ---------- 进程级致命异常 ----------
@@ -352,6 +355,7 @@ function gracefulExit(exitCode = 0) {
     try { await checkpointPersistence.close(); } catch (error) {
       log('checkpoint persistence close failed:', error.message);
     }
+    await Promise.all([diagnosticLog.flush(), contextDiagnosticLog.flush()]);
     log('在跑任务已排空，退出');
     process.exit(exitCode);
   });

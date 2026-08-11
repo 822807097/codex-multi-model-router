@@ -84,3 +84,50 @@ test('最新轮次超过输入预算时返回稳定上下文错误码', async ()
     (error) => error.code === 'context_length_exceeded',
   );
 });
+
+test('上下文裁剪只写入带请求关联 ID 的结构化诊断字段', async () => {
+  const events = [];
+  const config = {
+    goalCheckpoint: { enabled: false },
+    modelCapabilities: [{
+      match: '^trim-model$',
+      contextWindow: 800,
+      maxOutputTokens: 100,
+      safetyRatio: 0.9,
+      protocolReserveTokens: 0,
+      imageTokens: 1,
+    }],
+  };
+  const currentTarget = target();
+  const builder = createChatRequestBuilder({
+    config,
+    goalCheckpoints: {},
+    proxy: null,
+    request: async () => { throw new Error('检查点已关闭，不应调用上游'); },
+    flog: (event) => events.push(event),
+  });
+
+  await builder.buildChatRequest({
+    input: [
+      { role: 'user', content: [{ type: 'input_text', text: '旧问题'.repeat(500) }] },
+      { role: 'assistant', content: [{ type: 'output_text', text: '旧回答'.repeat(500) }] },
+      { role: 'user', content: [{ type: 'input_text', text: '继续当前任务' }] },
+    ],
+  }, currentTarget, resolveProvider(currentTarget), 'trim-model', {
+    requestId: 'req_trim',
+    headers: {},
+    signal: undefined,
+    timeouts: {},
+  });
+
+  assert.deepEqual(events, [{
+    event: 'context.trimmed',
+    request_id: 'req_trim',
+    model: 'trim-model',
+    target: 'chat-target',
+    wire_api: 'chat',
+    groups: 1,
+    tokens: 83,
+    budget: 620,
+  }]);
+});

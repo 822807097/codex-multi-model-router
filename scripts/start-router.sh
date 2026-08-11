@@ -11,6 +11,8 @@ export CODEX_HOME="${CODEX_HOME:-$HOME/.codex}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROUTER="$SCRIPT_DIR/../codex-router.mjs"
 CONFIG_PATH="${ROUTER_CONFIG_PATH:-$SCRIPT_DIR/../config.json}"
+# 核心请求与上下文维护分别写入 JSONL；两类归档都只保留最近 72 小时。
+export ROUTER_LOG="${ROUTER_LOG:-$SCRIPT_DIR/router.log}"
 
 # 从实际配置提取 targets 与视觉中继的 envKey，避免脚本和配置的变量名长期漂移。
 CONFIG_KEY_NAMES="$(node -e '

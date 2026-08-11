@@ -51,6 +51,28 @@ Codex 桌面端 ──▶ 127.0.0.1:15730 (router，本项目)
 
 任务执行过程中可以直接切换模型，**不用新建聊天，也不用改变 Codex 的 `base_url`**；切换只影响下一次模型请求，当前任务的消息、工具结果和工作区保持不变。跨 Chat/Responses 协议切换时，路由会使用客户端全量历史、有界工具调用历史和目标检查点续接；如果客户端只提供了无法恢复的供应商私有增量状态，路由会明确拒绝，而不会让新模型在历史缺失的情况下盲目继续。
 
+### 同一任务跨模型接续
+
+![从 DeepSeek-V4-Flash 切换到官方 GPT-5.6 Sol 后在同一任务中继续回答](docs/demo-cross-model-continuation.png)
+
+上图展示的是一次真实的同任务接续：任务先由自定义的 `DeepSeek-V4-Flash` 处理，随后直接在右下角模型选择器切换到官方 `GPT-5.6 Sol`，官方模型继续读取当前任务已有的问题和回答并生成下一轮结果。整个过程没有新建任务、复制提示词或切换 `base_url`，项目、工作区、聊天记录和工具执行现场仍属于原任务。
+
+操作步骤：
+
+1. 在当前任务右下角点击模型名称，选择另一个官方模型或自定义模型。
+2. 确认任务中出现“模型已从 A 更改为 B”的分隔提示；该提示只改变下一轮选路，不会清空任务。
+3. 继续发送下一条消息。需要验证上下文时，可以让新模型复述当前目标、已完成进度或继续执行上一轮尚未完成的步骤。
+4. 还可以按同样方法再次切换，例如 `DeepSeek → GPT → Qwen → GPT`；每一轮都以当时选择的模型为准。
+
+路由在跨供应商、跨协议接续时会保留可迁移的任务信息，并清理不能跨上游复用的私有状态：
+
+- 保留 system/developer 指令、用户消息、助手正文、普通函数调用与工具结果，以及同一强任务键下的目标检查点。
+- 从 Responses 切到 Chat 时，把消息、图片和工具历史转换为 Chat Completions 结构；确实超过目标模型窗口时，只按完整旧轮次裁剪，并生成九栏目目标检查点。
+- 从第三方 Chat 切回官方 Responses 时，移除旧供应商的 `previous_response_id`、`prompt_cache_key`，删除没有官方 `ws_` / `tsc_` 身份的私有搜索项，并丢弃没有 `encrypted_content`、无法在 `store:false` 下回放的第三方合成 reasoning 项。
+- 官方 Responses 返回的加密 reasoning、普通对话正文和有效工具历史继续保留；路由不会伪造官方加密推理内容，也不会把一个任务的缓存串给另一个任务。
+
+> “Selected model is at capacity” 表示所选官方模型当前容量不足，不代表跨模型历史接续失败。可以在同一任务中改选其他可用模型或稍后重试。若出现 `cross_protocol_state_unavailable`，则表示客户端只提供了供应商私有增量状态且没有可恢复历史，路由会明确停止，避免模型在缺失上下文时盲目继续。
+
 ---
 
 ## 二、准备工作（5 分钟）
@@ -331,6 +353,71 @@ cd D:\codex-multi-model-router\scripts
 2. **路由重启不会打断正在跑的 Codex 任务**（旧进程排空在跑任务，新进程接管新请求），可以放心重启
 3. **不要手动删 auth.json / models.json**，它们是桌面端和路由共用的
 
+### 诊断日志
+
+启动脚本默认开启短期 JSONL 诊断日志，并按用途拆成两个活动文件：
+
+| 文件 | 内容 |
+|------|------|
+| `router.log` | 请求接收与解析、目标供应商、wire API、上游状态码/request-id、首字节与总耗时、failover、完成、超时、其他失败和客户端中断 |
+| `router-context.log` | 工具历史恢复、上下文裁剪、持续目标检查点生成或降级 |
+
+两个文件通过同一个 `request_id` 关联。每行都是独立 JSON，不记录请求/响应正文、模型输出、工具参数、Authorization、Cookie、API Key 或 Token。字符串字段会去除控制字符并限制长度；角色/输入类型只使用固定计数桶，未知值统一记为 `other`；上游错误正文也不会写入日志。
+
+活动文件按 UTC 日期每日轮转；单文件达到 50MB 时提前轮转。两类归档都会自动删除修改时间**严格超过 72 小时**的文件。升级前若活动文件仍是旧版文本格式，首次写入会先把它归档，避免 JSONL 与旧文本混在同一文件。清理失败不会影响模型请求。
+
+`ROUTER_LOG` 可指定核心活动文件；上下文日志默认在同目录使用 `<核心文件名>-context.log`，也可用 `ROUTER_CONTEXT_LOG` 单独指定。例如核心文件为 `D:\router\router.log` 时，上下文文件默认为 `D:\router\router-context.log`。
+
+PowerShell 查看最近的失败请求：
+
+```powershell
+Get-Content .\router.log |
+  ForEach-Object { $_ | ConvertFrom-Json } |
+  Where-Object { $_.event -in @('request.failed', 'request.disconnected') } |
+  Select-Object ts, request_id, model, target, wire_api, upstream_status, error_code, error_stage, duration_ms
+```
+
+取得某条记录的 `request_id` 后，可跨两个文件查看完整链路：
+
+```powershell
+$requestId = 'req_替换成实际值'
+Get-Content .\router.log, .\router-context.log |
+  ForEach-Object { $_ | ConvertFrom-Json } |
+  Where-Object request_id -eq $requestId |
+  Sort-Object ts
+```
+
+#### 事件与结果速查
+
+核心日志的主要事件：
+
+| 事件 | 含义 |
+|------|------|
+| `request.received` / `request.parsed` | 收到请求及完成安全的请求形状统计；不包含正文 |
+| `route.attempt` / `upstream.response` | 选中的目标、协议、尝试次数、上游状态和允许记录的 request-id |
+| `route.failover` | 当前目标发生可重试故障，准备尝试同协议备用目标 |
+| `request.completed` | 响应正常结束 |
+| `request.failed` | 路由拒绝、上游故障、超时或响应流错误 |
+| `request.disconnected` | 客户端在响应完成前主动断开 |
+
+上下文日志的主要事件包括 `history.restored`、`context.trimmed`、`context.checkpoint.created` 和 `context.checkpoint.fallback`。它们与核心日志共享 `request_id`，但不会挤占核心故障链路所在的活动文件。
+
+终态记录的 `outcome` 用于快速归因：`completed` 为成功；`router_rejected` 为路由本地校验或选路拒绝；`upstream_error` 为供应商状态码或网络错误；`timeout` 为建连、响应头或流空闲超时；`stream_error` 为已开始响应后的解析/传输错误；`client_disconnected` 为客户端取消。供应商返回 429、5xx 时仍属于 `upstream_error`，可结合 `upstream_status`、`target` 和 `upstream_request_id` 判断，不应误认为路由本地拒绝。
+
+#### 升级与发布验收
+
+以下流程适用于“源码克隆目录”和“实际运行目录”相互分离的安装方式，所有路径都以使用者的实际环境为准。复制新版本前应备份运行配置及 Codex 使用的 `auth.json`、`models.json`；API Key 应继续保存在环境变量中。仓库示例配置不能覆盖使用者已有的目标、代理、模型目录、检查点或凭据，`router.log`、`router-context.log` 和历史归档也不应进入 Git 仓库。
+
+建议使用者或项目维护者按以下顺序验收：
+
+1. 在源码目录运行 `npm test` 和 `node --check codex-router.mjs`，必须为 0 失败。
+2. 只同步程序模块、管理页资源和脚本；保留实际运行目录中的用户配置、密钥环境变量与数据文件。
+3. 使用当前平台对应的项目脚本执行优雅重启，不要直接结束 Node 进程；若健康检查失败，应恢复备份并重新启动旧版本。
+4. 按实际监听地址检查 `/healthz`、`/v1/models` 和 `/admin/`；`/v1/models` 中由本路由声明的能力只应包含 `streaming: true`。
+5. 分别用一个原生 Responses 模型和一个 Chat 兼容模型做短请求，再在同一任务中切换模型继续一轮；确认 SSE 心跳、文本输出、工具调用和跨模型历史均正常。
+6. 确认 `router.log` 与 `router-context.log` 已分开生成、每行可解析为 JSON，并能用相同 `request_id` 关联；日志中不得出现提示词、模型输出、工具参数或密钥。上下文日志只有在历史恢复、裁剪或检查点事件发生后才会生成。
+7. 提交或发布前再次检查 Git 变更范围；任何安装目录中的用户数据、日志、凭据和备份都不得进入公开仓库。
+
 ### 本地管理页（Web UI）
 
 路由启动后可访问 <http://127.0.0.1:15730/admin/>（端口以你的实际配置为准）。管理页继续使用项目现有的 `node:http`，前端为原生 Web Components，不需要安装 npm 包，也不会加载 CDN 资源。
@@ -432,7 +519,7 @@ cd D:\codex-multi-model-router\scripts
 
 客户端主动取消、400、401、403、上下文超限**不会**重试；一旦开始输出模型事件，**绝不重放切换**。自动故障切换只在相同 `wireApi` 的候选目标之间进行，避免把一种协议的供应商私有状态误交给另一种协议。
 
-**官方通道（`useOpenAiAuth: true`）自动适配**：请求未显式声明 `store` 时自动注入 `store: false`，并移除 `max_output_tokens`（chatgpt.com 会以 400 拒绝这两类请求）。从第三方模型切回官方模型时，路由还会移除第三方遗留的 `web_search_call`：这类网页搜索调用缺少官方内部的 `ws_` ID，不能伪造后回放。普通函数工具调用、动态工具发现调用和原生 `ws_` 网页搜索调用会保留。`name` 或 `platform` 写成 `openai` 不会隐式获得读取登录态的权限，第三方通道也不会收到 Cookie、ChatGPT Account ID 或 Codex session ID。
+**官方通道（`useOpenAiAuth: true`）自动适配**：请求未显式声明 `store` 时自动注入 `store: false`，并移除 `max_output_tokens`（chatgpt.com 会以 400 拒绝这两类请求）。从第三方模型切回官方模型时，路由还会移除第三方遗留的 `web_search_call`：这类网页搜索调用缺少官方内部的 `ws_` ID，不能伪造后回放；`store:false` 下没有 `encrypted_content` 的第三方合成 reasoning 同样不能无状态回放，会在官方请求边界删除。普通函数工具调用、有效动态工具发现调用、原生 `ws_` 网页搜索调用，以及带加密内容的官方 reasoning 会保留。`name` 或 `platform` 写成 `openai` 不会隐式获得读取登录态的权限，第三方通道也不会收到 Cookie、ChatGPT Account ID 或 Codex session ID。
 
 Chat 转换还会把 Responses 的对象型 `tool_choice`（function / custom / tool_search）改成 Chat `function` 结构，并同步使用工具转换后的安全别名，避免工具表已改名但强制选择仍指向原名。
 
@@ -442,7 +529,7 @@ Chat 转换还会把 Responses 的对象型 `tool_choice`（function / custom / 
 
 1. 客户端发送可独立使用的完整历史：可以跨协议或跨供应商状态域切换；路由会移除上一供应商私有的 `previous_response_id` 和 `prompt_cache_key`。
 2. 客户端只发送工具输出：若 `previous_response_id` 命中有界工具历史，路由会补回对应的 assistant 工具调用，再转换给 Chat 上游。
-3. 从 Chat 兼容第三方切回官方 Responses 时：第三方生成的 `web_search_call` 没有官方私有 `ws_` ID，路由会删除该网页搜索调用，保留用户文本、助手正文和普通工具历史后继续任务；动态工具发现 `tool_search_call` 使用独立的 `tsc_` ID 规则，不会被误删。
+3. 从 Chat 兼容第三方切回官方 Responses 时：第三方生成的 `web_search_call` 没有官方私有 `ws_` ID，路由会删除该网页搜索调用；没有 `encrypted_content` 的第三方合成 reasoning 也无法在 `store:false` 下回放，会被删除。用户文本、助手正文、普通工具历史和带加密内容的官方 reasoning 继续保留；动态工具发现 `tool_search_call` 使用独立的 `tsc_` ID 规则，不会被误删。
 4. 客户端只发送普通增量且历史无法恢复：返回 `400 cross_protocol_state_unavailable`，避免静默丢历史。即使两个 target 都是 Responses，只要 host/prefix/认证配置不同也默认视为不同状态域；确实共享后端时可显式设置相同 `stateDomain`。
 5. 两个任务或供应商返回相同 response id 时，路由用 conversation/session 强作用域分别恢复；缺少强作用域时返回 `400 ambiguous_response_id`，不会猜测目标或注入其他任务的工具历史。
 
@@ -525,6 +612,8 @@ Codex 中的图片
 | `ROUTER_CONFIG_PATH` | 覆盖路由 config.json 路径（多实例/隔离测试用） | 与程序同目录 |
 | `ROUTER_PORT` | 监听端口 | `config.json:port` 或 `15730` |
 | `ROUTER_HEARTBEAT_MS` | 心跳间隔覆盖 | `config.json:heartbeatMs` 或 `15000` |
+| `ROUTER_LOG` | 核心请求生命周期 JSONL 活动文件 | Windows 启动脚本旁的 `router.log` |
+| `ROUTER_CONTEXT_LOG` | 上下文维护 JSONL 活动文件 | 由 `ROUTER_LOG` 派生为 `*-context.log` |
 | `ROUTER_ENV_KEYS` | 启动/测试脚本需要额外检查的 key 名称，多个名称用逗号分隔；配置中的 `envKey` 会自动读取 | - |
 | `V2RAY_HOST` / `V2RAY_PORT` | 代理地址覆盖 | `config.json:proxy` 或 `127.0.0.1:10808` |
 | `DEEPSEEK_API_KEY` | DeepSeek key（**默认配置约定，可自定义**） | - |
@@ -645,7 +734,7 @@ Token Plan 周配额耗尽，提示里带重置时间，到期自动恢复，无
 这是 Codex 对**官方模型**开放的运行时特性，第三方模型会被标记 `unsupported call` 并自动降级为单代理并行 shell，属正常行为。
 
 **Q16：切换模型会丢任务进度吗**
-通常不会。未触发 Chat 裁剪时完整历史照常发送；触发 Chat 裁剪时路由生成目标检查点（目标/约束/进度/决定/工作集/失败/下一步）。跨协议时可用全量历史或有界工具历史续接；切回官方模型时，第三方遗留且没有官方 `ws_` ID 的网页搜索调用会被安全移除，普通工具和对话正文会继续保留。只有供应商私有 response id、cache key 且没有可恢复历史时会明确返回 400，防止新模型在缺历史的情况下继续。
+通常不会。未触发 Chat 裁剪时完整历史照常发送；触发 Chat 裁剪时路由生成目标检查点（目标/约束/进度/决定/工作集/失败/下一步）。跨协议时可用全量历史或有界工具历史续接；切回官方模型时，缺少官方身份的私有搜索项和没有 `encrypted_content` 的第三方 reasoning 会被安全移除，普通工具、对话正文和可回放的官方加密 reasoning 继续保留。只有供应商私有 response id、cache key 且没有可恢复历史时会明确返回 400，防止新模型在缺历史的情况下继续。完整操作和成功截图见“同一任务跨模型接续”。
 
 **Q17：更新路由会不会打断正在跑的任务**
 不会。`restart-router.ps1` 先让旧进程释放端口并排空在跑任务，新进程立即接管新请求。

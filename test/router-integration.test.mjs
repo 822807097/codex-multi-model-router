@@ -76,6 +76,19 @@ async function waitUntilHealthy(port, child) {
   throw new Error('隔离路由健康检查超时');
 }
 
+async function waitForDiagnosticEvents(logPath, predicate, timeoutMs = 2_000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const text = await fs.readFile(logPath, 'utf8').catch(() => '');
+    if (text) {
+      const events = text.trim().split(/\r?\n/).filter(Boolean).map((line) => JSON.parse(line));
+      if (predicate(events)) return { events, text };
+    }
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  throw new Error(`等待诊断日志超时: ${logPath}`);
+}
+
 function waitForChildExit(child, childExit, childOutput, timeoutMs = 2_000) {
   if (child.exitCode !== null) return Promise.resolve();
   return new Promise((resolve, reject) => {
@@ -436,14 +449,36 @@ test('隔离路由完成心跳、failover、工具历史和 compact 拒绝', asy
     req.on('data', (chunk) => chunks.push(chunk));
     req.on('end', () => {
       const body = JSON.parse(Buffer.concat(chunks).toString('utf8'));
+      if (req.url === '/native/responses') {
+        res.writeHead(503, {
+          'content-type': 'application/json',
+          'x-request-id': 'native_capacity_req_503',
+        });
+        res.end('{"error":"DIAGNOSTIC_SECRET_UPSTREAM_BODY"}');
+        return;
+      }
+      if (req.url === '/capacity/chat/completions') {
+        res.writeHead(429, {
+          'content-type': 'application/json',
+          'x-request-id': 'chat_capacity_req_429',
+        });
+        res.end('{"error":"DIAGNOSTIC_SECRET_CAPACITY_BODY"}');
+        return;
+      }
       if (req.url === '/primary/chat/completions') {
         primaryRequests += 1;
-        res.writeHead(503, { 'content-type': 'application/json' });
-        res.end('{"error":"temporary"}');
+        res.writeHead(503, {
+          'content-type': 'application/json',
+          'x-request-id': 'primary_req_503',
+        });
+        res.end('{"error":"DIAGNOSTIC_SECRET_FAILOVER_BODY"}');
         return;
       }
       captured.push(body);
-      res.writeHead(200, { 'content-type': 'text/event-stream' });
+      res.writeHead(200, {
+        'content-type': 'text/event-stream',
+        'x-request-id': 'backup_req_200',
+      });
       setTimeout(() => {
         if (captured.length === 1) {
           res.write('data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_custom","function":{"name":"apply_patch","arguments":"{\\"input\\":\\"patch\\"}"}}]},"finish_reason":"tool_calls"}]}\n\n');
@@ -460,18 +495,26 @@ test('隔离路由完成心跳、failover、工具历史和 compact 拒绝', asy
   const routerPort = await freePort();
   const catalogPath = path.join(tempDir, 'models.json');
   const configPath = path.join(tempDir, 'config.json');
+  const diagnosticLogPath = path.join(tempDir, 'router.log');
+  const diagnosticContextLogPath = path.join(tempDir, 'router-context.log');
   await fs.writeFile(catalogPath, JSON.stringify({
-    models: [{ slug: 'test-model', display_name: '测试模型' }],
+    models: [
+      { slug: 'test-model', display_name: '测试模型' },
+      { slug: 'native-error-model', display_name: '原生错误模型' },
+      { slug: 'chat-capacity-model', display_name: 'Chat 容量模型' },
+    ],
   }));
   await fs.writeFile(configPath, JSON.stringify({
     port: routerPort,
     heartbeatMs: 20,
     modelContext: { enabled: false },
     modelCapabilities: [{ match: '^test-model$', contextWindow: 16_000, maxOutputTokens: 1_000 }],
-    supportsResponses: { slugs: ['test-model'] },
+    supportsResponses: { slugs: ['test-model', 'native-error-model', 'chat-capacity-model'] },
     targets: [
       { name: 'primary', match: '^test-model$', host: '127.0.0.1', port: upstream.address().port, protocol: 'http', prefix: '/primary', envKey: 'TEST_ROUTER_KEY', wireApi: 'chat' },
       { name: 'backup', match: '^test-model$', host: '127.0.0.1', port: upstream.address().port, protocol: 'http', prefix: '/backup', envKey: 'TEST_ROUTER_KEY', wireApi: 'chat' },
+      { name: 'native-capacity', match: '^native-error-model$', host: '127.0.0.1', port: upstream.address().port, protocol: 'http', prefix: '/native', envKey: 'TEST_ROUTER_KEY', wireApi: 'responses' },
+      { name: 'chat-capacity', match: '^chat-capacity-model$', host: '127.0.0.1', port: upstream.address().port, protocol: 'http', prefix: '/capacity', envKey: 'TEST_ROUTER_KEY', wireApi: 'chat' },
     ],
   }));
 
@@ -483,7 +526,8 @@ test('隔离路由完成心跳、failover、工具历史和 compact 拒绝', asy
       ROUTER_PORT: String(routerPort),
       ROUTER_HEARTBEAT_MS: '20',
       CODEX_CATALOG_PATH: catalogPath,
-      TEST_ROUTER_KEY: 'test-only-key',
+      ROUTER_LOG: diagnosticLogPath,
+      TEST_ROUTER_KEY: 'DIAGNOSTIC_SECRET_KEY',
     },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
@@ -503,7 +547,7 @@ test('隔离路由完成心跳、failover、工具历史和 compact 拒绝', asy
     const first = await request(routerPort, 'POST', '/v1/responses', {
       model: 'test-model',
       stream: true,
-      input: [{ role: 'user', content: [{ type: 'input_text', text: '执行补丁' }] }],
+      input: [{ role: 'user', content: [{ type: 'input_text', text: 'DIAGNOSTIC_SECRET_PROMPT' }] }],
       tools: [{ type: 'custom', name: 'apply patch' }],
     });
     assert.equal(first.status, 200);
@@ -527,6 +571,97 @@ test('隔离路由完成心跳、failover、工具历史和 compact 拒绝', asy
     assert.equal(toolCallMessage.tool_calls[0].id, 'call_custom');
     assert.equal(toolCallMessage.tool_calls[0].function.name, 'apply_patch');
     assert.ok(captured[1].messages.some((message) => message.role === 'tool' && message.tool_call_id === 'call_custom'));
+
+    const nativeFailure = await request(routerPort, 'POST', '/v1/responses', {
+      model: 'native-error-model',
+      stream: true,
+      input: [{ role: 'user', content: 'DIAGNOSTIC_SECRET_NATIVE_PROMPT' }],
+    });
+    assert.equal(nativeFailure.status, 503);
+
+    const chatCapacity = await request(routerPort, 'POST', '/v1/responses', {
+      model: 'chat-capacity-model',
+      stream: true,
+      input: [{ role: 'user', content: 'DIAGNOSTIC_SECRET_CHAT_CAPACITY_PROMPT' }],
+    });
+    assert.equal(chatCapacity.status, 200);
+    assert.match(chatCapacity.text, /"type":"error"/);
+
+    const unknownWithSensitiveRole = await request(routerPort, 'POST', '/v1/responses', {
+      model: 'missing-diagnostic-model',
+      stream: true,
+      input: [{ role: 'DIAGNOSTIC_SECRET_ROLE_VALUE', content: 'ignored' }],
+    });
+    assert.equal(unknownWithSensitiveRole.status, 400);
+
+    const diagnostics = await waitForDiagnosticEvents(
+      diagnosticLogPath,
+      (events) => ['native-error-model', 'chat-capacity-model'].every((model) => (
+        events.some((event) => event.event === 'request.failed' && event.model === model)
+      )),
+    );
+    const failoverEvent = diagnostics.events.find((event) => (
+      event.event === 'route.failover' && event.model === 'test-model'
+    ));
+    assert.ok(failoverEvent);
+    const failoverRequestEvents = diagnostics.events.filter((event) => (
+      event.request_id === failoverEvent.request_id
+    ));
+    assert.deepEqual(
+      failoverRequestEvents.filter((event) => event.event === 'route.attempt').map((event) => event.target),
+      ['primary', 'backup'],
+    );
+    assert.equal(failoverRequestEvents.find((event) => (
+      event.event === 'upstream.response' && event.target === 'primary'
+    )).upstream_status, 503);
+    assert.equal(failoverRequestEvents.find((event) => (
+      event.event === 'upstream.response' && event.target === 'backup'
+    )).upstream_request_id, 'backup_req_200');
+    assert.equal(failoverRequestEvents.at(-1).event, 'request.completed');
+
+    const nativeFailedEvent = diagnostics.events.find((event) => (
+      event.event === 'request.failed' && event.model === 'native-error-model'
+    ));
+    assert.equal(nativeFailedEvent.target, 'native-capacity');
+    assert.equal(nativeFailedEvent.wire_api, 'responses');
+    assert.equal(nativeFailedEvent.upstream_status, 503);
+    assert.equal(nativeFailedEvent.upstream_request_id, 'native_capacity_req_503');
+    assert.equal(nativeFailedEvent.outcome, 'upstream_error');
+    assert.equal(nativeFailedEvent.error_stage, 'upstream_headers');
+    const chatCapacityFailedEvent = diagnostics.events.find((event) => (
+      event.event === 'request.failed' && event.model === 'chat-capacity-model'
+    ));
+    assert.equal(chatCapacityFailedEvent.target, 'chat-capacity');
+    assert.equal(chatCapacityFailedEvent.upstream_status, 429);
+    assert.equal(chatCapacityFailedEvent.upstream_request_id, 'chat_capacity_req_429');
+    assert.equal(chatCapacityFailedEvent.outcome, 'upstream_error');
+    assert.equal(chatCapacityFailedEvent.error_code, '429');
+    assert.equal(chatCapacityFailedEvent.error_stage, 'upstream_headers');
+    const sensitiveRoleParsedEvent = diagnostics.events.find((event) => (
+      event.event === 'request.parsed' && event.model === 'missing-diagnostic-model'
+    ));
+    assert.deepEqual(sensitiveRoleParsedEvent.role_counts, { other: 1 });
+    assert.doesNotMatch(
+      diagnostics.text,
+      /DIAGNOSTIC_SECRET_KEY|DIAGNOSTIC_SECRET_PROMPT|DIAGNOSTIC_SECRET_NATIVE_PROMPT|DIAGNOSTIC_SECRET_CHAT_CAPACITY_PROMPT|DIAGNOSTIC_SECRET_ROLE_VALUE|DIAGNOSTIC_SECRET_UPSTREAM_BODY|DIAGNOSTIC_SECRET_FAILOVER_BODY|DIAGNOSTIC_SECRET_CAPACITY_BODY/,
+    );
+    assert.ok(diagnostics.events.every((event) => !/^(?:context|history)\./.test(event.event)));
+
+    const contextDiagnostics = await waitForDiagnosticEvents(
+      diagnosticContextLogPath,
+      (events) => events.some((event) => event.event === 'history.restored'),
+    );
+    const restoredEvent = contextDiagnostics.events.find((event) => event.event === 'history.restored');
+    assert.equal(restoredEvent.model, 'test-model');
+    assert.equal(restoredEvent.target, 'backup');
+    assert.equal(restoredEvent.wire_api, 'chat');
+    assert.equal(restoredEvent.restored_calls, 1);
+    assert.equal(restoredEvent.history_hit, true);
+    assert.ok(diagnostics.events.some((event) => event.request_id === restoredEvent.request_id));
+    assert.doesNotMatch(
+      contextDiagnostics.text,
+      /DIAGNOSTIC_SECRET_KEY|DIAGNOSTIC_SECRET_PROMPT|DIAGNOSTIC_SECRET_FAILOVER_BODY/,
+    );
   } finally {
     await cleanupIsolatedRouter({ routerPort, child, childExit, childOutput, upstream, tempDir });
   }
@@ -1410,6 +1545,127 @@ test('并发请求名额保持到流式响应结束', async () => {
     assert.equal(upstreamRequests, 2);
   } finally {
     releaseFirstResponse?.();
+    await cleanupIsolatedRouter({ routerPort, child, childExit, childOutput, upstream, tempDir });
+  }
+});
+
+test('客户端提前断开会记录唯一中断终态并销毁上游连接', async () => {
+  let notifyUpstreamRequest;
+  let notifyUpstreamClosed;
+  const upstreamRequestArrived = new Promise((resolve) => { notifyUpstreamRequest = resolve; });
+  const upstreamClosed = new Promise((resolve) => { notifyUpstreamClosed = resolve; });
+  const upstream = http.createServer((req, res) => {
+    req.resume();
+    req.once('end', () => {
+      res.writeHead(200, { 'content-type': 'text/event-stream' });
+      res.flushHeaders();
+      notifyUpstreamRequest();
+      res.once('close', notifyUpstreamClosed);
+    });
+  });
+  await listen(upstream);
+
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'codex-router-client-disconnect-'));
+  const routerPort = await freePort();
+  const catalogPath = path.join(tempDir, 'models.json');
+  const configPath = path.join(tempDir, 'config.json');
+  const diagnosticLogPath = path.join(tempDir, 'router.log');
+  await fs.writeFile(catalogPath, JSON.stringify({
+    models: [{ slug: 'disconnect-model', display_name: '中断模型' }],
+  }));
+  await fs.writeFile(configPath, JSON.stringify({
+    port: routerPort,
+    heartbeatMs: 20,
+    modelContext: { enabled: false },
+    targets: [{
+      name: 'disconnect-provider',
+      match: '^disconnect-model$',
+      host: '127.0.0.1',
+      port: upstream.address().port,
+      protocol: 'http',
+      envKey: 'TEST_ROUTER_KEY',
+      wireApi: 'chat',
+    }],
+  }));
+
+  const child = spawn(process.execPath, [path.join(PROJECT_DIR, 'codex-router.mjs')], {
+    cwd: PROJECT_DIR,
+    env: {
+      ...process.env,
+      ROUTER_CONFIG_PATH: configPath,
+      ROUTER_PORT: String(routerPort),
+      ROUTER_HEARTBEAT_MS: '20',
+      ROUTER_LOG: diagnosticLogPath,
+      CODEX_CATALOG_PATH: catalogPath,
+      TEST_ROUTER_KEY: 'DIAGNOSTIC_SECRET_DISCONNECT_KEY',
+    },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  const childExit = once(child, 'exit');
+  let childOutput = '';
+  child.stdout.on('data', (chunk) => { childOutput += chunk; });
+  child.stderr.on('data', (chunk) => { childOutput += chunk; });
+
+  try {
+    await waitUntilHealthy(routerPort, child);
+    const payload = JSON.stringify({
+      model: 'disconnect-model',
+      stream: true,
+      input: [{ role: 'user', content: 'DIAGNOSTIC_SECRET_DISCONNECT_PROMPT' }],
+    });
+    await new Promise((resolve, reject) => {
+      let deliberateAbort = false;
+      const req = http.request({
+        host: '127.0.0.1',
+        port: routerPort,
+        path: '/v1/responses',
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          'content-length': Buffer.byteLength(payload),
+        },
+      }, (res) => {
+        upstreamRequestArrived.then(() => {
+          deliberateAbort = true;
+          res.destroy();
+          req.destroy();
+          resolve();
+        }, reject);
+      });
+      req.once('error', (error) => {
+        if (!deliberateAbort) reject(error);
+      });
+      req.end(payload);
+    });
+
+    await new Promise((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error('上游连接未随客户端中断关闭')), 2_000);
+      upstreamClosed.then(
+        () => { clearTimeout(timer); resolve(); },
+        (error) => { clearTimeout(timer); reject(error); },
+      );
+    });
+    const diagnostics = await waitForDiagnosticEvents(
+      diagnosticLogPath,
+      (events) => events.some((event) => event.event === 'request.disconnected'),
+    );
+    const terminalEvents = diagnostics.events.filter((event) => (
+      event.event === 'request.disconnected'
+      || event.event === 'request.completed'
+      || event.event === 'request.failed'
+    ));
+    assert.equal(terminalEvents.length, 1);
+    assert.equal(terminalEvents[0].event, 'request.disconnected');
+    assert.equal(terminalEvents[0].outcome, 'client_disconnected');
+    assert.equal(terminalEvents[0].model, 'disconnect-model');
+    assert.equal(terminalEvents[0].target, 'disconnect-provider');
+    assert.equal(terminalEvents[0].wire_api, 'chat');
+    assert.ok(terminalEvents[0].duration_ms >= 0);
+    assert.doesNotMatch(
+      diagnostics.text,
+      /DIAGNOSTIC_SECRET_DISCONNECT_KEY|DIAGNOSTIC_SECRET_DISCONNECT_PROMPT/,
+    );
+  } finally {
     await cleanupIsolatedRouter({ routerPort, child, childExit, childOutput, upstream, tempDir });
   }
 });

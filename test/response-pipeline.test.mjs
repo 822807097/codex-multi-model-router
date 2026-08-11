@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
+import { PassThrough } from 'node:stream';
 
 import {
   copyResponseHeaders,
@@ -91,4 +92,64 @@ test('原生响应头过滤 hop-by-hop 和 content-length', () => {
     'content-type': 'text/event-stream',
     'x-request-id': 'safe',
   });
+});
+
+test('Chat 上游流错误通过窄回调标记诊断状态', () => {
+  const pipeline = createResponsePipeline({ heartbeatMs: 15_000 });
+  const response = new FakeResponse();
+  response.headersSent = true;
+  const upstream = new PassThrough();
+  const failures = [];
+
+  pipeline.pipeChatResponse(
+    { stream: upstream },
+    response,
+    'test-model',
+    'test-tag',
+    () => {},
+    { byChatName: {}, byOriginalName: {} },
+    {},
+    null,
+    { streamError: (fields) => failures.push(fields) },
+  );
+  const error = new Error('socket closed');
+  error.code = 'ECONNRESET';
+  upstream.emit('error', error);
+
+  assert.deepEqual(failures, [{
+    error_code: 'ECONNRESET',
+    error_stage: 'chat_response_stream',
+  }]);
+  assert.equal(response.writableEnded, true);
+});
+
+test('原生非 SSE 上游空闲超时通过窄回调标记 timeout', () => {
+  const pipeline = createResponsePipeline({ heartbeatMs: 15_000 });
+  const response = new FakeResponse();
+  response.destroy = () => { response.destroyed = true; };
+  const upstream = new PassThrough();
+  const failures = [];
+
+  pipeline.pipeNativeResponse(
+    {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+      stream: upstream,
+      socket: { destroy() {} },
+    },
+    response,
+    'native-tag',
+    null,
+    { streamError: (fields) => failures.push(fields) },
+  );
+  const error = new Error('stream idle timeout for provider');
+  error.code = 'ETIMEDOUT';
+  upstream.emit('error', error);
+
+  assert.deepEqual(failures, [{
+    outcome: 'timeout',
+    error_code: 'ETIMEDOUT',
+    error_stage: 'native_response_stream',
+  }]);
+  assert.equal(response.destroyed, true);
 });
