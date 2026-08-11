@@ -1,4 +1,4 @@
-# restore-official.ps1 — 一键恢复 Codex 官方配置
+﻿# restore-official.ps1 — 一键恢复 Codex 官方配置
 # 动作：从 config.toml 移除 model_provider/model_catalog_json/[model_providers.router]，
 #       停止路由并移除开机自启。跑完请完全重启 Codex 桌面端。
 $ErrorActionPreference = 'Stop'
