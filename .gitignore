@@ -20,3 +20,6 @@ Thumbs.db
 
 # �ܹ��������ļ�
 .env
+
+# 浏览器验收临时目录
+.playwright-cli/

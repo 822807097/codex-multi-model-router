@@ -55,6 +55,9 @@ import { createOpenAiAuthManager } from './lib/openai-auth.mjs';
 import { createChatRequestBuilder } from './lib/chat-request.mjs';
 import { createRouterHandler } from './lib/router-handler.mjs';
 import { createAdminHandler } from './lib/admin-api.mjs';
+import { readRevisionedJson } from './lib/json-file-store.mjs';
+import { inspectModelCatalog } from './lib/model-routing-plan.mjs';
+import { recoverModelRoutingTransaction } from './lib/model-routing-transaction.mjs';
 import {
   computeCheckpointNamespace,
   createCheckpointPersistence,
@@ -67,13 +70,22 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const CONFIG_PATH = path.resolve(process.env.ROUTER_CONFIG_PATH || path.join(__dirname, 'config.json'));
 const MAX_CONFIG_BYTES = 4 * 1024 * 1024;
+const MAX_CATALOG_BYTES = 16 * 1024 * 1024;
+
+// 固定 journal 的恢复必须先于配置正文解析；未知状态保持原样并在绑定端口前退出。
+try {
+  await recoverModelRoutingTransaction({ configPath: CONFIG_PATH });
+} catch (error) {
+  const code = error?.code === 'transaction_in_doubt'
+    ? 'transaction_in_doubt'
+    : 'transaction_failed';
+  process.stderr.write(`[startup] 模型路由事务恢复失败（${code}）\n`);
+  process.exit(1);
+}
+
 let rawConfig;
 try {
-  const stat = fs.statSync(CONFIG_PATH);
-  if (stat.size > MAX_CONFIG_BYTES) throw new Error('config too large');
-  const bytes = fs.readFileSync(CONFIG_PATH);
-  if (bytes.length > MAX_CONFIG_BYTES) throw new Error('config too large');
-  rawConfig = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes));
+  rawConfig = readRevisionedJson(CONFIG_PATH, { maxBytes: MAX_CONFIG_BYTES }).value;
 } catch {
   const issue = {
     severity: 'error',
@@ -185,7 +197,29 @@ function applyModelContext() {
     }
   } catch (e) { log('modelContext: 应用失败', e.message); }
 }
+
+function readCheckedCatalog() {
+  const catalog = readRevisionedJson(CATALOG_PATH, { maxBytes: MAX_CATALOG_BYTES }).value;
+  const inspection = inspectModelCatalog(catalog);
+  if (inspection.errors.length > 0) throw new Error('catalog invalid');
+  return catalog;
+}
+
+// 写回前先封住非常规文件和非法结构；写回后再读取一次，后者才是本进程的活动 generation。
+try {
+  readCheckedCatalog();
+} catch {
+  process.stderr.write('[catalog] 模型目录启动预检失败（catalog_invalid）\n');
+  process.exit(1);
+}
 applyModelContext();
+let activeCatalog;
+try {
+  activeCatalog = readCheckedCatalog();
+} catch {
+  process.stderr.write('[catalog] 模型目录启动预检失败（catalog_invalid）\n');
+  process.exit(1);
+}
 
 // ---------- 视觉中继实现 ----------
 // 密钥、网络和日志全部由入口注入；模块本身不读取进程环境或全局配置。
@@ -250,6 +284,7 @@ const { buildChatRequest } = createChatRequestBuilder({
 // 只绑定在同一个 127.0.0.1 服务上；页面不接收或展示任何密钥，也不负责进程启停。
 const adminHandler = createAdminHandler({
   configPath: CONFIG_PATH,
+  catalogPath: CATALOG_PATH,
   webRoot: path.join(__dirname, 'web'),
   defaultCodexHome: path.join(os.homedir(), '.codex'),
   env: process.env,
@@ -261,31 +296,38 @@ const adminHandler = createAdminHandler({
   persistence: checkpointPersistence,
 });
 
-const routerHandler = createRouterHandler({
-  config: cfg,
-  targets: TARGETS,
-  catalogPath: CATALOG_PATH,
-  providerPool,
-  responseHistory,
-  goalCheckpoints,
-  requestBudget,
-  maxRequestBytes: MAX_REQUEST_BYTES,
-  proxy: V2RAY_PROXY,
-  timeouts: ROUTER_TIMEOUTS,
-  getOpenAiAuth,
-  getKey: (name) => process.env[name],
-  relayNonTextParts,
-  buildChatRequest,
-  startResponsesSse,
-  emitResponsesErrorSse,
-  pipeNativeResponse,
-  pipeChatResponse,
-  adminHandler,
-  log,
-  flog,
-  // 仅隔离测试显式开启关闭端点；正常实例的管理页不提供进程控制。
-  onShutdown: process.env.ROUTER_TEST_SHUTDOWN === '1' ? gracefulExit : undefined,
-});
+let routerHandler;
+try {
+  routerHandler = createRouterHandler({
+    config: cfg,
+    targets: TARGETS,
+    catalog: activeCatalog,
+    catalogPath: CATALOG_PATH,
+    providerPool,
+    responseHistory,
+    goalCheckpoints,
+    requestBudget,
+    maxRequestBytes: MAX_REQUEST_BYTES,
+    proxy: V2RAY_PROXY,
+    timeouts: ROUTER_TIMEOUTS,
+    getOpenAiAuth,
+    getKey: (name) => process.env[name],
+    relayNonTextParts,
+    buildChatRequest,
+    startResponsesSse,
+    emitResponsesErrorSse,
+    pipeNativeResponse,
+    pipeChatResponse,
+    adminHandler,
+    log,
+    flog,
+    // 仅隔离测试显式开启关闭端点；正常实例的管理页不提供进程控制。
+    onShutdown: process.env.ROUTER_TEST_SHUTDOWN === '1' ? gracefulExit : undefined,
+  });
+} catch {
+  process.stderr.write('[catalog] 模型目录启动快照失败（catalog_snapshot_invalid）\n');
+  process.exit(1);
+}
 server = http.createServer(routerHandler);
 
 server.listen(PORT, '127.0.0.1', () => {
@@ -316,3 +358,9 @@ function gracefulExit(exitCode = 0) {
   // 安全阀：最多等 10 分钟，避免超长任务挂住旧进程
   setTimeout(() => { log('drain timeout, force exit'); process.exit(exitCode); }, 10 * 60 * 1000).unref();
 }
+
+// ---------- 运维脚本的优雅停止通道 ----------
+// Windows 无 POSIX 信号：scripts 的 stop/restart 通过控制台 Ctrl+C 事件触发 SIGINT；
+// Linux/macOS 直接发送 SIGTERM。两者都走同一个排空流程，绝不直接强杀 Node。
+process.on('SIGINT', () => gracefulExit(0));
+process.on('SIGTERM', () => gracefulExit(0));
