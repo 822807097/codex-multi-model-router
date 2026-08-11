@@ -222,6 +222,38 @@ dialog h2, dialog p { overflow-wrap: anywhere; }
 dialog p { margin: 0; color: var(--muted); line-height: 1.7; }
 .dialog-actions { display: flex; justify-content: flex-end; gap: 0.7rem; margin-top: 1.6rem; }
 
+/* 模型编辑需要完整读取主机和路径，因此使用独立的宽屏弹窗，不受普通确认弹窗的宽度限制。 */
+dialog.model-dialog { width: min(900px, calc(100vw - 3rem)); max-height: min(860px, calc(100dvh - 2rem)); overflow: hidden; }
+dialog.model-dialog .model-dialog-form { display: grid; grid-template-rows: auto minmax(0, 1fr) auto; max-height: min(860px, calc(100dvh - 2rem)); padding: 0; }
+.model-dialog-header { padding: 1.8rem 2rem 1.35rem; border-bottom: 1px solid var(--line); background: rgba(255,255,255,.42); }
+.model-dialog-header .dialog-copy { max-width: 45rem; }
+.model-dialog-body { min-height: 0; overflow: auto; padding: 1.4rem 2rem 1.7rem; }
+.model-dialog-body .form-error { margin-top: 0; }
+.dialog-section + .dialog-section { margin-top: 1.4rem; padding-top: 1.4rem; border-top: 1px solid var(--line); }
+.dialog-section-heading { display: flex; justify-content: space-between; align-items: start; gap: 2rem; }
+.dialog-section-heading h3 { margin: 0.15rem 0 0; font-family: Georgia, "Songti SC", serif; font-size: 1.3rem; }
+.dialog-section-heading > p { max-width: 24rem; font-size: 0.78rem; text-align: right; }
+.section-step { color: var(--accent) !important; font: 700 0.68rem/1 ui-monospace, monospace; letter-spacing: .08em; }
+.model-details-fields { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+.model-details-fields .field:nth-child(1), .model-details-fields .field:nth-child(2) { grid-column: span 2; }
+.route-mode-grid { display: grid; grid-template-columns: minmax(190px, .8fr) minmax(0, 1.2fr); gap: 1rem; margin-top: 1.2rem; }
+.route-summary { display: grid; grid-template-columns: minmax(150px, .7fr) minmax(0, 1.3fr); gap: 1.2rem; margin-top: 1.2rem; padding: 1rem 1.15rem; border: 1px solid rgba(13,128,102,.24); background: rgba(231,246,241,.5); }
+.route-summary strong { display: block; overflow-wrap: anywhere; font-size: .95rem; }
+.route-summary dl { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: .8rem; margin: 0; }
+.route-summary dl > div { min-width: 0; }
+.route-summary dt { color: var(--muted); font-size: .68rem; }
+.route-summary dd { overflow: hidden; margin: .25rem 0 0; font: .72rem/1.45 ui-monospace, monospace; text-overflow: ellipsis; white-space: nowrap; }
+.route-editor-details { margin-top: 1.2rem; border: 1px solid var(--line); background: rgba(255,255,255,.34); }
+.route-editor-details > summary { display: flex; justify-content: space-between; gap: 1rem; padding: 1rem 1.15rem; cursor: pointer; font-weight: 750; }
+.route-editor-details > summary small { color: var(--muted); font-size: .7rem; font-weight: 400; text-align: right; }
+.route-editor-details[open] > summary { border-bottom: 1px solid var(--line); }
+.route-editor-details .target-dialog-fields { grid-template-columns: repeat(3, minmax(0, 1fr)); padding: 1.15rem; }
+.route-editor-details .target-dialog-fields .field:nth-child(2) { grid-column: span 2; }
+.route-advanced-details { margin: 0 1.15rem 1.15rem; border-top: 1px solid var(--line); }
+.route-advanced-details > summary { padding: 1rem 0 0; color: var(--muted); cursor: pointer; font-size: .78rem; font-weight: 700; }
+.route-advanced-fields { padding: 1rem 0 0; }
+.model-dialog-actions { position: relative; z-index: 1; margin: 0; padding: 1rem 2rem; border-top: 1px solid var(--line); background: rgba(250,248,242,.96); box-shadow: 0 -10px 28px rgba(47,50,42,.06); }
+
 footer { display: flex; justify-content: space-between; width: min(1180px, 92vw); margin: 1rem auto 0; padding: 2rem 0 3rem; color: var(--muted); border-top: 1px solid var(--line); font-size: 0.7rem; letter-spacing: 0.05em; }
 .skeleton { position: relative; overflow: hidden; min-height: 90px; background: rgba(255,255,255,.48); border: 1px solid var(--line); }
 .skeleton::after { content: ""; position: absolute; inset: 0; background: linear-gradient(100deg, transparent 30%, rgba(255,255,255,.75), transparent 70%); animation: shimmer 1.2s infinite; }
@@ -266,6 +298,19 @@ footer { display: flex; justify-content: space-between; width: min(1180px, 92vw)
   .model-toolbar { justify-content: stretch; }
   .model-toolbar .button { width: 100%; }
   dialog form { padding: 1.35rem; }
+  dialog.model-dialog { width: calc(100vw - 1rem); max-height: calc(100dvh - 1rem); }
+  dialog.model-dialog .model-dialog-form { max-height: calc(100dvh - 1rem); }
+  .model-dialog-header, .model-dialog-body, .model-dialog-actions { padding-right: 1.15rem; padding-left: 1.15rem; }
+  .dialog-section-heading { flex-direction: column; gap: .65rem; }
+  .route-summary { grid-template-columns: 1fr; gap: .65rem; }
+  .dialog-section-heading > p { text-align: left; }
+  .model-details-fields, .route-mode-grid, .route-editor-details .target-dialog-fields, .route-summary dl { grid-template-columns: 1fr; }
+  .model-details-fields .field:nth-child(1), .model-details-fields .field:nth-child(2), .route-editor-details .target-dialog-fields .field:nth-child(2) { grid-column: auto; }
+  .route-editor-details > summary { display: block; }
+  .route-editor-details > summary small { display: block; margin-top: .35rem; text-align: left; }
+  .route-summary dd { overflow: visible; white-space: normal; overflow-wrap: anywhere; }
+  .model-dialog-actions { justify-content: stretch; }
+  .model-dialog-actions .button { flex: 1; }
   .model-card-head { align-items: flex-start; flex-direction: column; }
   .model-card-head .status-dot { align-self: flex-start; }
   .checkpoint-summary { grid-template-columns: 1fr; }
