@@ -1,4 +1,4 @@
-# restore-custom.ps1 — 一键恢复自定义模型组合
+﻿# restore-custom.ps1 — 一键恢复自定义模型组合
 # 动作：向 config.toml 写回 model_provider/model_catalog_json/[model_providers.router]，
 #       恢复开机自启并拉起路由。跑完请完全重启 Codex 桌面端。
 $ErrorActionPreference = 'Stop'

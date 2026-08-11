@@ -189,7 +189,7 @@ test('官方 Responses 通道丢弃第三方遗留的 tool_search 调用对并�
         output: [],
       },
       {
-        id: 'ws_official_search',
+        id: 'tsc_official_search',
         type: 'tool_search_call',
         call_id: 'call_official_search',
         execution: 'client',
@@ -239,6 +239,35 @@ test('官方 Responses 通道即使无法配对输出也丢弃非法 ID 的 tool
   const adapted = adaptOfficialResponsesBody(body);
 
   assert.deepEqual(adapted.input, [body.input[0]]);
+});
+
+test('官方 Responses 通道保留合法或未分配 ID 的 tool_search 调用', () => {
+  const body = {
+    input: [
+      { id: 'tsc_official_search', type: 'tool_search_call', execution: 'server', arguments: {} },
+      { type: 'tool_search_call', execution: 'server', arguments: {} },
+    ],
+  };
+  const expectedInput = [...body.input];
+
+  const adapted = adaptOfficialResponsesBody(body);
+
+  assert.deepEqual(adapted.input, expectedInput);
+});
+
+test('官方 Responses 通道丢弃第三方遗留的 web_search_call 并保留官方搜索项', () => {
+  const body = {
+    input: [
+      { role: 'user', content: [{ type: 'input_text', text: '继续任务' }] },
+      { id: 'call_00_iqZiDJWSlQwwQQZNieUR0823', type: 'web_search_call', status: 'completed' },
+      { id: 'ws_official_search', type: 'web_search_call', status: 'completed' },
+    ],
+  };
+  const expectedInput = [body.input[0], body.input[2]];
+
+  const adapted = adaptOfficialResponsesBody(body);
+
+  assert.deepEqual(adapted.input, expectedInput);
 });
 
 test('compact 仅允许原生 Responses 通道透传', () => {

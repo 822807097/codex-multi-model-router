@@ -912,6 +912,11 @@ test('从自定义模型切到官方模型时清理不可回放的 reasoning con
           name: 'shell_command',
           arguments: '{"command":"Get-Location"}',
         },
+        {
+          id: 'call_00_iqZiDJWSlQwwQQZNieUR0823',
+          type: 'web_search_call',
+          status: 'completed',
+        },
       ],
     });
 
@@ -933,6 +938,7 @@ test('从自定义模型切到官方模型时清理不可回放的 reasoning con
       name: 'shell_command',
       arguments: '{"command":"Get-Location"}',
     });
+    assert.equal(captured[0].input.some((item) => item?.type === 'web_search_call'), false);
   } finally {
     await cleanupIsolatedRouter({ routerPort, child, childExit, childOutput, upstream, tempDir });
   }
