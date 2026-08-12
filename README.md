@@ -475,6 +475,10 @@ Get-Content .\router.log, .\router-context.log |
 | `maxRequestBytes` | `67108864` | 单个客户端请求体上限（64 MiB），超限返回 413 |
 | `maxConcurrentRequests` | `8` | 同时处理的请求数上限，超限返回 503 和 `Retry-After` |
 | `maxBufferedRequestBytes` | `134217728` | 所有正在收取的请求体合计上限（128 MiB） |
+
+> **超长任务与 413**：官方模型默认不携带 `previous_response_id` 增量状态，桌面端每轮会全量重发历史，长任务请求体可能持续增长并触发 `413 request body too large`。两类应对：
+> 1. **治本（推荐）**：在 `models.json` 的官方模型条目上设置 `auto_compact_token_limit`（小于其 `context_window`，例如官方 272K 窗口取 240000），桌面端会在历史超过该阈值时自动压缩旧轮次，请求体不再无限膨胀；第三方模型默认已带该配置。
+> 2. **兜底**：按需调大 `maxRequestBytes`（如 `268435456`=256 MiB 或更大）。请求体需要整体缓冲解析，请勿设成真正无上限。
 | `providerPool` | 见右 | 供应商亲和缓存：`maxEntries` 2048、`ttlMs` 24h；键以带类型域的 SHA-256 保存；`allowDefaultTarget:false` 让未知模型拒绝，`modelAffinity:false` 禁止跨任务模型级全局粘性 |
 | `responseHistory` | 见右 | previous_response_id 对应的**工具调用元数据**：`maxEntries` 512、`maxEntryBytes` 1 MiB、`maxBytes` 16 MiB、`ttlMs` 24h；键以 SHA-256 保存，不缓存用户对话或模型正文 |
 | `goalCheckpoint` | 见右 | 持续目标检查点（长任务裁剪时自动摘要），详见下方专节 |
