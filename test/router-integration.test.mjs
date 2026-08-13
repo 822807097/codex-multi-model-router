@@ -461,6 +461,7 @@ test('隔离路由完成心跳、failover、工具历史和 compact 拒绝', asy
         res.writeHead(429, {
           'content-type': 'application/json',
           'x-request-id': 'chat_capacity_req_429',
+          'retry-after': '3600',
         });
         res.end('{"error":"DIAGNOSTIC_SECRET_CAPACITY_BODY"}');
         return;
@@ -551,8 +552,8 @@ test('隔离路由完成心跳、failover、工具历史和 compact 拒绝', asy
       tools: [{ type: 'custom', name: 'apply patch' }],
     });
     assert.equal(first.status, 200);
-    assert.match(first.text, /: keep-alive/);
-    assert.ok(first.text.indexOf(': keep-alive') < first.text.indexOf('response.created'));
+    // 上游 200 确认后才启动客户端 SSE；心跳只在长流期间出现，短请求不强制。
+    assert.ok(first.text.indexOf('response.created') > -1);
     const completedLine = first.text.split(/\r?\n/).find((line) => line.includes('"type":"response.completed"'));
     const completed = JSON.parse(completedLine.slice('data: '.length));
     assert.equal(completed.response.output[0].type, 'custom_tool_call');
@@ -584,15 +585,15 @@ test('隔离路由完成心跳、failover、工具历史和 compact 拒绝', asy
       stream: true,
       input: [{ role: 'user', content: 'DIAGNOSTIC_SECRET_CHAT_CAPACITY_PROMPT' }],
     });
-    assert.equal(chatCapacity.status, 200);
-    const chatCapacityEvents = chatCapacity.text.split(/\r?\n/)
-      .filter((line) => line.startsWith('data: {'))
-      .map((line) => JSON.parse(line.slice('data: '.length)));
-    const chatCapacityFailure = chatCapacityEvents.find((event) => event.type === 'response.failed');
-    assert.equal(chatCapacityFailure.response.status, 'failed');
-    assert.equal(chatCapacityFailure.response.model, 'chat-capacity-model');
-    assert.equal(chatCapacityFailure.response.error.code, '429');
-    assert.equal(chatCapacityEvents.filter((event) => event.type === 'response.failed').length, 1);
+    // Chat 上游 429：客户端必须收到真实 HTTP 状态码，无 SSE 心跳/response.failed/[DONE]。
+    assert.equal(chatCapacity.status, 429);
+    assert.equal(chatCapacity.headers['retry-after'], '3600');
+    assert.match(chatCapacity.headers['content-type'], /application\/json/);
+    assert.ok(!chatCapacity.text.includes(': keep-alive'));
+    assert.ok(!chatCapacity.text.includes('response.failed'));
+    assert.ok(!chatCapacity.text.includes('[DONE]'));
+    const chatCapacityBody = JSON.parse(chatCapacity.text);
+    assert.equal(chatCapacityBody.error.code, '429');
 
     const unknownWithSensitiveRole = await request(routerPort, 'POST', '/v1/responses', {
       model: 'missing-diagnostic-model',
@@ -785,8 +786,8 @@ test('裁剪时生成目标检查点并在同一任务跨模型接力', async ()
       input: inputFor('模型A最新请求'),
     }, sessionHeaders);
     assert.equal(first.status, 200);
-    assert.match(first.text, /: keep-alive/);
-    assert.ok(first.text.indexOf(': keep-alive') < first.text.indexOf('response.created'));
+    // 上游 200 确认后才启动客户端 SSE；心跳只在长流期间出现，短请求不强制。
+    assert.ok(first.text.indexOf('response.created') > -1);
     const completedLine = first.text.split(/\r?\n/).find((line) => line.includes('"type":"response.completed"'));
     const firstResponse = JSON.parse(completedLine.slice('data: '.length)).response;
 
@@ -1310,9 +1311,11 @@ test('跨 wire API 或未知供应商状态域只在完整历史下移除私有 
       stream: true,
       input: [{ role: 'user', content: '不同协议不能自动 failover' }],
     });
-    assert.equal(mixed.status, 200);
-    assert.match(mixed.text, /"type":"response.failed"/);
-    assert.match(mixed.text, /"code":"503"/);
+    assert.equal(mixed.status, 503);
+    assert.match(mixed.headers['content-type'], /application\/json/);
+    assert.equal(JSON.parse(mixed.text).error.code, '503');
+    assert.ok(!mixed.text.includes('response.failed'));
+    assert.ok(!mixed.text.includes('[DONE]'));
     assert.equal(mixedNativeRequests, 0);
     assert.equal(mixedChatBodies.length, 1);
 
@@ -1340,9 +1343,11 @@ test('跨 wire API 或未知供应商状态域只在完整历史下移除私有 
         { role: 'user', content: '携带完整历史继续' },
       ],
     });
-    assert.equal(mixedUnknownComplete.status, 200);
-    assert.match(mixedUnknownComplete.text, /"type":"response.failed"/);
-    assert.match(mixedUnknownComplete.text, /"code":"503"/);
+    assert.equal(mixedUnknownComplete.status, 503);
+    assert.match(mixedUnknownComplete.headers['content-type'], /application\/json/);
+    assert.equal(JSON.parse(mixedUnknownComplete.text).error.code, '503');
+    assert.ok(!mixedUnknownComplete.text.includes('response.failed'));
+    assert.ok(!mixedUnknownComplete.text.includes('[DONE]'));
     assert.equal(mixedChatBodies.length, 2);
     assert.equal(mixedChatBodies.at(-1).previous_response_id, undefined);
     assert.equal(mixedChatBodies.at(-1).prompt_cache_key, undefined);
