@@ -117,13 +117,13 @@ test('认证头支持 Bearer 和可配置 x-api-key', () => {
 
 test('官方 Responses 通道适配 chatgpt.com 参数限制（store:false 注入、max_output_tokens 移除）', () => {
   const body = { model: 'gpt-5.6-sol', stream: true, max_output_tokens: 64 };
-  const adapted = adaptOfficialResponsesBody(body);
+  const adapted = adaptOfficialResponsesBody(body, '/v1/responses');
   assert.equal(adapted.store, false);
   assert.equal('max_output_tokens' in adapted, false);
   // 已显式声明 store 的请求不被覆盖
-  assert.equal(adaptOfficialResponsesBody({ store: true }).store, true);
+  assert.equal(adaptOfficialResponsesBody({ store: true }, '/v1/responses').store, true);
   // 非对象输入原样返回
-  assert.equal(adaptOfficialResponsesBody(null), null);
+  assert.equal(adaptOfficialResponsesBody(null, '/v1/responses'), null);
 });
 
 test('官方 Responses 通道移除 reasoning content 并保留可无状态回放的加密项', () => {
@@ -154,7 +154,7 @@ test('官方 Responses 通道移除 reasoning content 并保留可无状态回�
     ],
   };
 
-  const adapted = adaptOfficialResponsesBody(body);
+  const adapted = adaptOfficialResponsesBody(body, '/v1/responses');
 
   assert.equal('content' in adapted.input[1], false);
   assert.equal(adapted.input[1].id, 'rs_custom');
@@ -194,7 +194,7 @@ test('官方 Responses 通道丢弃 store:false 下没有加密内容的第三�
   };
   const expectedInput = [body.input[0], body.input[2]];
 
-  const adapted = adaptOfficialResponsesBody(body);
+  const adapted = adaptOfficialResponsesBody(body, '/v1/responses');
 
   assert.deepEqual(adapted.input, expectedInput);
 });
@@ -245,7 +245,7 @@ test('官方 Responses 通道丢弃第三方遗留的 tool_search 调用对并�
     body.input[6],
   ];
 
-  const adapted = adaptOfficialResponsesBody(body);
+  const adapted = adaptOfficialResponsesBody(body, '/v1/responses');
 
   assert.deepEqual(adapted.input, expectedInput);
 });
@@ -263,7 +263,7 @@ test('官方 Responses 通道即使无法配对输出也丢弃非法 ID 的 tool
     ],
   };
 
-  const adapted = adaptOfficialResponsesBody(body);
+  const adapted = adaptOfficialResponsesBody(body, '/v1/responses');
 
   assert.deepEqual(adapted.input, [body.input[0]]);
 });
@@ -277,7 +277,7 @@ test('官方 Responses 通道保留合法或未分配 ID 的 tool_search 调用'
   };
   const expectedInput = [...body.input];
 
-  const adapted = adaptOfficialResponsesBody(body);
+  const adapted = adaptOfficialResponsesBody(body, '/v1/responses');
 
   assert.deepEqual(adapted.input, expectedInput);
 });
@@ -292,9 +292,18 @@ test('官方 Responses 通道丢弃第三方遗留的 web_search_call 并保留�
   };
   const expectedInput = [body.input[0], body.input[2]];
 
-  const adapted = adaptOfficialResponsesBody(body);
+  const adapted = adaptOfficialResponsesBody(body, '/v1/responses');
 
   assert.deepEqual(adapted.input, expectedInput);
+});
+
+test('官方适配只作用于 Responses 端点，图片等非 Responses 请求原样透传', () => {
+  const imageBody = { model: 'gpt-image-2', prompt: '画一只猫', n: 1 };
+  // 传副本：适配器若原地修改会污染原对象，导致比较假阳性
+  const result = adaptOfficialResponsesBody({ ...imageBody }, '/v1/images/edits');
+  assert.deepEqual(result, imageBody);
+  const responsesBody = adaptOfficialResponsesBody({ model: 'gpt-5.6-sol', stream: true }, '/v1/responses');
+  assert.equal(responsesBody.store, false);
 });
 
 test('compact 仅允许原生 Responses 通道透传', () => {
