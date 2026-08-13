@@ -1071,8 +1071,14 @@ test('从自定义模型切到官方模型时丢弃不可无状态回放的 reas
     assert.deepEqual(captured[0].input[1].content, [
       { type: 'output_text', text: '第三方模型的回答' },
     ]);
-    // 第三方 fc_ 函数调用不能回放官方上游（官方要求 ctc 前缀），与搜索调用一样被边界过滤
-    assert.equal(captured[0].input.some((item) => item?.type === 'function_call'), false);
+    // 桌面端本地短 ID（fc_custom）是官方接受的回放格式，保留；只有 UUID 长 ID 的第三方转换项被过滤
+    assert.deepEqual(captured[0].input[2], {
+      id: 'fc_custom',
+      type: 'function_call',
+      call_id: 'call_custom',
+      name: 'shell_command',
+      arguments: '{"command":"Get-Location"}',
+    });
     assert.equal(captured[0].input.some((item) => item?.type === 'web_search_call'), false);
   } finally {
     await cleanupIsolatedRouter({ routerPort, child, childExit, childOutput, upstream, tempDir });

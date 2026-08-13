@@ -164,9 +164,14 @@ test('官方 Responses 通道移除 reasoning content 并保留可无状态回�
   assert.equal(adapted.input[1].encrypted_content, 'encrypted-context');
   assert.deepEqual(adapted.input[0].content, [{ type: 'input_text', text: '继续任务' }]);
   assert.deepEqual(adapted.input[2].content, [{ type: 'output_text', text: '第三方模型的回答' }]);
-  // 第三方 fc_ 函数调用不能回放官方上游（官方要求 ctc 前缀），成对删除
-  assert.equal(adapted.input.length, 3);
-  assert.ok(!adapted.input.some((item) => item?.type === 'function_call'));
+  // 桌面端本地短 ID（fc_custom）是官方接受的回放格式，保留
+  assert.deepEqual(adapted.input[3], {
+    id: 'fc_custom',
+    type: 'function_call',
+    call_id: 'call_custom',
+    name: 'shell_command',
+    arguments: '{"command":"Get-Location"}',
+  });
 });
 
 test('官方 Responses 通道丢弃 store:false 下没有加密内容的第三方 reasoning 项', () => {
@@ -245,9 +250,33 @@ test('官方 Responses 通道丢弃第三方遗留的 tool_search 调用对并�
     body.input[0],
     body.input[3],
     body.input[4],
+    // 桌面端本地短 ID（fc_shell）保留
+    body.input[5],
+    body.input[6],
     body.input[7],
     body.input[8],
   ];
+
+  const adapted = adaptOfficialResponsesBody(body, '/v1/responses');
+
+  assert.deepEqual(adapted.input, expectedInput);
+});
+
+test('官方 Responses 通道保留桌面端本地短 ID 的调用项并删除第三方 UUID 长 ID', () => {
+  // 回归：桌面端本地工具调用用 fc_0/fc_1 十六进制递增短 ID，官方接受，必须保留；
+  // 路由 Chat 转换生成 fc_<uuid> 长 ID，跨供应商回放被官方拒绝（要求 ctc_），必须删除。
+  const body = {
+    input: [
+      { role: 'user', content: [{ type: 'input_text', text: '继续任务' }] },
+      { id: 'fc_0', type: 'function_call', call_id: 'call_0', name: 'shell_command', arguments: '{}' },
+      { type: 'function_call_output', call_id: 'call_0', output: '本地输出' },
+      { id: 'fc_1', type: 'custom_tool_call', call_id: 'call_1', name: 'apply_patch', input: {} },
+      { type: 'custom_tool_call_output', call_id: 'call_1', output: '本地补丁输出' },
+      { id: 'fc_e966528b-e06d-4e7b-b0a6-66e0ca206068', type: 'function_call', call_id: 'call_uuid', name: 'read_file', arguments: '{}' },
+      { type: 'function_call_output', call_id: 'call_uuid', output: '第三方输出' },
+    ],
+  };
+  const expectedInput = [body.input[0], body.input[1], body.input[2], body.input[3], body.input[4]];
 
   const adapted = adaptOfficialResponsesBody(body, '/v1/responses');
 
@@ -327,7 +356,7 @@ test('官方 Responses 通道用 *_output 通配删除被丢弃调用的任意�
   const body = {
     input: [
       { role: 'user', content: [{ type: 'input_text', text: '继续任务' }] },
-      { id: 'fc_foreign', type: 'function_call', call_id: 'call_foreign', name: 'read_file', arguments: '{}' },
+      { id: 'fc_00000000-0000-4000-8000-000000000001', type: 'function_call', call_id: 'call_foreign', name: 'read_file', arguments: '{}' },
       { type: 'function_call_output', call_id: 'call_foreign', output: 'a' },
       { type: 'agent_search_output', call_id: 'call_foreign', output: 'b' },
       { id: 'ctc_keep', type: 'function_call', call_id: 'call_keep', name: 'read_file', arguments: '{}' },
