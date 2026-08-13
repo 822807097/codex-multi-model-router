@@ -663,6 +663,43 @@ Codex 中的图片
 > 其他参考配置：Kimi `api.moonshot.cn`、硅基流动 `api.siliconflow.cn`（platform `siliconflow`）、OpenRouter `openrouter.ai`（platform `openrouter`）。具体 endpoint 以前缀和官方文档为准。
 > 文本模型设 `vision: false` 可启用视觉中继「借眼」；原生视觉模型设 `vision: true`。
 
+### 完整实例：OpenCode Go 订阅
+
+[OpenCode Go](https://opencode.ai/docs/go/) 是低月费的编码模型订阅，通过 OpenAI 兼容网关 `https://opencode.ai/zen/go/v1` 提供一组精选开源模型（Grok 4.5、GLM-5.x、Kimi K2/K3、MiMo-V2.5、DeepSeek V4、Hy3 等）。订阅后到 opencode.ai 控制台获取 API key 并写入环境变量，再在 `targets` 加两条通道（Go 网关混合两种协议，分通道匹配）：
+
+```json
+{
+  "match": "^(glm-5\\.1|glm-5\\.2|kimi-k2\\.6|kimi-k2\\.7-code|kimi-k3|mimo-v2\\.5|mimo-v2\\.5-pro|hy3|minimax-m3|qwen3\\.7-max|qwen3\\.8-max|qwen3\\.7-plus|qwen3\\.6-plus|deepseek-v4-pro|deepseek-v4-flash)$",
+  "name": "opencode-go-chat",
+  "platform": "generic",
+  "host": "opencode.ai",
+  "prefix": "/zen/go/v1",
+  "viaProxy": false,
+  "vision": false,
+  "envKey": "OPEN_CODE_KEY",
+  "wireApi": "chat"
+},
+{
+  "match": "^grok-4\\.5$",
+  "name": "opencode-go-responses",
+  "platform": "openai",
+  "host": "opencode.ai",
+  "prefix": "/zen/go/v1",
+  "viaProxy": false,
+  "vision": false,
+  "envKey": "OPEN_CODE_KEY",
+  "wireApi": "responses"
+}
+```
+
+按上一节步骤 ② 设置环境变量、步骤 ③ 为每个模型加 `models.json` 条目（slug 需被上方 `match` 覆盖）即可。
+
+> 接入提示（实测经验）：
+> - 协议因模型而异，先用最小请求探测再定 `wireApi`：多数模型走 `/chat/completions`（`chat`），grok-4.5 实测仅 `/responses` 可用（`responses`）。可用模型清单与协议以 `GET /zen/go/v1/models` 及官方文档为准，订阅套餐会持续更新。
+> - 部分模型存在区域限制或上游波动（如个别模型返回 403 区域不可用、503 上游暂不可用），接入前逐模型探测可避免「菜单里有、一选就报错」。
+> - Go 网关同一模型通常也可在官方供应商直接接入（如 DeepSeek V4、Qwen3.8）；把同一 slug 写进两条 `match`，官方通道优先、故障时自动切换订阅通道，形成免费备用链。
+> - 部分模型（MiniMax/Qwen 个别型号）官方标注为 Anthropic Messages 协议，本项目不做 Messages 转换，请选已支持 Chat/Responses 协议的型号。
+
 ---
 
 ## 七、网络与代理（逐通道可选）
