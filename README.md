@@ -523,7 +523,7 @@ Get-Content .\router.log, .\router-context.log |
 
 客户端主动取消、400、401、403、上下文超限**不会**重试；一旦开始输出模型事件，**绝不重放切换**。自动故障切换只在相同 `wireApi` 的候选目标之间进行，避免把一种协议的供应商私有状态误交给另一种协议。
 
-**官方通道（`useOpenAiAuth: true`）自动适配**：请求未显式声明 `store` 时自动注入 `store: false`，并移除 `max_output_tokens`（chatgpt.com 会以 400 拒绝这两类请求）。从第三方模型切回官方模型时，路由还会移除第三方遗留的 `web_search_call`：这类网页搜索调用缺少官方内部的 `ws_` ID，不能伪造后回放；`store:false` 下没有 `encrypted_content` 的第三方合成 reasoning 同样不能无状态回放，会在官方请求边界删除。普通函数工具调用、有效动态工具发现调用、原生 `ws_` 网页搜索调用，以及带加密内容的官方 reasoning 会保留。`name` 或 `platform` 写成 `openai` 不会隐式获得读取登录态的权限，第三方通道也不会收到 Cookie、ChatGPT Account ID 或 Codex session ID。
+**官方通道（`useOpenAiAuth: true`）自动适配**：请求未显式声明 `store` 时自动注入 `store: false`，并移除 `max_output_tokens`（chatgpt.com 会以 400 拒绝这两类请求）。从第三方模型切回官方模型时，路由还会移除第三方遗留的带错 ID 调用项：`web_search_call` 要求官方 `ws_` ID、`tool_search_call` 要求 `tsc_` ID、`function_call` 要求 `ctc` 前缀，第三方生成的 `call_…`/`fc_…` 不能伪造回放，会连同配对输出一起删除；`store:false` 下没有 `encrypted_content` 的第三方合成 reasoning 同样不能无状态回放，会在官方请求边界删除。普通函数工具调用、有效动态工具发现调用、原生 `ws_` 网页搜索调用，以及带加密内容的官方 reasoning 会保留。`name` 或 `platform` 写成 `openai` 不会隐式获得读取登录态的权限，第三方通道也不会收到 Cookie、ChatGPT Account ID 或 Codex session ID。
 
 Chat 转换还会把 Responses 的对象型 `tool_choice`（function / custom / tool_search）改成 Chat `function` 结构，并同步使用工具转换后的安全别名，避免工具表已改名但强制选择仍指向原名。
 
@@ -533,13 +533,13 @@ Chat 转换还会把 Responses 的对象型 `tool_choice`（function / custom / 
 
 1. 客户端发送可独立使用的完整历史：可以跨协议或跨供应商状态域切换；路由会移除上一供应商私有的 `previous_response_id` 和 `prompt_cache_key`。
 2. 客户端只发送工具输出：若 `previous_response_id` 命中有界工具历史，路由会补回对应的 assistant 工具调用，再转换给 Chat 上游。
-3. 从 Chat 兼容第三方切回官方 Responses 时：第三方生成的 `web_search_call` 没有官方私有 `ws_` ID，路由会删除该网页搜索调用；没有 `encrypted_content` 的第三方合成 reasoning 也无法在 `store:false` 下回放，会被删除。用户文本、助手正文、普通工具历史和带加密内容的官方 reasoning 继续保留；动态工具发现 `tool_search_call` 使用独立的 `tsc_` ID 规则，不会被误删。
+3. 从 Chat 兼容第三方切回官方 Responses 时：第三方生成的 `web_search_call` 没有官方私有 `ws_` ID，`function_call` 没有官方 `ctc` 前缀，路由会删除这些调用项及其配对输出；没有 `encrypted_content` 的第三方合成 reasoning 也无法在 `store:false` 下回放，会被删除。用户文本、助手正文、普通工具历史和带加密内容的官方 reasoning 继续保留；动态工具发现 `tool_search_call` 使用独立的 `tsc_` ID 规则，不会被误删。
 4. 客户端只发送普通增量且历史无法恢复：返回 `400 cross_protocol_state_unavailable`，避免静默丢历史。即使两个 target 都是 Responses，只要 host/prefix/认证配置不同也默认视为不同状态域；确实共享后端时可显式设置相同 `stateDomain`。
 5. 两个任务或供应商返回相同 response id 时，路由用 conversation/session 强作用域分别恢复；缺少强作用域时返回 `400 ambiguous_response_id`，不会猜测目标或注入其他任务的工具历史。
 
 同一协议内的原生 Responses 状态仍由对应供应商维护；路由只缓存有界工具调用元数据，不缓存完整聊天正文。
 
-> **运行中切换身份必须重启路由**：更换 ChatGPT 账号、替换环境变量中的 API key，或修改组织/项目/租户等身份请求头后，请重启路由以清空内存中的供应商亲和、工具历史和检查点索引，并建议新建 Codex 任务。只有客户端会发送完整、可独立使用的历史时才能继续旧任务；不能再依赖旧身份的 `previous_response_id` 或 `prompt_cache_key`。状态域会区分认证方式、认证头和 `envKey` 等配置，但不会保存或比较动态凭据正文，也不会自动识别登录账号已经切换。
+> **运行中切换身份**：更换 ChatGPT 账号、修改组织/项目/租户等身份请求头后，请重启路由以清空内存中的供应商亲和、工具历史和检查点索引，并建议新建 Codex 任务。只有客户端会发送完整、可独立使用的历史时才能继续旧任务；不能再依赖旧身份的 `previous_response_id` 或 `prompt_cache_key`。状态域会区分认证方式、认证头和 `envKey` 等配置，但不会保存或比较动态凭据正文，也不会自动识别登录账号已经切换。**例外：第三方通道的 `envKey` 换值无需重启**——上游返回 401/429（认证失效/额度耗尽）时，路由会自动从注册表重新读取同名环境变量，值变化则用新 key 重试同一通道（Windows；最多等待一次注册表查询，正常请求零开销）。
 
 若必须使用不同 Organization/Project/租户，请优先拆成不同 target，并设置不同 `stateDomain`；不要通过 `forwardHeaders` 在同一 target 内按请求动态切换租户，因为这类请求时值不会被持久化为 response 状态快照。
 
@@ -699,7 +699,7 @@ Codex 中的图片
 > - 部分模型存在区域限制或上游波动（如个别模型返回 403 区域不可用、503 上游暂不可用），接入前逐模型探测可避免「菜单里有、一选就报错」。
 > - Go 网关同一模型通常也可在官方供应商直接接入（如 DeepSeek V4、Qwen3.8）；把同一 slug 写进两条 `match`，官方通道优先、故障时自动切换订阅通道，形成免费备用链。
 > - 部分模型（MiniMax/Qwen 个别型号）官方标注为 Anthropic Messages 协议，本项目不做 Messages 转换，请选已支持 Chat/Responses 协议的型号。
-> - **更换 API key 后必须重启路由**（`restart-router.ps1`）：`envKey` 环境变量只在路由进程启动时读取一次，换 key 不重启会继续用旧 key 报 429/401。
+> - **更换 API key 无需重启路由**：上游返回 401/429（认证失效/额度耗尽）时，路由会自动重新读取同名环境变量（Windows 注册表），值变化则用新 key 重试同一通道；正常请求零额外开销。
 
 ---
 
