@@ -164,13 +164,9 @@ test('官方 Responses 通道移除 reasoning content 并保留可无状态回�
   assert.equal(adapted.input[1].encrypted_content, 'encrypted-context');
   assert.deepEqual(adapted.input[0].content, [{ type: 'input_text', text: '继续任务' }]);
   assert.deepEqual(adapted.input[2].content, [{ type: 'output_text', text: '第三方模型的回答' }]);
-  assert.deepEqual(adapted.input[3], {
-    id: 'fc_custom',
-    type: 'function_call',
-    call_id: 'call_custom',
-    name: 'shell_command',
-    arguments: '{"command":"Get-Location"}',
-  });
+  // 第三方 fc_ 函数调用不能回放官方上游（官方要求 ctc 前缀），成对删除
+  assert.equal(adapted.input.length, 3);
+  assert.ok(!adapted.input.some((item) => item?.type === 'function_call'));
 });
 
 test('官方 Responses 通道丢弃 store:false 下没有加密内容的第三方 reasoning 项', () => {
@@ -235,15 +231,48 @@ test('官方 Responses 通道丢弃第三方遗留的 tool_search 调用对并�
         arguments: '{}',
       },
       { type: 'function_call_output', call_id: 'call_shell', output: '完成' },
+      {
+        id: 'ctc_official_tool',
+        type: 'function_call',
+        call_id: 'call_official_tool',
+        name: 'shell_command',
+        arguments: '{}',
+      },
+      { type: 'function_call_output', call_id: 'call_official_tool', output: '官方工具输出' },
     ],
   };
   const expectedInput = [
     body.input[0],
     body.input[3],
     body.input[4],
-    body.input[5],
-    body.input[6],
+    body.input[7],
+    body.input[8],
   ];
+
+  const adapted = adaptOfficialResponsesBody(body, '/v1/responses');
+
+  assert.deepEqual(adapted.input, expectedInput);
+});
+
+test('官方 Responses 通道丢弃第三方函数调用（fc_ ID）并删除配对输出', () => {
+  // 回归：Kimi K3 的 fc_… 函数调用切回官方时，官方要求 ID 以 ctc 开头，必须成对删除。
+  const body = {
+    input: [
+      { role: 'user', content: [{ type: 'input_text', text: '继续任务' }] },
+      {
+        id: 'fc_e966528b-e06d-4e7b-b0a6-66e0ca206068',
+        type: 'function_call',
+        call_id: 'call_e966528b',
+        name: 'read_file',
+        arguments: '{}',
+      },
+      { type: 'function_call_output', call_id: 'call_e966528b', output: '文件内容' },
+      { id: 'ctc_keep', type: 'function_call', call_id: 'call_keep', name: 'shell_command', arguments: '{}' },
+      { type: 'function_call_output', call_id: 'call_keep', output: '官方输出' },
+      { type: 'function_call', name: 'shell_command', arguments: '{}' },
+    ],
+  };
+  const expectedInput = [body.input[0], body.input[3], body.input[4], body.input[5]];
 
   const adapted = adaptOfficialResponsesBody(body, '/v1/responses');
 

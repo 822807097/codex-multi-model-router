@@ -598,6 +598,8 @@ test('隔离路由完成心跳、failover、工具历史和 compact 拒绝', asy
       diagnosticLogPath,
       (events) => ['native-error-model', 'chat-capacity-model'].every((model) => (
         events.some((event) => event.event === 'request.failed' && event.model === model)
+      )) && events.some((event) => (
+        event.event === 'request.parsed' && event.model === 'missing-diagnostic-model'
       )),
     );
     const failoverEvent = diagnostics.events.find((event) => (
@@ -1069,13 +1071,8 @@ test('从自定义模型切到官方模型时丢弃不可无状态回放的 reas
     assert.deepEqual(captured[0].input[1].content, [
       { type: 'output_text', text: '第三方模型的回答' },
     ]);
-    assert.deepEqual(captured[0].input[2], {
-      id: 'fc_custom',
-      type: 'function_call',
-      call_id: 'call_custom',
-      name: 'shell_command',
-      arguments: '{"command":"Get-Location"}',
-    });
+    // 第三方 fc_ 函数调用不能回放官方上游（官方要求 ctc 前缀），与搜索调用一样被边界过滤
+    assert.equal(captured[0].input.some((item) => item?.type === 'function_call'), false);
     assert.equal(captured[0].input.some((item) => item?.type === 'web_search_call'), false);
   } finally {
     await cleanupIsolatedRouter({ routerPort, child, childExit, childOutput, upstream, tempDir });

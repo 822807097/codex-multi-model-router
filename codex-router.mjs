@@ -55,6 +55,7 @@ import { createResponsePipeline } from './lib/response-pipeline.mjs';
 import { createOpenAiAuthManager } from './lib/openai-auth.mjs';
 import { createChatRequestBuilder } from './lib/chat-request.mjs';
 import { createRouterHandler } from './lib/router-handler.mjs';
+import { createEnvKeySource } from './lib/env-key-source.mjs';
 import { createAdminHandler } from './lib/admin-api.mjs';
 import { readRevisionedJson } from './lib/json-file-store.mjs';
 import { inspectModelCatalog } from './lib/model-routing-plan.mjs';
@@ -173,6 +174,15 @@ const flog = (event) => {
   diagnosticLog.write(event);
 };
 
+// ---------- envKey 热更新源 ----------
+// 进程环境是启动快照；Windows 下 setx 写入注册表后运行中的进程看不到新值。
+// 上游返回 401/429（认证失效/额度耗尽）时路由会触发 refreshNow 刷新，
+// 同名变量值变化则用新 key 自动重试——换 key 无需重启路由（正常请求零开销）。
+const envKeySource = createEnvKeySource({
+  log: (name) => flog({ event: 'envkey.reloaded', key_name: name }),
+});
+const getEnvKey = (name) => envKeySource.getKey(name);
+
 // ---------- 进程级致命异常 ----------
 // 未知异常可能已经破坏共享状态，不能记录后假装健康；停止接收新请求并排空已有连接。
 let server = null;
@@ -230,7 +240,7 @@ const { relayNonTextParts } = createVisionRelay({
   config: VISION_RELAY,
   proxy: V2RAY_PROXY,
   timeouts: ROUTER_TIMEOUTS,
-  getKey: (name) => process.env[name],
+  getKey: getEnvKey,
   request: rawHttpsRequest,
   log,
 });
@@ -263,7 +273,7 @@ const checkpointNamespace = GOAL_CHECKPOINT_PERSISTENCE.enabled
   ? computeCheckpointNamespace({
       stateGeneration: GOAL_CHECKPOINT_PERSISTENCE.stateGeneration,
       targets: TARGETS,
-      getKey: (name) => process.env[name],
+      getKey: getEnvKey,
       accountId: openAiAuth.identity().accountId,
     })
   : '';
@@ -314,7 +324,8 @@ try {
     proxy: V2RAY_PROXY,
     timeouts: ROUTER_TIMEOUTS,
     getOpenAiAuth,
-    getKey: (name) => process.env[name],
+    getKey: getEnvKey,
+    refreshEnvKey: (name) => envKeySource.refreshNow(name),
     relayNonTextParts,
     buildChatRequest,
     startResponsesSse,
