@@ -585,7 +585,14 @@ test('隔离路由完成心跳、failover、工具历史和 compact 拒绝', asy
       input: [{ role: 'user', content: 'DIAGNOSTIC_SECRET_CHAT_CAPACITY_PROMPT' }],
     });
     assert.equal(chatCapacity.status, 200);
-    assert.match(chatCapacity.text, /"type":"error"/);
+    const chatCapacityEvents = chatCapacity.text.split(/\r?\n/)
+      .filter((line) => line.startsWith('data: {'))
+      .map((line) => JSON.parse(line.slice('data: '.length)));
+    const chatCapacityFailure = chatCapacityEvents.find((event) => event.type === 'response.failed');
+    assert.equal(chatCapacityFailure.response.status, 'failed');
+    assert.equal(chatCapacityFailure.response.model, 'chat-capacity-model');
+    assert.equal(chatCapacityFailure.response.error.code, '429');
+    assert.equal(chatCapacityEvents.filter((event) => event.type === 'response.failed').length, 1);
 
     const unknownWithSensitiveRole = await request(routerPort, 'POST', '/v1/responses', {
       model: 'missing-diagnostic-model',
@@ -1304,7 +1311,8 @@ test('跨 wire API 或未知供应商状态域只在完整历史下移除私有 
       input: [{ role: 'user', content: '不同协议不能自动 failover' }],
     });
     assert.equal(mixed.status, 200);
-    assert.match(mixed.text, /"type":"error"/);
+    assert.match(mixed.text, /"type":"response.failed"/);
+    assert.match(mixed.text, /"code":"503"/);
     assert.equal(mixedNativeRequests, 0);
     assert.equal(mixedChatBodies.length, 1);
 
@@ -1333,7 +1341,8 @@ test('跨 wire API 或未知供应商状态域只在完整历史下移除私有 
       ],
     });
     assert.equal(mixedUnknownComplete.status, 200);
-    assert.match(mixedUnknownComplete.text, /"type":"error"/);
+    assert.match(mixedUnknownComplete.text, /"type":"response.failed"/);
+    assert.match(mixedUnknownComplete.text, /"code":"503"/);
     assert.equal(mixedChatBodies.length, 2);
     assert.equal(mixedChatBodies.at(-1).previous_response_id, undefined);
     assert.equal(mixedChatBodies.at(-1).prompt_cache_key, undefined);
