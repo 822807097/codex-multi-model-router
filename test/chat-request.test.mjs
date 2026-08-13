@@ -53,6 +53,47 @@ test('Chat 请求装配独立完成工具转换、模型映射和上下文预算
   assert.equal(result.checkpointInfo, null);
 });
 
+test('跨模型历史未超过目标模型预算时保留全部兼容轮次且不请求检查点', async () => {
+  let checkpointRequests = 0;
+  const currentTarget = target({ name: 'switched-target' });
+  const builder = createChatRequestBuilder({
+    config: {
+      goalCheckpoint: { enabled: true },
+      modelCapabilities: [{
+        match: '^switched-model$',
+        contextWindow: 8_000,
+        maxOutputTokens: 1_000,
+        safetyRatio: 0.9,
+        protocolReserveTokens: 100,
+      }],
+    },
+    goalCheckpoints: {},
+    proxy: null,
+    request: async () => { checkpointRequests += 1; throw new Error('不应请求检查点'); },
+  });
+  const input = [
+    { role: 'user', content: [{ type: 'input_text', text: '最初目标' }] },
+    { role: 'assistant', content: [{ type: 'output_text', text: '上一模型已完成分析' }] },
+    { role: 'user', content: [{ type: 'input_text', text: '切换模型后继续' }] },
+  ];
+
+  const result = await builder.buildChatRequest({ input }, currentTarget,
+    resolveProvider(currentTarget), 'switched-model', {
+      taskKey: 'header:same-task',
+      headers: {}, signal: undefined, timeouts: {},
+    });
+
+  assert.deepEqual(result.request.messages
+    .filter(({ role }) => role !== 'system')
+    .map(({ role, content }) => ({ role, content })), [
+    { role: 'user', content: '最初目标' },
+    { role: 'assistant', content: '上一模型已完成分析' },
+    { role: 'user', content: '切换模型后继续' },
+  ]);
+  assert.equal(result.checkpointInfo, null);
+  assert.equal(checkpointRequests, 0);
+});
+
 test('最新轮次超过输入预算时返回稳定上下文错误码', async () => {
   const config = {
     goalCheckpoint: { enabled: false },

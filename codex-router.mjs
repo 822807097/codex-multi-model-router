@@ -61,6 +61,7 @@ import { readRevisionedJson } from './lib/json-file-store.mjs';
 import { inspectModelCatalog } from './lib/model-routing-plan.mjs';
 import { recoverModelRoutingTransaction } from './lib/model-routing-transaction.mjs';
 import { createDiagnosticLog } from './lib/diagnostic-log.mjs';
+import { createModelQuotaCooldownStore } from './lib/model-quota-cooldown.mjs';
 import {
   computeCheckpointNamespace,
   createCheckpointPersistence,
@@ -146,6 +147,7 @@ const providerPool = new ProviderPool(TARGETS, cfg.providerPool);
 const responseHistory = new ResponseToolHistoryStore(cfg.responseHistory);
 const memoryGoalCheckpoints = new GoalCheckpointStore(cfg.goalCheckpoint);
 const requestBudget = new RequestBudget(REQUEST_BUDGET);
+const modelQuotaCooldown = createModelQuotaCooldownStore();
 const ROUTER_STARTED_AT = Date.now();
 
 // ---------- 视觉中继配置 ----------
@@ -320,6 +322,7 @@ try {
     responseHistory,
     goalCheckpoints,
     requestBudget,
+    modelQuotaCooldown,
     maxRequestBytes: MAX_REQUEST_BYTES,
     proxy: V2RAY_PROXY,
     timeouts: ROUTER_TIMEOUTS,

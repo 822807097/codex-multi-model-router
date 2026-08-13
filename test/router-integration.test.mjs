@@ -444,6 +444,8 @@ test('未知事务 journal 在监听前稳定失败且原样保留', async () =>
 test('隔离路由完成心跳、failover、工具历史和 compact 拒绝', async () => {
   const captured = [];
   let primaryRequests = 0;
+  let longQuotaRequests = 0;
+  let nativeLongQuotaRequests = 0;
   const upstream = http.createServer((req, res) => {
     const chunks = [];
     req.on('data', (chunk) => chunks.push(chunk));
@@ -457,13 +459,20 @@ test('隔离路由完成心跳、failover、工具历史和 compact 拒绝', asy
         res.end('{"error":"DIAGNOSTIC_SECRET_UPSTREAM_BODY"}');
         return;
       }
+      if (req.url === '/native-quota/responses') {
+        nativeLongQuotaRequests += 1;
+        res.writeHead(429, { 'content-type': 'application/json', 'retry-after': '1800' });
+        res.end('{"error":{"code":"insufficient_quota","message":"DIAGNOSTIC_SECRET_NATIVE_QUOTA_BODY"}}');
+        return;
+      }
       if (req.url === '/capacity/chat/completions') {
+        longQuotaRequests += 1;
         res.writeHead(429, {
           'content-type': 'application/json',
           'x-request-id': 'chat_capacity_req_429',
           'retry-after': '3600',
         });
-        res.end('{"error":"DIAGNOSTIC_SECRET_CAPACITY_BODY"}');
+        res.end('{"error":{"type":"GoUsageLimitError","message":"5-hour usage limit reached: DIAGNOSTIC_SECRET_CAPACITY_BODY"}}');
         return;
       }
       if (req.url === '/primary/chat/completions') {
@@ -502,6 +511,7 @@ test('隔离路由完成心跳、failover、工具历史和 compact 拒绝', asy
     models: [
       { slug: 'test-model', display_name: '测试模型' },
       { slug: 'native-error-model', display_name: '原生错误模型' },
+      { slug: 'native-quota-model', display_name: '原生额度模型' },
       { slug: 'chat-capacity-model', display_name: 'Chat 容量模型' },
     ],
   }));
@@ -510,11 +520,12 @@ test('隔离路由完成心跳、failover、工具历史和 compact 拒绝', asy
     heartbeatMs: 20,
     modelContext: { enabled: false },
     modelCapabilities: [{ match: '^test-model$', contextWindow: 16_000, maxOutputTokens: 1_000 }],
-    supportsResponses: { slugs: ['test-model', 'native-error-model', 'chat-capacity-model'] },
+    supportsResponses: { slugs: ['test-model', 'native-error-model', 'native-quota-model', 'chat-capacity-model'] },
     targets: [
       { name: 'primary', match: '^test-model$', host: '127.0.0.1', port: upstream.address().port, protocol: 'http', prefix: '/primary', envKey: 'TEST_ROUTER_KEY', wireApi: 'chat' },
       { name: 'backup', match: '^test-model$', host: '127.0.0.1', port: upstream.address().port, protocol: 'http', prefix: '/backup', envKey: 'TEST_ROUTER_KEY', wireApi: 'chat' },
       { name: 'native-capacity', match: '^native-error-model$', host: '127.0.0.1', port: upstream.address().port, protocol: 'http', prefix: '/native', envKey: 'TEST_ROUTER_KEY', wireApi: 'responses' },
+      { name: 'native-quota', match: '^native-quota-model$', host: '127.0.0.1', port: upstream.address().port, protocol: 'http', prefix: '/native-quota', envKey: 'TEST_ROUTER_KEY', wireApi: 'responses' },
       { name: 'chat-capacity', match: '^chat-capacity-model$', host: '127.0.0.1', port: upstream.address().port, protocol: 'http', prefix: '/capacity', envKey: 'TEST_ROUTER_KEY', wireApi: 'chat' },
     ],
   }));
@@ -580,11 +591,26 @@ test('隔离路由完成心跳、failover、工具历史和 compact 拒绝', asy
     });
     assert.equal(nativeFailure.status, 503);
 
+    const nativeQuota = await request(routerPort, 'POST', '/v1/responses', {
+      model: 'native-quota-model', stream: true,
+      input: [{ role: 'user', content: '原生模型额度测试' }],
+    });
+    assert.equal(nativeQuota.status, 429);
+    assert.equal(nativeLongQuotaRequests, 1);
+    const nativeQuotaRetry = await request(routerPort, 'POST', '/v1/responses', {
+      model: 'native-quota-model', stream: true,
+      input: [{ role: 'user', content: '原生模型额度重试' }],
+    });
+    assert.equal(nativeQuotaRetry.status, 422);
+    assert.equal(JSON.parse(nativeQuotaRetry.text).error.code, 'model_quota_cooldown');
+    assert.equal(nativeLongQuotaRequests, 1);
+
+    const quotaSessionHeaders = { 'x-codex-session-id': 'quota-switch-task' };
     const chatCapacity = await request(routerPort, 'POST', '/v1/responses', {
       model: 'chat-capacity-model',
       stream: true,
       input: [{ role: 'user', content: 'DIAGNOSTIC_SECRET_CHAT_CAPACITY_PROMPT' }],
-    });
+    }, quotaSessionHeaders);
     // Chat 上游 429：客户端必须收到真实 HTTP 状态码，无 SSE 心跳/response.failed/[DONE]。
     assert.equal(chatCapacity.status, 429);
     assert.equal(chatCapacity.headers['retry-after'], '3600');
@@ -594,6 +620,36 @@ test('隔离路由完成心跳、failover、工具历史和 compact 拒绝', asy
     assert.ok(!chatCapacity.text.includes('[DONE]'));
     const chatCapacityBody = JSON.parse(chatCapacity.text);
     assert.equal(chatCapacityBody.error.code, '429');
+    assert.equal(longQuotaRequests, 1);
+
+    const chatCapacityRetry = await request(routerPort, 'POST', '/v1/responses', {
+      model: 'chat-capacity-model',
+      stream: true,
+      input: [{ role: 'user', content: '同一任务自动重试不应再命中上游' }],
+    }, quotaSessionHeaders);
+    assert.equal(chatCapacityRetry.status, 422);
+    const chatCapacityRetryBody = JSON.parse(chatCapacityRetry.text);
+    assert.equal(chatCapacityRetryBody.error.code, 'model_quota_cooldown');
+    assert.equal(typeof chatCapacityRetryBody.error.retry_at, 'string');
+    assert.ok(chatCapacityRetryBody.error.retry_after_seconds > 0);
+    assert.equal(longQuotaRequests, 1);
+
+    const switchedAfterQuota = await request(routerPort, 'POST', '/v1/responses', {
+      model: 'test-model',
+      stream: true,
+      input: [
+        { role: 'user', content: '额度前的任务目标' },
+        { role: 'assistant', content: '原模型已完成一部分' },
+        { role: 'user', content: '切换任意其他模型继续' },
+      ],
+    }, quotaSessionHeaders);
+    assert.equal(switchedAfterQuota.status, 200);
+    const switchedRequest = captured.find((item) => (
+      item.messages.some((message) => message.content === '切换任意其他模型继续')
+    ));
+    assert.ok(switchedRequest);
+    assert.ok(switchedRequest.messages.some((message) => message.content === '额度前的任务目标'));
+    assert.ok(switchedRequest.messages.some((message) => message.content === '原模型已完成一部分'));
 
     const unknownWithSensitiveRole = await request(routerPort, 'POST', '/v1/responses', {
       model: 'missing-diagnostic-model',
@@ -653,7 +709,7 @@ test('隔离路由完成心跳、failover、工具历史和 compact 拒绝', asy
     assert.deepEqual(sensitiveRoleParsedEvent.role_counts, { other: 1 });
     assert.doesNotMatch(
       diagnostics.text,
-      /DIAGNOSTIC_SECRET_KEY|DIAGNOSTIC_SECRET_PROMPT|DIAGNOSTIC_SECRET_NATIVE_PROMPT|DIAGNOSTIC_SECRET_CHAT_CAPACITY_PROMPT|DIAGNOSTIC_SECRET_ROLE_VALUE|DIAGNOSTIC_SECRET_UPSTREAM_BODY|DIAGNOSTIC_SECRET_FAILOVER_BODY|DIAGNOSTIC_SECRET_CAPACITY_BODY/,
+      /DIAGNOSTIC_SECRET_KEY|DIAGNOSTIC_SECRET_PROMPT|DIAGNOSTIC_SECRET_NATIVE_PROMPT|DIAGNOSTIC_SECRET_CHAT_CAPACITY_PROMPT|DIAGNOSTIC_SECRET_ROLE_VALUE|DIAGNOSTIC_SECRET_UPSTREAM_BODY|DIAGNOSTIC_SECRET_FAILOVER_BODY|DIAGNOSTIC_SECRET_CAPACITY_BODY|DIAGNOSTIC_SECRET_NATIVE_QUOTA_BODY/,
     );
     assert.ok(diagnostics.events.every((event) => !/^(?:context|history)\./.test(event.event)));
 
@@ -837,6 +893,7 @@ test('裁剪时生成目标检查点并在同一任务跨模型接力', async ()
     assert.ok(mainA.body.messages.some((message) => message.role === 'assistant' && /Codex 持续目标执行检查点/.test(message.content)));
     assert.ok(mainB.body.messages.some((message) => message.role === 'assistant' && /A阶段完成，B已接力/.test(message.content)));
     assert.ok(mainB.body.messages.some((message) => message.role === 'user' && /模型B继续同一任务/.test(message.content)));
+    assert.ok(!mainB.body.messages.some((message) => typeof message.content === 'string' && message.content.includes(oldHistory)));
     assert.equal(mainB.body.previous_response_id, undefined);
     assert.equal(mainB.body.prompt_cache_key, undefined);
     assert.ok(mainsC[0].body.messages.some((message) => message.role === 'assistant' && /A阶段完成，B已接力/.test(message.content)));
