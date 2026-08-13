@@ -279,6 +279,31 @@ test('官方 Responses 通道丢弃第三方函数调用（fc_ ID）并删除配
   assert.deepEqual(adapted.input, expectedInput);
 });
 
+test('官方 Responses 通道丢弃第三方 custom_tool_call（fc_ ID）并保留官方 ctc 项', () => {
+  // 回归：第三方会话的 Codex 自定义工具调用（shell/apply_patch 等）切回官方时同样要求 ctc 前缀。
+  const body = {
+    input: [
+      { role: 'user', content: [{ type: 'input_text', text: '继续任务' }] },
+      {
+        id: 'fc_e966528b-e06d-4e7b-b0a6-66e0ca206068',
+        type: 'custom_tool_call',
+        call_id: 'call_e966528b',
+        name: 'shell_command',
+        input: {},
+      },
+      { type: 'custom_tool_call_output', call_id: 'call_e966528b', output: '输出' },
+      { id: 'ctc_official', type: 'custom_tool_call', call_id: 'call_official', name: 'apply_patch', input: {} },
+      { type: 'custom_tool_call_output', call_id: 'call_official', output: '官方输出' },
+      { type: 'custom_tool_call', name: 'apply_patch', input: {} },
+    ],
+  };
+  const expectedInput = [body.input[0], body.input[3], body.input[4], body.input[5]];
+
+  const adapted = adaptOfficialResponsesBody(body, '/v1/responses');
+
+  assert.deepEqual(adapted.input, expectedInput);
+});
+
 test('官方 Responses 通道即使无法配对输出也丢弃非法 ID 的 tool_search 调用', () => {
   const body = {
     input: [
@@ -295,6 +320,25 @@ test('官方 Responses 通道即使无法配对输出也丢弃非法 ID 的 tool
   const adapted = adaptOfficialResponsesBody(body, '/v1/responses');
 
   assert.deepEqual(adapted.input, [body.input[0]]);
+});
+
+test('官方 Responses 通道用 *_output 通配删除被丢弃调用的任意输出类型', () => {
+  // 修根验证：配对删除不限于已知输出类型，未来新增的 *_output 变体引用被删调用时同样删除。
+  const body = {
+    input: [
+      { role: 'user', content: [{ type: 'input_text', text: '继续任务' }] },
+      { id: 'fc_foreign', type: 'function_call', call_id: 'call_foreign', name: 'read_file', arguments: '{}' },
+      { type: 'function_call_output', call_id: 'call_foreign', output: 'a' },
+      { type: 'agent_search_output', call_id: 'call_foreign', output: 'b' },
+      { id: 'ctc_keep', type: 'function_call', call_id: 'call_keep', name: 'read_file', arguments: '{}' },
+      { type: 'function_call_output', call_id: 'call_keep', output: 'c' },
+    ],
+  };
+  const expectedInput = [body.input[0], body.input[4], body.input[5]];
+
+  const adapted = adaptOfficialResponsesBody(body, '/v1/responses');
+
+  assert.deepEqual(adapted.input, expectedInput);
 });
 
 test('官方 Responses 通道保留合法或未分配 ID 的 tool_search 调用', () => {
