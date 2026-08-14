@@ -38,7 +38,29 @@ import {
     const bytes = Number(value || 0);
     if (bytes < 1024) return `${bytes} B`;
     if (bytes < 1024 ** 2) return `${(bytes / 1024).toFixed(1)} KB`;
-    return `${(bytes / 1024 ** 2).toFixed(1)} MB`;
+    if (bytes < 1024 ** 3) return `${(bytes / 1024 ** 2).toFixed(1)} MB`;
+    return `${(bytes / 1024 ** 3).toFixed(1)} GB`;
+  };
+
+  // 纯展示层的易读单位换算；实际提交值不受影响。
+  const compactNumber = (value) => new Intl.NumberFormat('zh-CN', { notation: 'compact', maximumFractionDigits: 1 }).format(Number(value));
+
+  const formatSecondsShort = (milliseconds) => {
+    const totalSeconds = Math.max(0, Math.round(Number(milliseconds) / 1000));
+    if (totalSeconds % 86400 === 0) return `${totalSeconds / 86400} 天`;
+    if (totalSeconds % 3600 === 0) return `${totalSeconds / 3600} 小时`;
+    if (totalSeconds % 60 === 0) return `${totalSeconds / 60} 分钟`;
+    if (totalSeconds >= 60) return `${(totalSeconds / 60).toFixed(1)} 分钟`;
+    return `${totalSeconds} 秒`;
+  };
+
+  const humanNumber = (value, key) => {
+    const number = Number(value);
+    if (!Number.isFinite(number)) return '';
+    if (/ms$/i.test(key) && number >= 1000) return `≈ ${formatSecondsShort(number)}`;
+    if (/bytes$/i.test(key) && number >= 1024) return `≈ ${formatBytes(number)}`;
+    if (/(tokens|window)/i.test(key) && number >= 10000) return `≈ ${compactNumber(number)} tokens`;
+    return '';
   };
 
   const formatDateTime = (value) => value
@@ -122,6 +144,10 @@ import {
       this.loadEpoch = 0;
       this.activeReloadPromise = null;
       this.activeResyncPromise = null;
+      this.modelFilters = { query: '', status: 'all', channel: 'all', capability: 'all', sort: 'name-asc' };
+      this.channelsExpanded = false;
+      this.openConfigGroups = new Set();
+      this.openTargetEditor = null;
     }
 
     connectedCallback() {
@@ -137,26 +163,35 @@ import {
         <header class="topbar">
           <a class="brand" href="#overview" aria-label="Codex 路由管理首页">
             <span class="brand-mark" aria-hidden="true">CR</span>
-            <span><strong>Codex Router</strong><small>本地管理台</small></span>
+            <span class="brand-text"><strong>Codex Router</strong><small>本地管理台</small></span>
           </a>
-          <nav aria-label="页面导航">
+          <nav class="desktop-nav" aria-label="页面导航">
             <a href="#overview">总览</a>
-            <a href="#channels">模型通道</a>
-            <a href="#custom-models">自定义模型</a>
-            <a href="#configuration">配置</a>
+            <a href="#custom-models">模型管理</a>
+            <a href="#configuration">高级设置</a>
             <a href="#checkpoints">检查点</a>
           </nav>
-          <button class="button ghost compact" type="button" data-action="reload">刷新状态</button>
+          <div class="topbar-actions">
+            <button class="button ghost compact" type="button" data-action="reload">刷新状态</button>
+            <button class="button ghost compact menu-button" type="button" data-action="toggle-menu" aria-expanded="false" aria-controls="mobile-menu" aria-label="打开导航菜单">
+              <svg viewBox="0 0 20 20" width="18" height="18" aria-hidden="true"><path d="M3 5.5h14M3 10h14M3 14.5h14" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
+            </button>
+          </div>
+          <div id="mobile-menu" class="mobile-menu" hidden>
+            <a href="#overview">总览</a>
+            <a href="#custom-models">模型管理</a>
+            <a href="#configuration">高级设置</a>
+            <a href="#checkpoints">检查点</a>
+          </div>
         </header>
         <main>
-          <section class="hero" aria-labelledby="page-title">
+          <div class="page-head">
             <div>
-              <p class="eyebrow">LOCAL · ZERO DEPENDENCY</p>
-              <h1 id="page-title">让每条模型通道<br><span>清晰可控</span></h1>
-              <p class="lede">查看本机路由状态、预检配置，并安全管理长任务检查点。凭据只留在路由进程中，不会出现在页面。</p>
+              <h1 id="page-title">路由管理</h1>
+              <p class="page-subtitle">本机多模型路由的运行状态与配置。凭据只留在路由进程中，不会出现在页面。</p>
             </div>
-            <div class="hero-orbit" aria-hidden="true"><span></span><span></span><span></span></div>
-          </section>
+            <span class="live-pill"><i></i>本机服务</span>
+          </div>
 
           <div id="restart-notice" class="notice restart" role="status" hidden>
             <strong>配置已保存</strong>
@@ -171,18 +206,28 @@ import {
           <div id="conflict-actions" class="notice" role="alert" hidden></div>
 
           <section id="overview" class="section" aria-labelledby="overview-title">
-            <div class="section-heading"><div><p class="kicker">01 / OVERVIEW</p><h2 id="overview-title">运行总览</h2></div><span class="live-pill"><i></i>本机服务</span></div>
-            <div id="overview-grid" class="metric-grid" aria-live="polite"><div class="skeleton tall"></div><div class="skeleton tall"></div><div class="skeleton tall"></div><div class="skeleton tall"></div></div>
-          </section>
-
-          <section id="channels" class="section" aria-labelledby="channels-title">
-            <div class="section-heading"><div><p class="kicker">02 / CHANNELS</p><h2 id="channels-title">模型通道</h2></div><p class="section-note">凭据仅显示是否就绪，不显示变量名或内容。</p></div>
-            <div id="channel-grid" class="channel-grid" aria-live="polite"><div class="skeleton channel"></div><div class="skeleton channel"></div></div>
+            <div class="section-heading"><h2 id="overview-title">运行总览</h2></div>
+            <div id="overview-grid" class="status-grid" aria-live="polite"><div class="skeleton card"></div><div class="skeleton card"></div><div class="skeleton card"></div><div class="skeleton card"></div></div>
+            <div class="overview-actions">
+              <button class="button primary" type="button" data-action="model-add" disabled>添加模型</button>
+              <button class="button secondary" type="button" data-action="goto-models">管理模型</button>
+              <button class="button ghost" type="button" data-action="goto-advanced">高级设置</button>
+            </div>
           </section>
 
           <section id="custom-models" class="section" aria-labelledby="custom-models-title">
-            <div class="section-heading"><div><p class="kicker">03 / CUSTOM MODELS</p><h2 id="custom-models-title">自定义模型</h2></div><span id="model-dirty-badge" class="dirty-badge" hidden>有未保存更改</span></div>
-            <div class="privacy-note"><span aria-hidden="true">◈</span><p><strong>官方模型与自定义模型共存</strong><br>这里仅管理模型目录与通道关联；不会显示或收集凭据内容。保存后需手动重启路由与 Codex，页面不会自动重启。</p></div>
+            <div class="section-heading"><h2 id="custom-models-title">模型管理</h2><span id="model-dirty-badge" class="dirty-badge" hidden>有未保存更改</span></div>
+            <p class="section-desc">这里管理模型目录与通道关联；不会显示或收集凭据内容。保存后需手动重启路由与 Codex，页面不会自动重启。</p>
+            <div id="channel-summary" class="channel-summary" aria-live="polite"></div>
+            <div id="channel-grid" class="channel-grid" aria-live="polite" hidden></div>
+            <div id="model-filter-bar" class="filter-bar">
+              <label class="filter-search"><span class="sr-only">搜索模型</span><input id="model-search" type="search" placeholder="搜索名称或标识…" autocomplete="off"></label>
+              <label class="filter-item"><span>状态</span><select id="model-filter-status"><option value="all">全部状态</option><option value="ready">可用</option><option value="attention">待配置</option></select></label>
+              <label class="filter-item"><span>通道</span><select id="model-filter-channel"><option value="all">全部通道</option></select></label>
+              <label class="filter-item"><span>能力</span><select id="model-filter-capability"><option value="all">全部能力</option><option value="text">文本</option><option value="image">图片</option></select></label>
+              <label class="filter-item"><span>排序</span><select id="model-sort"><option value="name-asc">名称 A→Z</option><option value="name-desc">名称 Z→A</option><option value="status-first">待配置优先</option><option value="context-desc">上下文从大到小</option></select></label>
+              <span id="model-count" class="filter-count" aria-live="polite"></span>
+            </div>
             <div class="model-toolbar">
               <button class="button primary" type="button" data-action="model-add" disabled>新增自定义模型</button>
               <button class="button secondary" type="button" data-action="model-undo" disabled>撤销最近更改</button>
@@ -199,8 +244,8 @@ import {
           </section>
 
           <section id="configuration" class="section" aria-labelledby="configuration-title">
-            <div class="section-heading"><div><p class="kicker">04 / CONFIGURATION</p><h2 id="configuration-title">路由配置</h2></div><span id="dirty-badge" class="dirty-badge" hidden>有未保存更改</span></div>
-            <div class="privacy-note"><span aria-hidden="true">◈</span><p><strong>敏感信息已隔离</strong><br>API Key、Token、Authorization 等字段不会显示或提供编辑入口；保存时由路由安全保留原值。未知扩展字段和注释也会原样保留。</p></div>
+            <div class="section-heading"><h2 id="configuration-title">高级设置</h2><span id="dirty-badge" class="dirty-badge" hidden>有未保存更改</span></div>
+            <p class="section-desc">面向进阶用户的底层配置。每个分组默认只显示当前状态，点击“编辑”后才会展开具体控件。API Key、Token、Authorization 等敏感字段不会显示或提供编辑入口，保存时由路由安全保留原值；未知扩展字段和注释也会原样保留。</p>
             <form id="config-form" novalidate aria-describedby="config-help">
               <p id="config-help" class="sr-only">修改后先预检，确认无错误再保存。保存不会自动重启路由。</p>
               <div id="config-fields"><div class="skeleton form"></div></div>
@@ -216,7 +261,7 @@ import {
           </section>
 
           <section id="checkpoints" class="section" aria-labelledby="checkpoints-title">
-            <div class="section-heading"><div><p class="kicker">05 / CHECKPOINTS</p><h2 id="checkpoints-title">长任务检查点</h2></div><button class="button ghost compact" type="button" data-action="refresh-checkpoints">刷新</button></div>
+            <div class="section-heading"><h2 id="checkpoints-title">长任务检查点</h2><button class="button ghost compact" type="button" data-action="refresh-checkpoints">刷新</button></div>
             <div id="checkpoint-panel" class="checkpoint-panel" aria-live="polite"><div class="skeleton form"></div></div>
           </section>
         </main>
@@ -240,23 +285,78 @@ import {
 
     bindEvents() {
       this.addEventListener('click', (event) => {
+        const menuLink = event.target.closest('#mobile-menu a');
+        if (menuLink) this.toggleMobileMenu(false);
+        const rowEdit = event.target.closest('.model-row-main');
+        if (rowEdit?.dataset.slug) {
+          this.openModelDialog(rowEdit.dataset.slug);
+          return;
+        }
         const action = event.target.closest('[data-action]')?.dataset.action;
         if (action === 'reload') this.reload();
         if (action === 'resync-reload') this.resyncBaselines();
         if (action === 'discard-model-drafts-reload') this.discardDraftsAndReload('model');
         if (action === 'discard-config-drafts-reload') this.discardDraftsAndReload('config');
         if (action === 'validate') this.validateConfig();
+        if (action === 'toggle-menu') this.toggleMobileMenu();
+        if (action === 'goto-models') this.gotoSection('#custom-models');
+        if (action === 'goto-advanced') this.gotoSection('#configuration');
+        if (action === 'goto-checkpoints') this.gotoSection('#checkpoints');
         if (action === 'refresh-checkpoints') this.loadCheckpoints();
         if (action === 'clear-checkpoints') this.openClearDialog();
+        if (action === 'toggle-channels') {
+          this.channelsExpanded = !this.channelsExpanded;
+          this.renderChannels();
+        }
+        if (action === 'toggle-config-group') {
+          const group = event.target.closest('[data-group]')?.dataset.group;
+          if (group) {
+            if (this.openConfigGroups.has(group)) this.openConfigGroups.delete(group);
+            else this.openConfigGroups.add(group);
+            this.renderConfig();
+          }
+        }
+        if (action === 'toggle-target-editor') {
+          const editor = event.target.closest('[data-target-index]');
+          if (editor) {
+            this.openTargetEditor = this.openTargetEditor === editor.dataset.targetIndex ? null : editor.dataset.targetIndex;
+            this.renderConfig();
+          }
+        }
         if (action === 'model-add') this.openModelDialog();
         if (action === 'model-edit') this.openModelDialog(event.target.closest('[data-slug]')?.dataset.slug);
         if (action === 'model-delete') this.openDeleteModelDialog(event.target.closest('[data-slug]')?.dataset.slug);
+        if (action === 'model-clear-filters') {
+          this.modelFilters = { query: '', status: 'all', channel: 'all', capability: 'all', sort: 'name-asc' };
+          this.syncModelFilterControls();
+          this.renderModelRouting();
+        }
         if (action === 'model-undo') this.undoModelChange();
         if (action === 'model-validate') this.validateModelRouting();
         if (action === 'model-save') this.saveModelRouting();
         if (action === 'model-dialog-cancel') this.closeModelDialog();
         if (action === 'delete-model-cancel') this.closeDeleteModelDialog();
         if (action === 'delete-model-confirm') this.deleteModelDraft();
+      });
+      this.querySelector('#model-search').addEventListener('input', (event) => {
+        this.modelFilters.query = event.target.value;
+        this.renderModelRouting();
+      });
+      this.querySelector('#model-filter-status').addEventListener('change', (event) => {
+        this.modelFilters.status = event.target.value;
+        this.renderModelRouting();
+      });
+      this.querySelector('#model-filter-channel').addEventListener('change', (event) => {
+        this.modelFilters.channel = event.target.value;
+        this.renderModelRouting();
+      });
+      this.querySelector('#model-filter-capability').addEventListener('change', (event) => {
+        this.modelFilters.capability = event.target.value;
+        this.renderModelRouting();
+      });
+      this.querySelector('#model-sort').addEventListener('change', (event) => {
+        this.modelFilters.sort = event.target.value;
+        this.renderModelRouting();
       });
       this.querySelector('#config-form').addEventListener('submit', (event) => {
         event.preventDefault();
@@ -284,6 +384,22 @@ import {
         event.preventDefault();
         event.returnValue = '';
       });
+    }
+
+    toggleMobileMenu(force) {
+      const menu = this.querySelector('#mobile-menu');
+      const button = this.querySelector('[data-action="toggle-menu"]');
+      if (!menu || !button) return;
+      const open = force === undefined ? menu.hidden : Boolean(force);
+      menu.hidden = !open;
+      button.setAttribute('aria-expanded', String(open));
+      button.setAttribute('aria-label', open ? '关闭导航菜单' : '打开导航菜单');
+    }
+
+    gotoSection(selector) {
+      this.toggleMobileMenu(false);
+      const target = this.querySelector(selector);
+      if (target) target.scrollIntoView({ behavior: 'smooth', block: 'start' });
     }
 
     isCurrentLoad(epoch) {
@@ -487,33 +603,107 @@ import {
 
     renderOverview() {
       const data = this.status;
-      const metrics = [
-        ['监听端口', data.port ?? '—', '仅绑定本机地址'],
-        ['运行时长', formatDuration(data.uptimeMs), `启动于 ${formatDateTime(data.startedAt)}`],
-        ['模型通道', data.targets?.length ?? 0, '按模型名称匹配上游'],
-        ['配置告警', data.warningCount ?? 0, data.warningCount ? '建议预检并查看详情' : '当前没有启动告警'],
-      ];
       const grid = this.querySelector('#overview-grid');
-      grid.replaceChildren(...metrics.map(([label, value, note], index) => {
-        const card = el('article', 'metric-card');
-        card.style.setProperty('--delay', `${index * 50}ms`);
-        const top = el('div', 'metric-top');
-        top.append(el('span', '', label), el('span', 'metric-index', String(index + 1).padStart(2, '0')));
-        card.append(top, el('strong', 'metric-value', String(value)), el('p', '', note));
-        return card;
-      }));
+      if (!data) return;
+      const targets = data.targets || [];
+      const readyCount = targets.filter((target) => target.envSet).length;
+      const warningCount = data.warningCount ?? 0;
+      const models = this.modelRoutingState?.models || [];
+      const modelCount = models.length;
+      const attentionModels = models.filter((model) => {
+        const refs = this.modelBindings(model.slug);
+        const bound = refs.map((ref) => this.modelRoutingState.targets.find((item) => item.targetRef === ref)).filter(Boolean);
+        return !(refs.length > 0 && bound.length === refs.length && bound.every((target) => target.envSet));
+      }).length;
+      const restartRequired = !this.querySelector('#restart-notice')?.hidden;
+
+      const card = ({ label, value, note, tone, actionLabel, action, icon }) => {
+        const node = el('article', `status-card${tone ? ` ${tone}` : ''}`);
+        const top = el('div', 'status-card-top');
+        top.append(el('span', 'status-card-icon', icon), el('span', 'status-card-label', label));
+        node.append(top, el('strong', 'status-card-value', value), el('p', 'status-card-note', note));
+        if (actionLabel && action) {
+          const link = el('button', 'status-card-link', actionLabel);
+          link.type = 'button';
+          link.dataset.action = action;
+          node.append(link);
+        }
+        return node;
+      };
+
+      grid.replaceChildren(
+        card({
+          label: '服务状态',
+          value: '运行中',
+          note: `已运行 ${formatDuration(data.uptimeMs)} · 端口 ${data.port ?? '—'}（仅本机）`,
+          tone: 'ok',
+          icon: '●',
+        }),
+        card({
+          label: '模型',
+          value: modelCount ? `${modelCount} 个` : `${targets.length} 条通道`,
+          note: modelCount
+            ? (attentionModels ? `${attentionModels} 个待配置凭据或通道` : '全部模型凭据与通道就绪')
+            : '模型目录载入后可查看详情',
+          tone: attentionModels ? 'warn' : 'ok',
+          icon: attentionModels ? '!' : '●',
+          actionLabel: '管理模型',
+          action: 'goto-models',
+        }),
+        card({
+          label: '配置告警',
+          value: warningCount ? `${warningCount} 条` : '无',
+          note: warningCount ? '建议在高级设置中预检并查看详情' : '启动预检未发现问题',
+          tone: warningCount ? 'warn' : 'ok',
+          icon: warningCount ? '!' : '●',
+          actionLabel: warningCount ? '前往高级设置' : '',
+          action: warningCount ? 'goto-advanced' : '',
+        }),
+        card({
+          label: '生效状态',
+          value: restartRequired ? '待重启' : '已生效',
+          note: restartRequired ? '配置已保存，需手动重启路由后生效' : `通道凭据 ${readyCount}/${targets.length} 就绪`,
+          tone: restartRequired ? 'warn' : 'ok',
+          icon: restartRequired ? '!' : '●',
+          actionLabel: '',
+          action: '',
+        }),
+      );
     }
 
     renderChannels() {
+      const summary = this.querySelector('#channel-summary');
       const grid = this.querySelector('#channel-grid');
       const targets = this.status?.targets || [];
       if (!targets.length) {
-        grid.replaceChildren(el('p', 'empty-state', '当前没有可用的模型通道。'));
+        if (summary) {
+          summary.replaceChildren(el('p', 'empty-state', '当前没有可用的模型通道。'));
+          summary.hidden = false;
+        }
+        grid.hidden = true;
+        grid.replaceChildren();
         return;
       }
-      grid.replaceChildren(...targets.map((target, index) => {
+      const attention = targets.filter((target) => !target.envSet);
+      const expanded = this.channelsExpanded || attention.length > 0;
+      if (summary) {
+        const pill = el('span', `status-dot ${attention.length ? 'warning' : 'ready'}`, attention.length ? `${attention.length} 条凭据待配置` : '凭据全部就绪');
+        const text = el('span', 'channel-summary-text', `${targets.length} 条服务通道 · ${targets.filter((t) => t.viaProxy).length} 条走代理`);
+        const toggle = el('button', 'button ghost compact', expanded ? '收起通道详情' : '查看通道详情');
+        toggle.type = 'button';
+        toggle.dataset.action = 'toggle-channels';
+        toggle.setAttribute('aria-expanded', String(expanded));
+        summary.replaceChildren(pill, text, toggle);
+        summary.hidden = false;
+      }
+      if (!expanded) {
+        grid.hidden = true;
+        grid.replaceChildren();
+        return;
+      }
+      grid.hidden = false;
+      grid.replaceChildren(...targets.map((target) => {
         const card = el('article', 'channel-card');
-        card.style.setProperty('--delay', `${index * 55}ms`);
         const head = el('div', 'channel-head');
         const symbol = el('span', 'channel-symbol', String(target.name || '?').slice(0, 2).toUpperCase());
         const title = el('div');
@@ -521,7 +711,7 @@ import {
         head.append(symbol, title, el('span', `status-dot ${target.envSet ? 'ready' : 'warning'}`, target.envSet ? '凭据就绪' : '凭据待配置'));
         const details = el('dl', 'channel-details');
         [
-          ['协议', target.wireApi || '—'],
+          ['接口类型', target.wireApi === 'chat' ? 'Chat Completions' : (target.wireApi || 'Responses')],
           ['上游模型', target.upstreamModel || '跟随请求'],
           ['网络', target.viaProxy ? 'HTTP 代理' : '直接连接'],
         ].forEach(([term, value]) => {
@@ -538,103 +728,204 @@ import {
       if (!config) return;
       root.replaceChildren();
 
-      const basics = this.fieldset('基础设置', '路由监听与请求资源上限');
-      const appendRootNumber = (label, key, min, max) => {
-        if (Object.hasOwn(config, key)) basics.body.append(this.numberField(label, [key], config[key], min, max));
-      };
-      appendRootNumber('监听端口', 'port', 1, 65535);
-      appendRootNumber('SSE 心跳（毫秒）', 'heartbeatMs', 1);
-      appendRootNumber('单请求上限（字节）', 'maxRequestBytes', 1);
-      appendRootNumber('最大并发请求', 'maxConcurrentRequests', 1);
-      appendRootNumber('缓冲总上限（字节）', 'maxBufferedRequestBytes', 1);
-      if (basics.body.childElementCount) root.append(basics.node);
-
-      if (config.proxy && typeof config.proxy === 'object' && !Array.isArray(config.proxy)) {
-        const proxy = this.fieldset('公共代理', '仅供开启“走代理”的通道使用');
-        if (Object.hasOwn(config.proxy, 'host')) proxy.body.append(this.textField('代理地址', ['proxy', 'host'], config.proxy.host, '127.0.0.1'));
-        if (Object.hasOwn(config.proxy, 'port')) proxy.body.append(this.numberField('代理端口', ['proxy', 'port'], config.proxy.port, 1, 65535));
-        if (proxy.body.childElementCount) root.append(proxy.node);
+      // 基础设置 → 本机服务
+      {
+        const group = this.configGroup('basics', '本机服务', '路由监听与请求资源上限', () => {
+          const parts = [];
+          if (Object.hasOwn(config, 'port')) parts.push(`端口 ${config.port}`);
+          if (Object.hasOwn(config, 'maxConcurrentRequests')) parts.push(`并发 ${config.maxConcurrentRequests}`);
+          if (Object.hasOwn(config, 'maxRequestBytes')) parts.push(`单请求 ${formatBytes(config.maxRequestBytes)}`);
+          if (Object.hasOwn(config, 'maxBufferedRequestBytes')) parts.push(`缓冲 ${formatBytes(config.maxBufferedRequestBytes)}`);
+          if (Object.hasOwn(config, 'heartbeatMs')) parts.push(`心跳 ${formatSecondsShort(config.heartbeatMs)}`);
+          return parts;
+        });
+        const appendRootNumber = (label, key, min, max) => {
+          if (Object.hasOwn(config, key)) group.body.append(this.numberField(label, [key], config[key], min, max));
+        };
+        appendRootNumber('监听端口', 'port', 1, 65535);
+        appendRootNumber('SSE 心跳（毫秒）', 'heartbeatMs', 1);
+        appendRootNumber('单请求上限（字节）', 'maxRequestBytes', 1);
+        appendRootNumber('最大并发请求', 'maxConcurrentRequests', 1);
+        appendRootNumber('缓冲总上限（字节）', 'maxBufferedRequestBytes', 1);
+        if (group.body.childElementCount) root.append(group.node);
       }
 
+      // 网络与代理
+      if (config.proxy && typeof config.proxy === 'object' && !Array.isArray(config.proxy)) {
+        const group = this.configGroup('proxy', '网络与代理', '仅供开启“走代理”的通道使用', () => {
+          const host = config.proxy.host ?? '';
+          const port = config.proxy.port ?? '';
+          return [host ? `公共代理 ${host}${port ? `:${port}` : ''}` : '未配置公共代理'];
+        });
+        if (Object.hasOwn(config.proxy, 'host')) group.body.append(this.textField('代理地址', ['proxy', 'host'], config.proxy.host, '127.0.0.1'));
+        if (Object.hasOwn(config.proxy, 'port')) group.body.append(this.numberField('代理端口', ['proxy', 'port'], config.proxy.port, 1, 65535));
+        if (group.body.childElementCount) root.append(group.node);
+      }
+
+      // 超时
       if (config.timeouts && typeof config.timeouts === 'object' && !Array.isArray(config.timeouts)) {
-        const timeouts = this.fieldset('超时设置', '单位均为毫秒；长任务建议保留充足等待时间');
+        const group = this.configGroup('timeouts', '超时', '长任务建议保留充足等待时间', () => [
+          `连接 ${formatSecondsShort(config.timeouts.connectMs)}`,
+          `响应头 ${formatSecondsShort(config.timeouts.responseHeaderMs)}`,
+          `流空闲 ${formatSecondsShort(config.timeouts.streamIdleMs)}`,
+          `总超时 ${formatSecondsShort(config.timeouts.requestMs)}`,
+        ]);
         [
           ['连接超时', 'connectMs'],
           ['响应头超时', 'responseHeaderMs'],
           ['流空闲超时', 'streamIdleMs'],
           ['请求总超时', 'requestMs'],
         ].forEach(([label, key]) => {
-          if (Object.hasOwn(config.timeouts, key)) timeouts.body.append(this.numberField(label, ['timeouts', key], config.timeouts[key], 1));
+          if (Object.hasOwn(config.timeouts, key)) group.body.append(this.numberField(label, ['timeouts', key], config.timeouts[key], 1));
         });
-        if (timeouts.body.childElementCount) root.append(timeouts.node);
+        if (group.body.childElementCount) root.append(group.node);
       }
 
       this.renderModelContextGroups(root, config);
       this.renderGoalCheckpointGroup(root, config);
       this.renderVisionRelayGroup(root, config);
 
-      const channels = this.fieldset('模型通道', '逐通道编辑匹配、上游和网络策略；敏感请求头不会出现在表单中', 'wide');
-      const list = el('div', 'target-list');
-      (config.targets || []).forEach((target, index) => list.append(this.targetEditor(target, index)));
-      channels.body.append(list);
-      root.append(channels.node);
+      // 服务通道：默认摘要列表，单条展开编辑
+      {
+        const targets = config.targets || [];
+        const group = this.configGroup('channels', '服务通道', '凭据是否就绪与上游连接；敏感请求头不会出现在表单中', () => [
+          `${targets.length} 条通道`,
+          ...targets.slice(0, 3).map((target) => target.name || target.match || '未命名'),
+          targets.length > 3 ? '…' : '',
+        ].filter(Boolean));
+        const list = el('div', 'config-channel-list');
+        targets.forEach((target, index) => list.append(this.configChannelRow(target, index)));
+        group.body.append(list);
+        root.append(group.node);
+      }
 
       this.querySelector('#save-hint').textContent = '建议先预检，再保存到 config.json';
       this.updateConfigControls();
+    }
+
+    // 手风琴分组：头部（标题+摘要+编辑按钮）+ 默认折叠的控件体。
+    configGroup(id, title, description, summaryFn) {
+      const open = this.openConfigGroups.has(id);
+      const node = el('section', `config-group${open ? ' open' : ''}`);
+      node.dataset.group = id;
+      const head = el('div', 'config-group-head');
+      const titleWrap = el('div', 'config-group-title');
+      titleWrap.append(el('h3', '', title), el('p', '', description));
+      const summary = el('div', 'config-group-summary');
+      (summaryFn() || []).forEach((part) => summary.append(el('span', 'summary-chip', part)));
+      const toggle = el('button', 'button ghost compact', open ? '收起' : '编辑');
+      toggle.type = 'button';
+      toggle.dataset.action = 'toggle-config-group';
+      toggle.setAttribute('aria-expanded', String(open));
+      head.append(titleWrap, summary, toggle);
+      const body = el('div', 'field-grid config-group-body');
+      body.hidden = !open;
+      node.append(head, body);
+      return { node, body };
+    }
+
+    // 服务通道默认只显示名称/地址/接口/连接/凭据，单条“编辑通道”才展开完整字段。
+    configChannelRow(target, index) {
+      const key = String(index);
+      const open = this.openTargetEditor === key;
+      const row = el('div', `config-channel-row${open ? ' open' : ''}`);
+      row.dataset.targetIndex = key;
+      const summary = el('div', 'config-channel-summary');
+      const name = el('div', 'config-channel-name');
+      name.append(el('strong', '', target.name || `通道 ${index + 1}`), el('span', 'config-channel-match', target.match || '未设置匹配'));
+      const protocol = target.protocol || 'https';
+      const host = target.host || '未配置主机';
+      const prefix = target.prefix || '';
+      const address = el('span', 'config-channel-meta', `${protocol}://${host}${prefix}`);
+      const wire = el('span', 'config-channel-meta', target.wireApi === 'chat' ? 'Chat Completions' : 'Responses');
+      const network = el('span', 'config-channel-meta', target.viaProxy ? '走代理' : '直连');
+      const cred = el('span', `status-dot ${target.envKey ? (this.channelEnvReady(target) ? 'ready' : 'warning') : 'ready'}`, target.envKey ? (this.channelEnvReady(target) ? '凭据就绪' : '凭据待配置') : (target.useOpenAiAuth ? '官方登录态' : '凭据就绪'));
+      const toggle = el('button', 'button ghost compact', open ? '收起' : '编辑通道');
+      toggle.type = 'button';
+      toggle.dataset.action = 'toggle-target-editor';
+      toggle.setAttribute('aria-expanded', String(open));
+      summary.append(name, address, wire, network, cred, toggle);
+      row.append(summary);
+      if (open) {
+        const editor = el('div', 'config-channel-editor');
+        editor.append(this.targetEditor(target, index));
+        row.append(editor);
+      }
+      return row;
+    }
+
+    channelEnvReady(target) {
+      const statusTarget = (this.status?.targets || []).find((item) => item.name && item.name === target.name);
+      return statusTarget ? statusTarget.envSet : true;
     }
 
     renderModelContextGroups(root, config) {
       // 复杂配置使用显式字段白名单，既保留未知扩展，也不会把它们误当成可编辑项。
       const context = config.modelContext;
       if (context && typeof context === 'object' && !Array.isArray(context)) {
-        const group = this.fieldset('模型上下文', '控制 Codex 模型目录的上下文窗口与自动压缩阈值');
+        const group = this.configGroup('context', '上下文与输出预算', '模型目录上下文窗口、自动压缩与能力预算', () => {
+          const parts = [];
+          if (Object.hasOwn(context, 'enabled')) parts.push(context.enabled ? '目录写回启用' : '目录写回关闭');
+          if (Object.hasOwn(context, 'contextWindow')) parts.push(`窗口 ${compactNumber(context.contextWindow)} tokens`);
+          if (Object.hasOwn(context, 'autoCompactTokenLimit')) parts.push(`压缩阈值 ${compactNumber(context.autoCompactTokenLimit)}`);
+          if (Array.isArray(config.modelCapabilities)) parts.push(`${config.modelCapabilities.length} 条能力规则`);
+          return parts;
+        });
         if (Object.hasOwn(context, 'enabled')) group.body.append(this.booleanField('启用目录写回', ['modelContext', 'enabled'], context.enabled));
         if (Object.hasOwn(context, 'contextWindow')) group.body.append(this.numberField('上下文窗口（tokens）', ['modelContext', 'contextWindow'], context.contextWindow, 1));
         if (Object.hasOwn(context, 'autoCompactTokenLimit')) group.body.append(this.numberField('自动压缩阈值（tokens）', ['modelContext', 'autoCompactTokenLimit'], context.autoCompactTokenLimit, 0));
         if (Object.hasOwn(context, 'slugs') && Array.isArray(context.slugs)) {
           group.body.append(this.stringArrayField('应用模型', ['modelContext', 'slugs'], context.slugs, '每行填写一个模型 slug'));
         }
+        if (Array.isArray(config.modelCapabilities)) {
+          const sub = el('div', 'subsection-title');
+          sub.append(el('strong', '', '模型能力预算'), el('span', '', '每条规则按顺序匹配模型，设置上下文与输出预算'));
+          group.body.append(sub);
+          const list = el('div', 'target-list capability-list');
+          config.modelCapabilities.forEach((capability, index) => {
+            if (!capability || typeof capability !== 'object' || Array.isArray(capability)) return;
+            const card = el('section', 'target-editor capability-editor');
+            card.setAttribute('aria-labelledby', `capability-${index}-title`);
+            const head = el('div', 'target-editor-head');
+            const titleWrap = el('div');
+            titleWrap.append(el('span', 'target-number', String(index + 1).padStart(2, '0')));
+            const title = el('h3', '', capability.match || `能力规则 ${index + 1}`);
+            title.id = `capability-${index}-title`;
+            titleWrap.append(title);
+            head.append(titleWrap, el('span', 'protocol-badge', 'TOKEN BUDGET'));
+            const fields = el('div', 'field-grid capability-fields');
+            const addText = (label, key) => {
+              if (Object.hasOwn(capability, key)) fields.append(this.textField(label, ['modelCapabilities', index, key], capability[key]));
+            };
+            const addNumber = (label, key, min, max, step) => {
+              if (Object.hasOwn(capability, key)) fields.append(this.numberField(label, ['modelCapabilities', index, key], capability[key], min, max, step));
+            };
+            addText('模型匹配规则', 'match');
+            addNumber('上下文窗口', 'contextWindow', 1);
+            addNumber('最大输出 tokens', 'maxOutputTokens', 1);
+            addNumber('安全比例', 'safetyRatio', 0.01, 1, '0.01');
+            addNumber('协议预留 tokens', 'protocolReserveTokens', 0);
+            addNumber('单图预算 tokens', 'imageTokens', 1);
+            card.append(head, fields);
+            list.append(card);
+          });
+          group.body.append(list);
+        }
         if (group.body.childElementCount) root.append(group.node);
       }
-
-      if (!Array.isArray(config.modelCapabilities)) return;
-      const group = this.fieldset('模型能力预算', '每条规则按顺序匹配模型，设置上下文与输出预算', 'wide');
-      const list = el('div', 'target-list capability-list');
-      config.modelCapabilities.forEach((capability, index) => {
-        if (!capability || typeof capability !== 'object' || Array.isArray(capability)) return;
-        const card = el('section', 'target-editor capability-editor');
-        card.setAttribute('aria-labelledby', `capability-${index}-title`);
-        const head = el('div', 'target-editor-head');
-        const titleWrap = el('div');
-        titleWrap.append(el('span', 'target-number', String(index + 1).padStart(2, '0')));
-        const title = el('h3', '', capability.match || `能力规则 ${index + 1}`);
-        title.id = `capability-${index}-title`;
-        titleWrap.append(title);
-        head.append(titleWrap, el('span', 'protocol-badge', 'TOKEN BUDGET'));
-        const fields = el('div', 'field-grid capability-fields');
-        const addText = (label, key) => {
-          if (Object.hasOwn(capability, key)) fields.append(this.textField(label, ['modelCapabilities', index, key], capability[key]));
-        };
-        const addNumber = (label, key, min, max, step) => {
-          if (Object.hasOwn(capability, key)) fields.append(this.numberField(label, ['modelCapabilities', index, key], capability[key], min, max, step));
-        };
-        addText('模型匹配规则', 'match');
-        addNumber('上下文窗口', 'contextWindow', 1);
-        addNumber('最大输出 tokens', 'maxOutputTokens', 1);
-        addNumber('安全比例', 'safetyRatio', 0.01, 1, '0.01');
-        addNumber('协议预留 tokens', 'protocolReserveTokens', 0);
-        addNumber('单图预算 tokens', 'imageTokens', 1);
-        card.append(head, fields);
-        list.append(card);
-      });
-      group.body.append(list);
-      root.append(group.node);
     }
 
     renderGoalCheckpointGroup(root, config) {
       const checkpoint = config.goalCheckpoint;
       if (!checkpoint || typeof checkpoint !== 'object' || Array.isArray(checkpoint)) return;
-      const group = this.fieldset('长任务检查点', '控制历史裁剪时的目标摘要预算与冷重启恢复', 'wide');
+      const group = this.configGroup('goalCheckpoint', '长任务与检查点', '历史裁剪时的目标摘要预算与冷重启恢复', () => {
+        const parts = [];
+        if (Object.hasOwn(checkpoint, 'enabled')) parts.push(checkpoint.enabled ? '检查点启用' : '检查点关闭');
+        if (Object.hasOwn(checkpoint, 'maxEntries')) parts.push(`${checkpoint.maxEntries} 条任务`);
+        if (Object.hasOwn(checkpoint, 'ttlMs')) parts.push(`有效期 ${formatSecondsShort(checkpoint.ttlMs)}`);
+        if (checkpoint.persistence && Object.hasOwn(checkpoint.persistence, 'enabled')) parts.push(checkpoint.persistence.enabled ? '持久化启用' : '持久化关闭');
+        return parts;
+      });
       const fields = group.body;
       const addBoolean = (label, key) => {
         if (Object.hasOwn(checkpoint, key)) fields.append(this.booleanField(label, ['goalCheckpoint', key], checkpoint[key]));
@@ -676,7 +967,14 @@ import {
     renderVisionRelayGroup(root, config) {
       const relay = config.visionRelay;
       if (!relay || typeof relay !== 'object' || Array.isArray(relay)) return;
-      const group = this.fieldset('视觉中继', '为不支持图片的文本模型提供本机可控的视觉描述通道', 'wide');
+      const group = this.configGroup('visionRelay', '图片处理', '为不支持图片的文本模型提供本机可控的视觉描述通道', () => {
+        const parts = [];
+        if (relay.model) parts.push(`视觉模型 ${relay.model}`);
+        if (Object.hasOwn(relay, 'viaProxy')) parts.push(relay.viaProxy ? '走公共代理' : '直接连接');
+        if (Object.hasOwn(relay, 'concurrency')) parts.push(`并发 ${relay.concurrency}`);
+        if (Object.hasOwn(relay, 'cacheMaxBytes')) parts.push(`缓存 ${formatBytes(relay.cacheMaxBytes)}`);
+        return parts;
+      });
       const fields = group.body;
       const addText = (label, key, options = {}) => {
         if (Object.hasOwn(relay, key)) fields.append(this.textField(label, ['visionRelay', key], relay[key], '', options));
@@ -734,7 +1032,12 @@ import {
 
     numberField(label, path, value, min, max, step = '1') {
       const wrapper = el('label', 'field');
-      wrapper.append(el('span', 'field-label', label));
+      const labelRow = el('span', 'field-label');
+      labelRow.append(document.createTextNode(label));
+      const key = String(path[path.length - 1] ?? '');
+      const human = humanNumber(value, key);
+      if (human) labelRow.append(el('span', 'field-label-human', human));
+      wrapper.append(labelRow);
       const input = el('input');
       input.type = 'number';
       input.inputMode = 'numeric';
@@ -996,6 +1299,7 @@ import {
         this.validation = { errors: [], warnings: saved.warnings || [] };
         this.renderValidation();
         this.querySelector('#restart-notice').hidden = !saved.restartRequired;
+        this.renderOverview();
         this.querySelector('#restart-notice').scrollIntoView({ behavior: 'smooth', block: 'nearest' });
       } catch (error) {
         if (error.code === 'revision_conflict') {
@@ -1117,6 +1421,7 @@ import {
     }
 
     renderModelRouting() {
+      this.renderOverview();
       const panel = this.querySelector('#model-routing-panel');
       const state = this.modelRoutingState;
       if (!state) {
@@ -1124,51 +1429,155 @@ import {
         this.updateModelControls();
         return;
       }
+      this.populateModelChannelFilter(state);
       if (!state.models.length) {
-        panel.replaceChildren(el('p', 'empty-state', '还没有自定义模型。可通过“新增自定义模型”开始。'));
-      } else {
-        const cards = el('div', 'model-card-grid');
-        state.models.forEach((model) => {
-          const refs = this.modelBindings(model.slug);
-          const targets = refs.map((ref) => state.targets.find((item) => item.targetRef === ref)).filter(Boolean);
-          const envReady = refs.length > 0 && targets.length === refs.length && targets.every((target) => target.envSet);
-          const card = el('article', 'model-card');
-          const head = el('div', 'model-card-head');
-          const title = el('div');
-          title.append(el('h3', '', model.display_name || model.slug), el('p', 'model-slug', model.slug));
-          const status = el('span', `status-dot ${envReady ? 'ready' : 'warning'}`, envReady ? '凭据环境已就绪' : '凭据环境待配置');
-          head.append(title, status);
-          const facts = el('dl', 'model-facts');
-          const modalities = Array.isArray(model.input_modalities) && model.input_modalities.length
-            ? model.input_modalities.map((item) => item === 'image' ? '图片' : '文本').join('、')
-            : '文本';
-          const context = model.context_window ?? model.max_context_window ?? '未设置';
-          const routeText = refs.length
-            ? refs.map((ref) => this.modelTargetStatus(model.slug, ref)).join('；')
-            : '尚未绑定通道';
-          [
-            ['输入模态', modalities],
-            ['上下文', `${context}${context === '未设置' ? '' : ' tokens'}`],
-            ['绑定通道', `${refs.length} 个`],
-            ['通道类型', routeText],
-          ].forEach(([term, value]) => facts.append(el('dt', '', term), el('dd', '', value)));
-          const actions = el('div', 'model-card-actions');
-          for (const [action, label, style] of [
-            ['model-edit', '编辑', 'secondary'],
-            ['model-delete', '删除', 'danger-outline'],
-          ]) {
-            const button = el('button', `button ${style} compact`, label);
-            button.type = 'button';
-            button.dataset.action = action;
-            button.dataset.slug = model.slug;
-            actions.append(button);
-          }
-          card.append(head, facts, actions);
-          cards.append(card);
-        });
-        panel.replaceChildren(cards);
+        const empty = el('div', 'model-empty');
+        empty.append(
+          el('strong', '', '还没有自定义模型'),
+          el('p', '', '添加一个模型，把第三方或官方上游接到 Codex。'),
+        );
+        const add = el('button', 'button primary', '添加模型');
+        add.type = 'button';
+        add.dataset.action = 'model-add';
+        empty.append(add);
+        panel.replaceChildren(empty);
+        this.updateModelControls();
+        this.updateModelCount(0, 0);
+        return;
       }
+      const { visible, total } = this.visibleModels(state);
+      if (!visible.length) {
+        const none = el('div', 'model-empty');
+        none.append(
+          el('strong', '', '没有匹配的模型'),
+          el('p', '', '尝试调整搜索关键词或筛选条件。'),
+        );
+        const clear = el('button', 'button secondary', '清除筛选');
+        clear.type = 'button';
+        clear.dataset.action = 'model-clear-filters';
+        none.append(clear);
+        panel.replaceChildren(none);
+        this.updateModelControls();
+        this.updateModelCount(0, total);
+        return;
+      }
+      const list = el('div', 'model-list');
+      visible.forEach((model) => list.append(this.renderModelRow(state, model)));
+      panel.replaceChildren(list);
       this.updateModelControls();
+      this.updateModelCount(visible.length, total);
+    }
+
+    populateModelChannelFilter(state) {
+      const select = this.querySelector('#model-filter-channel');
+      if (!select) return;
+      const current = this.modelFilters.channel;
+      select.replaceChildren(el('option', '', '全部通道'));
+      select.firstChild.value = 'all';
+      state.targets.forEach((target) => {
+        const option = el('option', '', target.name || target.targetRef || '未命名通道');
+        option.value = target.targetRef;
+        select.append(option);
+      });
+      select.value = [...select.options].some((option) => option.value === current) ? current : 'all';
+      this.modelFilters.channel = select.value;
+    }
+
+    updateModelCount(shown, total) {
+      const node = this.querySelector('#model-count');
+      if (!node) return;
+      if (!total) node.textContent = '';
+      else if (shown === total) node.textContent = `共 ${total} 个模型`;
+      else node.textContent = `显示 ${shown} / ${total} 个`;
+    }
+
+    modelAttentionInfo(state, model) {
+      const refs = this.modelBindings(model.slug);
+      const bound = refs.map((ref) => state.targets.find((item) => item.targetRef === ref)).filter(Boolean);
+      const ready = refs.length > 0 && bound.length === refs.length && bound.every((target) => target.envSet);
+      return { refs, bound, ready };
+    }
+
+    visibleModels(state) {
+      const { query, status, channel, capability, sort } = this.modelFilters;
+      const needle = query.trim().toLowerCase();
+      const decorated = state.models.map((model) => ({ model, info: this.modelAttentionInfo(state, model) }));
+      const filtered = decorated.filter(({ model, info }) => {
+        if (needle) {
+          const haystack = `${model.slug} ${model.display_name || ''}`.toLowerCase();
+          if (!haystack.includes(needle)) return false;
+        }
+        if (status === 'ready' && !info.ready) return false;
+        if (status === 'attention' && info.ready) return false;
+        if (channel !== 'all' && !info.refs.includes(channel)) return false;
+        if (capability !== 'all') {
+          const modalities = Array.isArray(model.input_modalities) && model.input_modalities.length ? model.input_modalities : ['text'];
+          if (!modalities.includes(capability)) return false;
+        }
+        return true;
+      });
+      const nameOf = ({ model }) => (model.display_name || model.slug || '').toLowerCase();
+      const contextOf = ({ model }) => Number(model.context_window ?? model.max_context_window ?? 0);
+      const sorted = [...filtered].sort((a, b) => {
+        if (sort === 'name-desc') return nameOf(b).localeCompare(nameOf(a));
+        if (sort === 'status-first') return Number(a.info.ready) - Number(b.info.ready) || nameOf(a).localeCompare(nameOf(b));
+        if (sort === 'context-desc') return contextOf(b) - contextOf(a) || nameOf(a).localeCompare(nameOf(b));
+        return nameOf(a).localeCompare(nameOf(b));
+      });
+      return { visible: sorted.map(({ model }) => model), total: state.models.length };
+    }
+
+    renderModelRow(state, model) {
+      const info = this.modelAttentionInfo(state, model);
+      const modalities = Array.isArray(model.input_modalities) && model.input_modalities.length
+        ? model.input_modalities.map((item) => (item === 'image' ? '图片' : '文本'))
+        : ['文本'];
+      const row = el('article', `model-row${info.ready ? '' : ' needs-attention'}`);
+      row.dataset.slug = model.slug;
+
+      const main = el('button', 'model-row-main');
+      main.type = 'button';
+      main.dataset.slug = model.slug;
+      main.setAttribute('aria-label', `编辑模型 ${model.display_name || model.slug}`);
+      const identity = el('span', 'model-row-identity');
+      identity.append(el('strong', '', model.display_name || model.slug), el('span', 'model-row-slug', model.slug));
+      const channelNames = info.bound.length
+        ? info.bound.map((target) => target.name || '未命名通道').join('、')
+        : '未绑定通道';
+      const channel = el('span', 'model-row-channel', channelNames);
+      channel.title = channelNames;
+      const caps = el('span', 'model-row-caps');
+      modalities.forEach((name) => caps.append(el('span', 'cap-pill', name)));
+      main.append(identity, channel, caps);
+
+      const status = el('span', `status-dot ${info.ready ? 'ready' : 'warning'}`, info.ready ? '可用' : '待配置');
+
+      const actions = el('span', 'model-row-actions');
+      const edit = el('button', 'button secondary compact', '编辑');
+      edit.type = 'button';
+      edit.dataset.action = 'model-edit';
+      edit.dataset.slug = model.slug;
+      const remove = el('button', 'button danger-outline compact', '删除');
+      remove.type = 'button';
+      remove.dataset.action = 'model-delete';
+      remove.dataset.slug = model.slug;
+      remove.setAttribute('aria-label', `删除模型 ${model.display_name || model.slug}`);
+      actions.append(edit, remove);
+
+      row.append(main, status, actions);
+      return row;
+    }
+
+    syncModelFilterControls() {
+      const search = this.querySelector('#model-search');
+      if (search) search.value = this.modelFilters.query;
+      const statusSelect = this.querySelector('#model-filter-status');
+      if (statusSelect) statusSelect.value = this.modelFilters.status;
+      const capabilitySelect = this.querySelector('#model-filter-capability');
+      if (capabilitySelect) capabilitySelect.value = this.modelFilters.capability;
+      const sortSelect = this.querySelector('#model-sort');
+      if (sortSelect) sortSelect.value = this.modelFilters.sort;
+      this.populateModelChannelFilter(this.modelRoutingState);
     }
 
     openModelDialog(slug = null) {
@@ -1183,12 +1592,39 @@ import {
           <header class="model-dialog-header">
             <p class="kicker">${model ? '编辑模型' : '新增模型'}</p>
             <h2 id="model-dialog-title">${model ? '编辑自定义模型' : '新增自定义模型'}</h2>
-            <p class="dialog-copy">模型信息与通道设置分开填写；凭据内容始终不会出现在此页面。</p>
+            <p class="dialog-copy">分三步完成：先选通道，再填模型信息，最后预检并保存。凭据内容始终不会出现在此页面。</p>
           </header>
           <div class="model-dialog-body">
             <div id="model-dialog-error" class="form-error" role="alert" hidden></div>
+            <section class="dialog-section route-section" aria-labelledby="model-route-title">
+              <div class="dialog-section-heading"><div><p class="section-step">第一步 · 通道</p><h3 id="model-route-title">选择或创建服务通道</h3></div><p>${model ? '当前模型已关联已有通道；如需修改连接设置，请展开下方设置。' : '新模型默认创建专属通道；复用不会改变既有匹配规则。'}</p></div>
+              <div class="route-mode-grid">
+                <label class="field"><span class="field-label">通道方式</span><select id="model-routing-mode"><option value="dedicated">新建专属通道</option><option value="reuse">复用已匹配通道</option></select></label>
+                <label class="field"><span class="field-label">选择通道</span><select id="model-target-ref" data-model-target></select><small id="model-target-help" class="field-help">编辑已有模型时，可在它已绑定的多个通道间选择。</small></label>
+              </div>
+              <div id="model-target-summary" class="route-summary" aria-live="polite" hidden>
+                <div><span class="field-label">当前关联通道</span><strong id="model-target-summary-name">—</strong></div>
+                <dl><div><dt>连接</dt><dd id="model-target-summary-host">—</dd></div><div><dt>接口</dt><dd id="model-target-summary-wire">—</dd></div></dl>
+              </div>
+              <details id="model-target-editor" class="route-editor-details">
+                <summary><span>连接设置</span><small>编辑关联通道会影响所有使用它的模型</small></summary>
+                <div id="model-target-fields" class="field-grid dialog-fields target-dialog-fields">
+                  <label class="field"><span class="field-label">安全名称</span><input id="route-name" autocomplete="off"></label>
+                  <label class="field"><span class="field-label">上游主机</span><input id="route-host" autocomplete="off"></label>
+                  <label class="field"><span class="field-label">路径前缀</span><input id="route-prefix" placeholder="/v1" autocomplete="off"></label>
+                  <label class="field"><span class="field-label">凭据环境变量名称</span><input id="route-env" autocomplete="off"><small class="field-help">只填写本机变量名称，不填写其内容。</small></label>
+                  <label class="field"><span class="field-label">网络方式</span><select id="route-proxy"><option value="false">直接连接</option><option value="true">走公共代理</option></select></label>
+                </div>
+                <details class="route-advanced-details"><summary>高级选项<small>上游协议、认证方式等专家字段</small></summary><div class="field-grid route-advanced-fields">
+                  <label class="field"><span class="field-label">协议</span><select id="route-protocol"><option value="https">HTTPS</option><option value="http">HTTP（仅可信本机）</option></select></label>
+                  <label class="field"><span class="field-label">上游接口</span><select id="route-wire"><option value="responses">Responses</option><option value="chat">Chat Completions</option></select></label>
+                  <label class="field"><span class="field-label">认证方式</span><input id="route-auth-type" placeholder="bearer" autocomplete="off"></label>
+                  <label class="field"><span class="field-label">认证头名称</span><input id="route-auth-header" placeholder="标准认证头名称" autocomplete="off"><small class="field-help">只允许名称，不填写认证内容。</small></label>
+                </div></details>
+              </details>
+            </section>
             <section class="dialog-section" aria-labelledby="model-details-title">
-              <div class="dialog-section-heading"><div><p class="section-step">第一步</p><h3 id="model-details-title">模型信息</h3></div><p>这些信息决定 Codex 如何识别并使用模型。</p></div>
+              <div class="dialog-section-heading"><div><p class="section-step">第二步 · 模型</p><h3 id="model-details-title">填写模型信息与能力</h3></div><p>这些信息决定 Codex 如何识别并使用模型。</p></div>
               <div class="field-grid dialog-fields model-details-fields">
                 <label class="field"><span class="field-label">模型标识（slug）</span><input id="model-slug" required autocomplete="off" aria-describedby="model-dialog-error"><small class="field-help">用于 Codex 调用，建议使用稳定、易识别的名称。</small></label>
                 <label class="field"><span class="field-label">显示名称</span><input id="model-display-name" required autocomplete="off" aria-describedby="model-dialog-error"><small class="field-help">必填，显示给使用者的友好名称。</small></label>
@@ -1196,32 +1632,9 @@ import {
                 <fieldset class="field modality-field"><legend class="field-label">输入能力</legend><label><input id="model-text" type="checkbox" checked> 文本</label><label><input id="model-image" type="checkbox"> 图片</label><small class="field-help">只勾选模型实际支持的输入。</small></fieldset>
               </div>
             </section>
-            <section class="dialog-section route-section" aria-labelledby="model-route-title">
-              <div class="dialog-section-heading"><div><p class="section-step">第二步</p><h3 id="model-route-title">通道</h3></div><p>${model ? '当前模型已关联已有通道；如需修改连接设置，请展开下方设置。' : '新模型默认创建专属通道；复用不会改变既有匹配规则。'}</p></div>
-              <div class="route-mode-grid">
-                <label class="field"><span class="field-label">通道方式</span><select id="model-routing-mode"><option value="dedicated">新建专属通道</option><option value="reuse">复用已匹配通道</option></select></label>
-                <label class="field"><span class="field-label">选择通道</span><select id="model-target-ref" data-model-target></select><small id="model-target-help" class="field-help">编辑已有模型时，可在它已绑定的多个通道间选择。</small></label>
-              </div>
-              <div id="model-target-summary" class="route-summary" aria-live="polite" hidden>
-                <div><span class="field-label">当前关联通道</span><strong id="model-target-summary-name">—</strong></div>
-                <dl><div><dt>连接</dt><dd id="model-target-summary-host">—</dd></div><div><dt>接口</dt><dd id="model-target-summary-wire">—</dd></div><div><dt>匹配规则</dt><dd id="model-target-summary-match">—</dd></div></dl>
-              </div>
-              <details id="model-target-editor" class="route-editor-details">
-                <summary><span>连接设置</span><small>编辑关联通道会影响所有使用它的模型</small></summary>
-                <div id="model-target-fields" class="field-grid dialog-fields target-dialog-fields">
-                  <label class="field"><span class="field-label">安全名称</span><input id="route-name" autocomplete="off"></label>
-                  <label class="field"><span class="field-label">上游主机</span><input id="route-host" autocomplete="off"></label>
-                  <label class="field"><span class="field-label">协议</span><select id="route-protocol"><option value="https">HTTPS</option><option value="http">HTTP（仅可信本机）</option></select></label>
-                  <label class="field"><span class="field-label">路径前缀</span><input id="route-prefix" placeholder="/v1" autocomplete="off"></label>
-                  <label class="field"><span class="field-label">凭据环境变量名称</span><input id="route-env" autocomplete="off"><small class="field-help">只填写本机变量名称，不填写其内容。</small></label>
-                  <label class="field"><span class="field-label">上游接口</span><select id="route-wire"><option value="responses">Responses</option><option value="chat">Chat Completions</option></select></label>
-                  <label class="field"><span class="field-label">网络方式</span><select id="route-proxy"><option value="false">直接连接</option><option value="true">走公共代理</option></select></label>
-                </div>
-                <details class="route-advanced-details"><summary>高级选项</summary><div class="field-grid route-advanced-fields">
-                  <label class="field"><span class="field-label">认证方式</span><input id="route-auth-type" placeholder="bearer" autocomplete="off"></label>
-                  <label class="field"><span class="field-label">认证头名称</span><input id="route-auth-header" placeholder="标准认证头名称" autocomplete="off"><small class="field-help">只允许名称，不填写认证内容。</small></label>
-                </div></details>
-              </details>
+            <section class="dialog-section dialog-section-review" aria-labelledby="model-review-title">
+              <div class="dialog-section-heading"><div><p class="section-step">第三步 · 保存</p><h3 id="model-review-title">预检影响并保存</h3></div><p>加入草稿后，系统会自动预检并展示本次更改影响，确认无误后再保存。保存后需手动重启路由与 Codex。</p></div>
+              <p class="review-note">点击下方“${model ? '更新草稿' : '加入草稿'}”完成本步，随后在模型管理区查看预检结果与影响摘要，再统一保存。</p>
             </section>
           </div>
           <div class="dialog-actions model-dialog-actions"><button class="button secondary" type="button" data-action="model-dialog-cancel">取消</button><button class="button primary" type="submit">${model ? '更新草稿' : '加入草稿'}</button></div>
@@ -1313,7 +1726,6 @@ import {
         setSummary('#model-target-summary-name', target.name || '未命名通道');
         setSummary('#model-target-summary-host', `${protocol}://${host}${prefix}`, `${protocol}://${host}${prefix}`);
         setSummary('#model-target-summary-wire', target.wireApi === 'chat' ? 'Chat Completions' : 'Responses');
-        setSummary('#model-target-summary-match', target.match || '未配置匹配规则');
       }
     }
 
@@ -1510,6 +1922,8 @@ import {
         const resynced = await this.resyncBaselines();
         if (!resynced) return;
         this.invalidateModelValidation();
+        this.querySelector('#restart-notice').hidden = false;
+        this.renderOverview();
         this.showMessage('自定义模型已保存。请手动重启路由与 Codex 后再使用新配置。');
       } catch (error) {
         if (error.status === 409 || error.status === 422) this.invalidateModelValidation();
@@ -1590,6 +2004,16 @@ import {
       const root = this.querySelector('#checkpoint-panel');
       const data = this.checkpoints;
       if (!data) return;
+      // 检查点为空时只保留一行内联摘要，不占据大型独立区域。
+      if (!data.count) {
+        const inline = el('div', 'checkpoint-inline');
+        inline.append(
+          el('span', 'status-dot ready', '无检查点'),
+          el('p', '', `当前没有保存的任务检查点 · 持久化：${persistenceLabel(data.mode)}。进行中的长任务会在裁剪时自动生成目标摘要。`),
+        );
+        root.replaceChildren(inline);
+        return;
+      }
       const summary = el('div', 'checkpoint-summary');
       const count = el('div', 'checkpoint-count');
       count.append(el('strong', '', String(data.count || 0)), el('span', '', '条任务摘要'));

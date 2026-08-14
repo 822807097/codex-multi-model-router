@@ -23,3 +23,6 @@ Thumbs.db
 
 # 浏览器验收临时目录
 .playwright-cli/
+
+# 本地验证产物（Playwright 截图/脚本/日志）
+output/
