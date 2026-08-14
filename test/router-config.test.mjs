@@ -832,6 +832,45 @@ for (const [code, issuePath, override] of [
   });
 }
 
+test('target match 拒绝超长、反向引用、嵌套量词和重复前缀歧义且保留常用生产规则', () => {
+  const unsafePatterns = [
+    'a'.repeat(1_025),
+    '^(a+)+' + '$',
+    '^(a|aa)+$',
+    '^((a|aa))+$',
+    '^(a)\\1$',
+    '^(?<letter>a)\\k<letter>$',
+  ];
+  for (const match of unsafePatterns) {
+    const result = inspectRouterConfig(validConfig({
+      targets: [{ ...validConfig().targets[0], match }],
+    }), context);
+    assert.deepEqual(
+      result.errors.filter((issue) => issue.path === '/targets/0/match').map((issue) => issue.code),
+      ['target_match_unsafe'],
+    );
+  }
+
+  const safePatterns = [
+    '^(gpt-|codex-|o\\d|computer-use)',
+    '^deepseek-v4-flash$',
+    '^deepseek-(?!v4-flash$)',
+    '^qwen',
+    '^grok',
+    '^glm',
+    '^qwen3\\.8-max\\+\\(cn\\)\\[1\\]$',
+  ];
+  for (const match of safePatterns) {
+    assert.equal(
+      inspectRouterConfig(validConfig({
+        targets: [{ ...validConfig().targets[0], match }],
+      }), context).errors.some((issue) => issue.path === '/targets/0/match'),
+      false,
+      match,
+    );
+  }
+});
+
 test('target 非普通对象只返回容器级 name 错误且不级联', () => {
   for (const target of [null, [], 'bad', 42]) {
     const result = inspectRouterConfig(validConfig({ targets: [target] }), context);
@@ -1031,6 +1070,7 @@ test('target warning 顺序对同一输入稳定且先本地后跨 target', () =
   const first = {
     ...validConfig().targets[0],
     envKey: 'MISSING_KEY',
+    host: '127.0.0.1',
     protocol: 'http',
     viaProxy: true,
     forwardHeaders: ['connection'],
@@ -1158,6 +1198,63 @@ test('useOpenAiAuth 的 null 与 undefined 保持未启用语义', () => {
     config.targets[0].useOpenAiAuth = value;
     assert.deepEqual(inspectRouterConfig(config, context).errors, []);
   }
+});
+
+test('远程明文 HTTP 拒绝环境或官方凭据且仅允许规范回环主机', () => {
+  const base = validConfig().targets[0];
+  const inspectTarget = (target) => inspectRouterConfig(validConfig({ targets: [target] }), context);
+
+  for (const target of [
+    { ...base, protocol: 'http', host: 'api.example.test' },
+    {
+      ...base,
+      protocol: 'http',
+      host: 'api.example.test',
+      envKey: undefined,
+      useOpenAiAuth: true,
+    },
+  ]) {
+    assert.deepEqual(
+      inspectTarget(target).errors.filter((issue) => issue.code === 'target_insecure_auth_transport'),
+      [{
+        severity: 'error',
+        code: 'target_insecure_auth_transport',
+        path: '/targets/0/protocol',
+        message: '带凭据的 HTTP target 仅允许规范回环主机',
+      }],
+    );
+  }
+
+  for (const host of ['127.0.0.1', 'localhost', 'LOCALHOST', '::1']) {
+    assert.equal(
+      inspectTarget({ ...base, protocol: 'http', host }).errors.some(
+        (issue) => issue.code === 'target_insecure_auth_transport',
+      ),
+      false,
+      host,
+    );
+  }
+  assert.equal(inspectTarget({
+    ...base,
+    protocol: 'http',
+    host: 'localhost',
+    envKey: undefined,
+    useOpenAiAuth: true,
+  }).errors.some((issue) => issue.code === 'target_insecure_auth_transport'), false);
+
+  for (const host of [
+    'user@127.0.0.1', 'localhost.', '127.0.0.1.', '[::1]', '127.1', '0x7f000001', '2130706433',
+  ]) {
+    assert.equal(
+      inspectTarget({ ...base, protocol: 'http', host }).errors.some(
+        (issue) => issue.code === 'target_insecure_auth_transport',
+      ),
+      true,
+      host,
+    );
+  }
+
+  assert.equal(inspectTarget({ ...base, protocol: 'https', host: 'api.example.test' }).errors.length, 0);
 });
 
 test('非法 name 类型不会让 provider 解析抛出异常', () => {
@@ -1378,6 +1475,41 @@ test('请求限制执行正整数边界、null 默认与有效值上的预算冲
     'request_budget_conflict',
     '/maxBufferedRequestBytes',
   );
+});
+
+test('请求限制对超过兼容阈值的内存预算给出稳定 warning 而不拒绝配置', () => {
+  const highRequest = inspectRouterConfig(validConfig({
+    maxRequestBytes: 256 * 1024 * 1024 + 1,
+    maxBufferedRequestBytes: 512 * 1024 * 1024,
+  }), context);
+  assert.deepEqual(highRequest.errors, []);
+  assert.deepEqual(highRequest.warnings, [{
+    severity: 'warning',
+    code: 'request_limit_high_risk',
+    path: '/maxRequestBytes',
+    message: '单请求上限超过 256 MiB，JSON 解析可能造成高内存占用',
+  }]);
+
+  const highBuffered = inspectRouterConfig(validConfig({
+    maxRequestBytes: 256 * 1024 * 1024,
+    maxBufferedRequestBytes: 512 * 1024 * 1024 + 1,
+  }), context);
+  assert.deepEqual(highBuffered.errors, []);
+  assert.deepEqual(highBuffered.warnings, [{
+    severity: 'warning',
+    code: 'request_limit_high_risk',
+    path: '/maxBufferedRequestBytes',
+    message: '总缓冲预算超过 512 MiB，可能造成进程内存压力',
+  }]);
+
+  assert.deepEqual(inspectRouterConfig(validConfig({
+    maxRequestBytes: 256 * 1024 * 1024,
+    maxBufferedRequestBytes: 512 * 1024 * 1024,
+  }), context).warnings, []);
+  assert.deepEqual(inspectRouterConfig(validConfig({
+    maxRequestBytes: null,
+    maxBufferedRequestBytes: null,
+  }), context).warnings, []);
 });
 
 test('providerPool 校验已知字段并忽略测试专用和其他未知字段', () => {

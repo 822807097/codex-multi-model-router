@@ -7,6 +7,7 @@ import os from 'node:os';
 import path from 'node:path';
 
 import {
+  commitRevisionedJson,
   copyAndVerify,
   encodeJson,
   prepareJsonWrite,
@@ -525,6 +526,179 @@ test('write、open、fsync 或 rename 失败只清理本次临时文件且保留
         assert.deepEqual(await fs.readFile(targetPath), original);
         const leftovers = (await fs.readdir(tempDir)).filter((name) => name.includes('.tmp-'));
         assert.deepEqual(leftovers, []);
+      });
+    });
+  }
+});
+
+test('条件提交按 expected revision 保存并留下可验证的原始字节备份', async () => {
+  await withTempDir('router-json-commit-', async (tempDir) => {
+    const targetPath = path.join(tempDir, 'config.json');
+    const original = Buffer.from('{"old":true,"spacing":"kept"}\n');
+    await fs.writeFile(targetPath, original);
+    const expectedRevision = sha256Bytes(original);
+    let fsyncCount = 0;
+    const fileSystem = {
+      ...fsSync,
+      fsyncSync(...args) {
+        fsyncCount += 1;
+        return fsSync.fsyncSync(...args);
+      },
+    };
+
+    const committed = commitRevisionedJson(
+      targetPath,
+      { next: true },
+      expectedRevision,
+      { fileSystem },
+    );
+
+    assert.equal(committed.previousRevision, expectedRevision);
+    assert.equal(committed.revision, sha256Bytes(encodeJson({ next: true })));
+    assert.equal(committed.backupPath, `${targetPath}.bak`);
+    assert.deepEqual(await fs.readFile(targetPath), encodeJson({ next: true }));
+    assert.deepEqual(await fs.readFile(committed.backupPath), original);
+    assert.equal(readRevisionedJson(committed.backupPath).revision, expectedRevision);
+    assert.ok(fsyncCount >= 2, '新文件和备份都必须 fsync');
+
+    const firstCommittedBytes = encodeJson({ next: true });
+    const second = commitRevisionedJson(
+      targetPath,
+      { final: true },
+      committed.revision,
+      { fileSystem },
+    );
+    assert.deepEqual(await fs.readFile(targetPath), encodeJson({ final: true }));
+    assert.deepEqual(await fs.readFile(second.backupPath), firstCommittedBytes);
+  });
+});
+
+test('条件提交在 revision 已变化时返回稳定冲突并完全不写文件', async () => {
+  await withTempDir('router-json-commit-conflict-', async (tempDir) => {
+    const targetPath = path.join(tempDir, 'config.json');
+    const current = Buffer.from('{"current":true}\n');
+    await fs.writeFile(targetPath, current);
+
+    assert.throws(
+      () => commitRevisionedJson(targetPath, { next: true }, '0'.repeat(64)),
+      (error) => error?.code === 'revision_conflict',
+    );
+    assert.deepEqual(await fs.readFile(targetPath), current);
+    assert.equal(fsSync.existsSync(`${targetPath}.bak`), false);
+    assert.deepEqual(
+      (await fs.readdir(tempDir)).filter((name) => name.includes('.tmp-')),
+      [],
+    );
+  });
+});
+
+test('条件提交在备份后检测外部替换、符号链接和同 inode revision 变化', async (t) => {
+  for (const change of ['replacement', 'replacement-same-revision', 'symlink', 'revision']) {
+    await t.test(change, async () => {
+      await withTempDir(`router-json-commit-race-${change}-`, async (tempDir) => {
+        const targetPath = path.join(tempDir, 'config.json');
+        const original = Buffer.from('{"original":true}\n');
+        const concurrent = Buffer.from(`{"concurrent":"${change}"}\n`);
+        await fs.writeFile(targetPath, original);
+        let changed = false;
+        const fileSystem = {
+          ...fsSync,
+          copyFileSync(source, destination, flags) {
+            fsSync.copyFileSync(source, destination, flags);
+            if (source !== targetPath || changed) return;
+            changed = true;
+            if (change === 'replacement' || change === 'replacement-same-revision') {
+              fsSync.renameSync(targetPath, path.join(tempDir, 'displaced.json'));
+              fsSync.writeFileSync(
+                targetPath,
+                change === 'replacement-same-revision' ? original : concurrent,
+              );
+            } else if (change === 'revision') {
+              fsSync.writeFileSync(targetPath, concurrent);
+            }
+          },
+          lstatSync(filePath) {
+            const stat = fsSync.lstatSync(filePath);
+            if (change === 'symlink' && changed && filePath === targetPath) {
+              return {
+                ...stat,
+                isFile: () => true,
+                isSymbolicLink: () => true,
+              };
+            }
+            return stat;
+          },
+        };
+
+        assert.throws(
+          () => commitRevisionedJson(
+            targetPath,
+            { next: true },
+            sha256Bytes(original),
+            { fileSystem },
+          ),
+          change === 'symlink'
+            ? /符号链接/
+            : (error) => error?.code === 'revision_conflict',
+        );
+        assert.deepEqual(
+          await fs.readFile(targetPath),
+          ['symlink', 'replacement-same-revision'].includes(change) ? original : concurrent,
+        );
+        if (change === 'replacement-same-revision') {
+          assert.deepEqual(await fs.readFile(`${targetPath}.bak`), original);
+        } else {
+          assert.equal(fsSync.existsSync(`${targetPath}.bak`), false);
+        }
+        assert.deepEqual(
+          (await fs.readdir(tempDir)).filter((name) => name.includes('.tmp-')),
+          [],
+        );
+      });
+    });
+  }
+});
+
+test('条件提交的备份或目标 rename 失败时保留当前文件并清理自有临时文件', async (t) => {
+  for (const failure of ['backup', 'rename']) {
+    await t.test(failure, async () => {
+      await withTempDir(`router-json-commit-failure-${failure}-`, async (tempDir) => {
+        const targetPath = path.join(tempDir, 'config.json');
+        const original = Buffer.from('{"original":true}\n');
+        await fs.writeFile(targetPath, original);
+        const fileSystem = {
+          ...fsSync,
+          copyFileSync(...args) {
+            fsSync.copyFileSync(...args);
+            if (failure === 'backup') throw new Error('backup failed');
+          },
+          renameSync(source, destination) {
+            if (failure === 'rename' && destination === targetPath) {
+              throw new Error('rename failed');
+            }
+            return fsSync.renameSync(source, destination);
+          },
+        };
+
+        assert.throws(
+          () => commitRevisionedJson(
+            targetPath,
+            { next: true },
+            sha256Bytes(original),
+            { fileSystem },
+          ),
+          new RegExp(`${failure} failed`),
+        );
+        assert.deepEqual(await fs.readFile(targetPath), original);
+        assert.deepEqual(
+          (await fs.readdir(tempDir)).filter((name) => name.includes('.tmp-')),
+          [],
+        );
+        if (failure === 'rename') {
+          assert.deepEqual(await fs.readFile(`${targetPath}.bak`), original);
+        } else {
+          assert.equal(fsSync.existsSync(`${targetPath}.bak`), false);
+        }
       });
     });
   }

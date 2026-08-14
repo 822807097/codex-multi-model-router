@@ -1460,6 +1460,20 @@ test('非法 target 正则沿用配置检查错误且不级联无路由错误', 
   assert.equal(result.errors.some((item) => item.code === 'model_route_missing'), false);
 });
 
+test('危险 target 正则沿用共享安全检查且不会在模型覆盖检查中执行', () => {
+  for (const match of ['a'.repeat(1_025), '^(a+)+$', '^(a|aa)+$', '^((a|aa))+$', '^(a)\\1$']) {
+    const source = baseState();
+    source.config.targets = [target('unsafe', match)];
+    const result = inspectModelRoutingPlan({ ...source, operations: [] });
+
+    assert.deepEqual(
+      result.errors.filter((item) => item.path === '/targets/0/match').map((item) => item.code),
+      ['target_match_unsafe'],
+    );
+    assert.equal(result.errors.some((item) => item.code === 'model_route_missing'), false);
+  }
+});
+
 test('图像模型走 vision:false 时要求合法视觉中继，vision:true 可直接通过', () => {
   const source = baseState();
   source.catalog.models = [model('vision-model', { input_modalities: ['text', 'image'] })];

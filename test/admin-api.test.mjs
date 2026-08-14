@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import fsSync from 'node:fs';
 import fs from 'node:fs/promises';
 import http from 'node:http';
 import os from 'node:os';
@@ -8,7 +9,7 @@ import path from 'node:path';
 import { createAdminHandler } from '../lib/admin-api.mjs';
 import { GoalCheckpointStore } from '../lib/goal-checkpoint.mjs';
 
-function request(port, method, requestPath, body) {
+function request(port, method, requestPath, body, extraHeaders = {}) {
   return new Promise((resolve, reject) => {
     const payload = body === undefined ? null : JSON.stringify(body);
     const req = http.request({
@@ -16,10 +17,13 @@ function request(port, method, requestPath, body) {
       port,
       method,
       path: requestPath,
-      headers: payload ? {
-        'content-type': 'application/json',
-        'content-length': Buffer.byteLength(payload),
-      } : {},
+      headers: {
+        ...extraHeaders,
+        ...(payload ? {
+          'content-type': 'application/json',
+          'content-length': Buffer.byteLength(payload),
+        } : {}),
+      },
     }, (res) => {
       const chunks = [];
       res.on('data', (chunk) => chunks.push(chunk));
@@ -34,6 +38,65 @@ function request(port, method, requestPath, body) {
     req.end();
   });
 }
+
+test('管理 API 拒绝伪造 Host 与跨站请求并为 JSON 添加安全头', async () => {
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'router-admin-request-policy-'));
+  const admin = await startAdmin(tempDir);
+  try {
+    const normal = await request(admin.port, 'GET', '/_admin/api/status');
+    assert.equal(normal.status, 200);
+    assert.match(normal.headers['content-security-policy'], /frame-ancestors 'none'/);
+    assert.equal(normal.headers['x-content-type-options'], 'nosniff');
+    assert.equal(normal.headers['referrer-policy'], 'no-referrer');
+    assert.equal(normal.headers['x-frame-options'], 'DENY');
+
+    const sameOrigin = await request(admin.port, 'GET', '/_admin/api/status', undefined, {
+      origin: `http://127.0.0.1:${admin.port}`,
+      'sec-fetch-site': 'same-origin',
+    });
+    assert.equal(sameOrigin.status, 200);
+
+    const forgedHost = await request(admin.port, 'GET', '/_admin/api/status', undefined, {
+      host: 'evil-secret.example:15730',
+    });
+    assert.equal(forgedHost.status, 403);
+    assert.equal(JSON.parse(forgedHost.text).error.code, 'admin_host_forbidden');
+    assert.doesNotMatch(forgedHost.text, /evil-secret|127\.0\.0\.1|stack|admin-api\.mjs/i);
+
+    const crossSiteGet = await request(admin.port, 'GET', '/_admin/api/status', undefined, {
+      'sec-fetch-site': 'cross-site',
+    });
+    assert.equal(crossSiteGet.status, 403);
+    assert.equal(JSON.parse(crossSiteGet.text).error.code, 'admin_cross_site_forbidden');
+
+    for (const method of ['PUT', 'DELETE']) {
+      const blocked = await request(admin.port, method, '/_admin/api/config', {}, {
+        origin: 'http://evil-secret.example',
+      });
+      assert.equal(blocked.status, 403);
+      assert.equal(JSON.parse(blocked.text).error.code, 'admin_cross_site_forbidden');
+      assert.doesNotMatch(blocked.text, /evil-secret|stack|admin-api\.mjs/i);
+    }
+
+    const missingWebRoot = path.join(tempDir, 'private-missing-web-root');
+    const missingAssetDir = path.join(tempDir, 'missing-asset-instance');
+    await fs.mkdir(missingAssetDir);
+    const missingAsset = await startAdmin(missingAssetDir, {
+      webRoot: missingWebRoot,
+    });
+    try {
+      const failedAsset = await request(missingAsset.port, 'GET', '/admin');
+      assert.equal(failedAsset.status, 400);
+      assert.equal(JSON.parse(failedAsset.text).error.code, 'admin_error');
+      assert.doesNotMatch(failedAsset.text, /private-missing-web-root|ENOENT|stack|admin-api\.mjs/i);
+    } finally {
+      await new Promise((resolve) => missingAsset.server.close(resolve));
+    }
+  } finally {
+    await new Promise((resolve) => admin.server.close(resolve));
+    await fs.rm(tempDir, { recursive: true, force: true });
+  }
+});
 
 function rawRequest(port, method, requestPath, bytes) {
   return new Promise((resolve, reject) => {
@@ -1372,6 +1435,92 @@ test('配置预检和保存保留未知字段及敏感值并拒绝旧 revision',
   }
 });
 
+test('配置保存提交前被外部改写时返回 revision_conflict 且不覆盖外部版本', async () => {
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'router-admin-save-race-'));
+  let configPath;
+  let changed = false;
+  const concurrent = Buffer.from(`${JSON.stringify({
+    ...validConfig(17730),
+    customExtension: { external: true },
+  }, null, 2)}\n`);
+  const configFileSystem = {
+    ...fsSync,
+    copyFileSync(source, destination, flags) {
+      fsSync.copyFileSync(source, destination, flags);
+      if (source === configPath && !changed) {
+        changed = true;
+        fsSync.writeFileSync(configPath, concurrent);
+      }
+    },
+  };
+  const admin = await startAdmin(tempDir, { configFileSystem });
+  configPath = admin.configPath;
+  try {
+    const loaded = JSON.parse((await request(admin.port, 'GET', '/_admin/api/config')).text);
+    loaded.config.port = 16730;
+
+    const response = await request(admin.port, 'PUT', '/_admin/api/config', loaded);
+
+    assert.equal(response.status, 409);
+    assert.deepEqual(JSON.parse(response.text), {
+      error: {
+        code: 'revision_conflict',
+        message: '文件已被其他页面或进程修改',
+      },
+    });
+    assert.deepEqual(await fs.readFile(admin.configPath), concurrent);
+    assert.equal(fsSync.existsSync(`${admin.configPath}.bak`), false);
+  } finally {
+    await new Promise((resolve) => admin.server.close(resolve));
+    await fs.rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test('配置备份失败返回安全 500 且保留原文件和恢复备份', async () => {
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'router-admin-save-failure-'));
+  const priorBackup = Buffer.from('{"priorBackup":true}\n');
+  let configPath;
+  const configFileSystem = {
+    ...fsSync,
+    copyFileSync(source, destination, flags) {
+      fsSync.copyFileSync(source, destination, flags);
+      if (source === configPath) {
+        const error = new Error(`private backup failure at ${destination}`);
+        error.code = 'PRIVATE_BACKUP_FAILURE';
+        throw error;
+      }
+    },
+  };
+  const admin = await startAdmin(tempDir, { configFileSystem });
+  configPath = admin.configPath;
+  await fs.writeFile(`${admin.configPath}.bak`, priorBackup);
+  const original = await fs.readFile(admin.configPath);
+  try {
+    const loaded = JSON.parse((await request(admin.port, 'GET', '/_admin/api/config')).text);
+    loaded.config.port = 16730;
+
+    const response = await request(admin.port, 'PUT', '/_admin/api/config', loaded);
+
+    assert.equal(response.status, 500);
+    assert.deepEqual(JSON.parse(response.text), {
+      error: {
+        code: 'config_write_failed',
+        message: '配置保存失败，原文件已保留',
+      },
+    });
+    assert.doesNotMatch(response.text, /private|config\.json|backup|PRIVATE_BACKUP_FAILURE/i);
+    assert.deepEqual(await fs.readFile(admin.configPath), original);
+    assert.deepEqual(await fs.readFile(`${admin.configPath}.bak`), priorBackup);
+    assert.deepEqual(
+      (await fs.readdir(tempDir)).filter((name) => name.includes('.tmp-')),
+      [],
+    );
+  } finally {
+    await new Promise((resolve) => admin.server.close(resolve));
+    await fs.rm(tempDir, { recursive: true, force: true });
+  }
+});
+
 test('携带正确确认值保存时真正删除敏感字段且不落盘占位对象', async () => {
   const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'router-admin-secret-delete-'));
   const admin = await startAdmin(tempDir);
@@ -1481,6 +1630,42 @@ test('敏感删除确认采用有界缓存并淘汰最旧 revision', async () =>
   }
 });
 
+test('同一 revision 的多个敏感删除确认互不覆盖且各自只能消费一次', async () => {
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'router-admin-secret-delete-tabs-'));
+  const admin = await startAdmin(tempDir);
+  const originalText = await fs.readFile(admin.configPath, 'utf8');
+  try {
+    const first = JSON.parse((await request(admin.port, 'GET', '/_admin/api/config')).text);
+    const second = JSON.parse((await request(admin.port, 'GET', '/_admin/api/config')).text);
+    assert.notEqual(first.secretDeleteConfirmation, second.secretDeleteConfirmation);
+    first.secretDeletes = ['/targets/0/headers/authorization'];
+    second.secretDeletes = ['/targets/0/headers/authorization'];
+
+    const wrong = await request(admin.port, 'PUT', '/_admin/api/config', {
+      ...first,
+      secretDeleteConfirmation: 'wrong-token',
+    });
+    assert.equal(wrong.status, 400);
+    assert.equal(JSON.parse(wrong.text).error.code, 'secret_delete_confirmation_invalid');
+
+    const firstSaved = await request(admin.port, 'PUT', '/_admin/api/config', first);
+    assert.equal(firstSaved.status, 200);
+
+    // 恢复完全相同的测试文件 revision，只为证明第二个标签的确认值没有被覆盖。
+    await fs.writeFile(admin.configPath, originalText);
+    const secondSaved = await request(admin.port, 'PUT', '/_admin/api/config', second);
+    assert.equal(secondSaved.status, 200);
+
+    await fs.writeFile(admin.configPath, originalText);
+    const repeated = await request(admin.port, 'PUT', '/_admin/api/config', first);
+    assert.equal(repeated.status, 400);
+    assert.equal(JSON.parse(repeated.text).error.code, 'secret_delete_confirmation_invalid');
+  } finally {
+    await new Promise((resolve) => admin.server.close(resolve));
+    await fs.rm(tempDir, { recursive: true, force: true });
+  }
+});
+
 test('检查点清空要求一次性确认值', async () => {
   const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'router-admin-checkpoints-'));
   const admin = await startAdmin(tempDir);
@@ -1512,6 +1697,92 @@ test('检查点清空要求一次性确认值', async () => {
   }
 });
 
+test('多个检查点清空确认互不覆盖，错误值不消耗正确值且每个值只用一次', async () => {
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'router-admin-checkpoint-tabs-'));
+  const admin = await startAdmin(tempDir);
+  try {
+    const first = JSON.parse((await request(admin.port, 'GET', '/_admin/api/checkpoints')).text);
+    const second = JSON.parse((await request(admin.port, 'GET', '/_admin/api/checkpoints')).text);
+    assert.notEqual(first.confirmation, second.confirmation);
+
+    const wrong = await request(admin.port, 'DELETE', '/_admin/api/checkpoints', {
+      confirmation: 'wrong-token',
+    });
+    assert.equal(wrong.status, 409);
+
+    const firstCleared = await request(admin.port, 'DELETE', '/_admin/api/checkpoints', {
+      confirmation: first.confirmation,
+    });
+    assert.equal(firstCleared.status, 200);
+    assert.equal(JSON.parse(firstCleared.text).removed, 1);
+
+    const secondCleared = await request(admin.port, 'DELETE', '/_admin/api/checkpoints', {
+      confirmation: second.confirmation,
+    });
+    assert.equal(secondCleared.status, 200);
+    assert.equal(JSON.parse(secondCleared.text).removed, 0);
+
+    const repeated = await request(admin.port, 'DELETE', '/_admin/api/checkpoints', {
+      confirmation: first.confirmation,
+    });
+    assert.equal(repeated.status, 409);
+    assert.equal(admin.persistence.clearCalls, 2);
+  } finally {
+    await new Promise((resolve) => admin.server.close(resolve));
+    await fs.rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test('检查点确认缓存有界并淘汰最旧令牌', async () => {
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'router-admin-checkpoint-bound-'));
+  const admin = await startAdmin(tempDir);
+  try {
+    const oldest = JSON.parse((await request(admin.port, 'GET', '/_admin/api/checkpoints')).text);
+    let newest = oldest;
+    for (let index = 0; index < 64; index += 1) {
+      newest = JSON.parse((await request(admin.port, 'GET', '/_admin/api/checkpoints')).text);
+    }
+
+    const evicted = await request(admin.port, 'DELETE', '/_admin/api/checkpoints', {
+      confirmation: oldest.confirmation,
+    });
+    assert.equal(evicted.status, 409);
+
+    const accepted = await request(admin.port, 'DELETE', '/_admin/api/checkpoints', {
+      confirmation: newest.confirmation,
+    });
+    assert.equal(accepted.status, 200);
+  } finally {
+    await new Promise((resolve) => admin.server.close(resolve));
+    await fs.rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test('敏感删除与检查点确认都在 TTL 后失效', async () => {
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'router-admin-confirmation-ttl-'));
+  let now = 1_000;
+  const admin = await startAdmin(tempDir, { now: () => now });
+  try {
+    const config = JSON.parse((await request(admin.port, 'GET', '/_admin/api/config')).text);
+    config.secretDeletes = ['/targets/0/headers/authorization'];
+    const checkpoints = JSON.parse((await request(admin.port, 'GET', '/_admin/api/checkpoints')).text);
+
+    now = 61_001;
+    const configExpired = await request(admin.port, 'PUT', '/_admin/api/config', config);
+    assert.equal(configExpired.status, 400);
+    assert.equal(JSON.parse(configExpired.text).error.code, 'secret_delete_confirmation_invalid');
+
+    const checkpointExpired = await request(admin.port, 'DELETE', '/_admin/api/checkpoints', {
+      confirmation: checkpoints.confirmation,
+    });
+    assert.equal(checkpointExpired.status, 409);
+    assert.equal(JSON.parse(checkpointExpired.text).error.code, 'confirmation_invalid');
+  } finally {
+    await new Promise((resolve) => admin.server.close(resolve));
+    await fs.rm(tempDir, { recursive: true, force: true });
+  }
+});
+
 test('检查点持久化清空失败时管理 API 返回非 200 且不伪报成功', async () => {
   const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'router-admin-checkpoint-failure-'));
   const admin = await startAdmin(tempDir);
@@ -1532,8 +1803,7 @@ test('检查点持久化清空失败时管理 API 返回非 200 且不伪报成�
     assert.deepEqual(JSON.parse(failed.text), {
       error: {
         code: 'checkpoint_clear_failed',
-        message: '检查点空快照写入失败',
-        backupPath: path.join(tempDir, 'checkpoint.clear-backup.bak'),
+        message: '检查点清空失败，原状态已保留',
       },
     });
     assert.equal(admin.checkpointStore.exportSnapshot().entries.length, 1);

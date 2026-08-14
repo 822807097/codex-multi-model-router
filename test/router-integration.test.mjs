@@ -6,6 +6,7 @@ import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
 import { once } from 'node:events';
+import { Readable } from 'node:stream';
 import { fileURLToPath } from 'node:url';
 
 import {
@@ -16,6 +17,7 @@ import {
   readRevisionedJson,
   sha256Bytes,
 } from '../lib/json-file-store.mjs';
+import { createRouterHandler } from '../lib/router-handler.mjs';
 
 const PROJECT_DIR = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 // 隔离子进程显式开启测试专用关闭端点；正常运行实例不会暴露进程控制。
@@ -120,6 +122,115 @@ async function cleanupIsolatedRouter({ routerPort, child, childExit, childOutput
   if (cleanupError) throw cleanupError;
 }
 
+test('不同 envKey 的备用目标各自最多刷新并重试一次', async () => {
+  const targets = [
+    {
+      name: 'rotating-a',
+      match: '^rotating-model$',
+      host: 'isolated-a.test',
+      prefix: '/a',
+      envKey: 'ROTATING_KEY_A',
+      wireApi: 'chat',
+    },
+    {
+      name: 'rotating-b',
+      match: '^rotating-model$',
+      host: 'isolated-b.test',
+      prefix: '/b',
+      envKey: 'ROTATING_KEY_B',
+      wireApi: 'chat',
+    },
+  ];
+  const attempts = new Map([['/a/chat/completions', 0], ['/b/chat/completions', 0]]);
+  const refreshes = [];
+  const logs = [];
+  const handler = createRouterHandler({
+    config: {},
+    catalog: { models: [{ slug: 'rotating-model', display_name: '轮换模型' }] },
+    targets,
+    maxRequestBytes: 64 * 1024,
+    requestBudget: {
+      acquire: () => ({}),
+      add: () => true,
+      discardBytes: () => {},
+      release: () => {},
+    },
+    providerPool: {
+      candidates: () => targets,
+      getResponseAffinity: () => null,
+      isAffinityAmbiguous: () => false,
+      remember: () => {},
+    },
+    responseHistory: {
+      restoreRequest: (body) => ({
+        input: body.input,
+        restoredCallIds: [],
+        historyHit: false,
+      }),
+      recordResponse: () => {},
+    },
+    getKey: (name) => ({
+      ROTATING_KEY_A: 'SECRET_ROTATING_A',
+      ROTATING_KEY_B: 'SECRET_ROTATING_B',
+    })[name],
+    refreshEnvKey: async (name) => {
+      refreshes.push(name);
+      return true;
+    },
+    log: (...parts) => logs.push(parts.join(' ')),
+    openStream: async ({ path: upstreamPath }) => {
+      const attempt = (attempts.get(upstreamPath) || 0) + 1;
+      attempts.set(upstreamPath, attempt);
+      const status = upstreamPath.startsWith('/a/')
+        ? (attempt === 1 ? 401 : 503)
+        : (attempt <= 2 ? 401 : 200);
+      return {
+        status,
+        headers: {
+          'content-type': status === 200 ? 'text/event-stream' : 'application/json',
+        },
+        stream: Readable.from([Buffer.from(status === 200 ? 'data: [DONE]\n\n' : '{}')]),
+        socket: { destroy: () => {} },
+      };
+    },
+    buildChatRequest: async (body) => ({
+      request: { ...body, messages: [] },
+      toolCount: 0,
+      toolContext: null,
+      checkpointInfo: null,
+    }),
+    startResponsesSse: (response) => {
+      response.writeHead(200, { 'content-type': 'text/event-stream' });
+      return () => {};
+    },
+    pipeChatResponse: (_upstream, response) => response.end('data: [DONE]\n\n'),
+    emitResponsesErrorSse: (_response, _message) => {},
+    timeouts: {},
+  });
+  const server = http.createServer(handler);
+  await listen(server);
+  try {
+    const response = await request(server.address().port, 'POST', '/v1/responses', {
+      model: 'rotating-model',
+      stream: true,
+      input: [{ role: 'user', content: '只使用隔离 mock' }],
+    });
+
+    assert.deepEqual(Object.fromEntries(attempts), {
+      '/a/chat/completions': 2,
+      '/b/chat/completions': 2,
+    });
+    assert.deepEqual(refreshes, ['ROTATING_KEY_A', 'ROTATING_KEY_B']);
+    assert.equal(response.status, 401);
+    assert.match(logs.join('\n'), /ROTATING_KEY_A/);
+    assert.match(logs.join('\n'), /ROTATING_KEY_B/);
+    assert.doesNotMatch(logs.join('\n'), /SECRET_ROTATING_A|SECRET_ROTATING_B/);
+  } finally {
+    server.closeAllConnections?.();
+    await close(server);
+  }
+});
+
 async function createStartupRecoveryJournal({ configPath, catalogPath, newConfig, newCatalog }) {
   const oldConfig = readRevisionedJson(configPath);
   const oldCatalog = readRevisionedJson(catalogPath);
@@ -198,6 +309,56 @@ test('非法配置在监听端口前聚合失败', async () => {
     assert.match(childOutput, /target_name_invalid/);
     assert.match(childOutput, /target_match_invalid/);
     assert.doesNotMatch(childOutput, /SyntaxError|RouterConfigError/);
+  } finally {
+    if (child.exitCode === null) {
+      try { await request(routerPort, 'POST', '/_admin/shutdown'); } catch { /* 未监听时无需关闭 */ }
+      await waitForChildExit(child, childExit, childOutput);
+    }
+    await fs.rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test('携带凭据的远程 HTTP target 在监听与网络访问前失败', async () => {
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'codex-router-insecure-http-'));
+  const routerPort = await freePort();
+  const configPath = path.join(tempDir, 'config.json');
+  await fs.writeFile(configPath, JSON.stringify({
+    port: routerPort,
+    modelContext: { enabled: false },
+    targets: [{
+      name: 'remote-http',
+      match: '^remote-http$',
+      host: 'remote.example.test',
+      protocol: 'http',
+      envKey: 'TEST_ROUTER_KEY',
+      wireApi: 'chat',
+    }],
+  }));
+
+  const child = spawn(process.execPath, [path.join(PROJECT_DIR, 'codex-router.mjs')], {
+    cwd: PROJECT_DIR,
+    env: {
+      ...process.env,
+      ROUTER_CONFIG_PATH: configPath,
+      TEST_ROUTER_KEY: 'credential-must-not-appear',
+    },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  const childExit = once(child, 'exit');
+  let childOutput = '';
+  child.stdout.on('data', (chunk) => { childOutput += chunk; });
+  child.stderr.on('data', (chunk) => { childOutput += chunk; });
+
+  try {
+    const outcome = await Promise.race([
+      childExit.then(([exitCode]) => ({ type: 'exit', exitCode })),
+      waitUntilHealthy(routerPort, child).then(() => ({ type: 'listening' })),
+    ]);
+    assert.equal(outcome.type, 'exit', `远程明文凭据 target 不应开始监听：${childOutput}`);
+    assert.notEqual(outcome.exitCode, 0);
+    assert.match(childOutput, /target_insecure_auth_transport/);
+    assert.doesNotMatch(childOutput, /credential-must-not-appear/);
+    await assert.rejects(request(routerPort, 'GET', '/healthz'));
   } finally {
     if (child.exitCode === null) {
       try { await request(routerPort, 'POST', '/_admin/shutdown'); } catch { /* 未监听时无需关闭 */ }
@@ -1005,6 +1166,17 @@ test('自定义 openai 名称不启用 ChatGPT 登录态并拒绝未知或畸形
     assert.equal(unknown.status, 400);
     assert.equal(JSON.parse(unknown.text).error.code, 'unknown_model');
     assert.equal(captured.length, 1);
+
+    for (const model of [[], {}, 42, '', ' ', 'a'.repeat(257)]) {
+      const invalidModel = await request(routerPort, 'POST', '/v1/responses', {
+        model,
+        stream: true,
+        input: '非法模型标识不得进入路由正则',
+      });
+      assert.equal(invalidModel.status, 400);
+      assert.equal(JSON.parse(invalidModel.text).error.code, 'invalid_model');
+      assert.equal(captured.length, 1);
+    }
 
     const malformed = await request(routerPort, 'POST', '/v1/responses', {
       model: 'custom-openai-model',

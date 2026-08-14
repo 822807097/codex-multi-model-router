@@ -348,7 +348,7 @@ test('结构化模型更新可显式编辑关联 target，并兼容改名、连�
     routing: {
       targetRef: soloRef,
       patch: {
-        host: 'routed.example',
+        host: '127.0.0.1',
         protocol: 'http',
         apiFormat: 'chat',
         envKey: 'NEW_KEY',
@@ -362,7 +362,7 @@ test('结构化模型更新可显式编辑关联 target，并兼容改名、连�
       kind: 'target.update',
       targetRef: soloRef,
       patch: {
-        host: 'routed.example',
+        host: '127.0.0.1',
         protocol: 'http',
         apiFormat: 'chat',
         envKey: 'NEW_KEY',
@@ -374,14 +374,14 @@ test('结构化模型更新可显式编辑关联 target，并兼容改名、连�
 
   const renamed = updateModelDraft(first, 'solo', {
     model: { slug: 'solo-v2' },
-    routing: { targetRef: soloRef, patch: { host: 'renamed.example' } },
+    routing: { targetRef: soloRef, patch: { host: 'localhost' } },
   });
   assert.deepEqual(serializeModelRoutingOperations(renamed).slice(-3), [
     { kind: 'model.update', slug: 'solo', patch: { slug: 'solo-v2' } },
     {
       kind: 'target.update',
       targetRef: soloRef,
-      patch: { host: 'renamed.example', match: '^solo-v2$' },
+      patch: { host: 'localhost', match: '^solo-v2$' },
     },
     { kind: 'reference.replaceSlug', from: 'solo', to: 'solo-v2' },
   ]);
@@ -673,6 +673,21 @@ test('专属 target 在进入草稿前严格校验字段类型、枚举和精确
   for (const [field, value] of invalidFields) {
     assert.throws(() => add({ ...validTarget, [field]: value }), new RegExp(field, 'u'));
   }
+});
+
+test('浏览器模型状态拒绝服务端返回的危险路由正则并保留精确规则', () => {
+  for (const match of ['a'.repeat(1_025), '^(a+)+$', '^(a|aa)+$', '^((a|aa))+$', '^(a)\\1$']) {
+    const source = payload();
+    source.targets[0].match = match;
+    assert.throws(
+      () => createModelRoutingState(source),
+      (error) => error?.code === 'target_match_unsafe',
+    );
+  }
+
+  const exact = payload();
+  exact.targets[1].match = '^qwen3\\.8-max\\+\\(cn\\)\\[1\\]$';
+  assert.doesNotThrow(() => createModelRoutingState(exact));
 });
 
 test('删除专属模型按引用、通道、模型的安全顺序生成操作', () => {
@@ -1029,7 +1044,7 @@ test('slug 必须非空且唯一，复用只校验不透明引用而不在浏览
   }), /targetRef/u);
 });
 
-test('管理端通过两个 URL 提供浏览器状态模块并返回 JavaScript 类型', async (t) => {
+test('管理端通过两个 URL 提供浏览器状态与共享正则安全模块', async (t) => {
   const handler = createAdminHandler({ webRoot: new URL('../web', import.meta.url).pathname.slice(1) });
   const server = http.createServer((req, res) => handler(req, res).then((handled) => {
     if (!handled) {
@@ -1040,10 +1055,15 @@ test('管理端通过两个 URL 提供浏览器状态模块并返回 JavaScript 
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
   t.after(() => new Promise((resolve) => server.close(resolve)));
 
-  for (const assetPath of ['/admin/model-routing-state.mjs', '/_admin/model-routing-state.mjs']) {
-    const response = await request(server, assetPath);
-    assert.equal(response.status, 200);
-    assert.match(response.headers['content-type'], /(?:text|application)\/javascript/);
-    assert.match(response.text, /export function createModelRoutingState/);
+  for (const [fileName, expectedSource] of [
+    ['model-routing-state.mjs', /export function createModelRoutingState/],
+    ['route-match-safety.mjs', /export function routeMatchSafetyIssue/],
+  ]) {
+    for (const prefix of ['/admin/', '/_admin/']) {
+      const response = await request(server, `${prefix}${fileName}`);
+      assert.equal(response.status, 200);
+      assert.match(response.headers['content-type'], /(?:text|application)\/javascript/);
+      assert.match(response.text, expectedSource);
+    }
   }
 });

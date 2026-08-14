@@ -10,6 +10,19 @@ import { fileURLToPath } from 'node:url';
 
 const PROJECT_DIR = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 
+function relativeLuminance(hex) {
+  const channels = [1, 3, 5].map((offset) => Number.parseInt(hex.slice(offset, offset + 2), 16) / 255);
+  const linear = channels.map((value) => (
+    value <= 0.04045 ? value / 12.92 : ((value + 0.055) / 1.055) ** 2.4
+  ));
+  return (0.2126 * linear[0]) + (0.7152 * linear[1]) + (0.0722 * linear[2]);
+}
+
+function contrastRatio(foreground, background) {
+  const values = [relativeLuminance(foreground), relativeLuminance(background)].sort((a, b) => b - a);
+  return (values[0] + 0.05) / (values[1] + 0.05);
+}
+
 test('管理页加载自定义模型状态模块且不提供敏感凭据输入', async () => {
   const [page, app, styles] = await Promise.all([
     fs.readFile(path.join(PROJECT_DIR, 'web', 'index.html'), 'utf8'),
@@ -32,6 +45,11 @@ test('管理页加载自定义模型状态模块且不提供敏感凭据输入',
   assert.match(app, /当前模型已关联已有通道/u, '编辑模型时必须显示准确的通道说明');
   assert.match(styles, /dialog\.model-dialog/u, '模型弹窗必须使用独立宽屏样式钩子');
   assert.match(styles, /\.dialog-section-heading \{ flex-direction: column;/u, '手机端模型分区标题必须纵向排列');
+  assert.match(
+    styles,
+    /\.filter-search \{ flex: 0 0 auto; width: 100%; \}/u,
+    '手机端搜索框不得把桌面 flex-basis 误用为纵向高度',
+  );
   assert.match(app, /保存后需手动重启路由与 Codex/u);
   assert.match(app, /modelValidationCache/u, '保存前必须缓存一次预检的确认信息');
   assert.match(app, /await this\.resyncBaselines\(\)/u, '任一保存后必须重新载入两侧基线');
@@ -68,12 +86,65 @@ test('管理页加载自定义模型状态模块且不提供敏感凭据输入',
     /this\.querySelector\('#restart-notice'\)\.hidden = false;\s+this\.renderOverview\(\);\s+this\.showMessage\('自定义模型已保存/u,
     '模型保存后必须显示统一重启提示并同步总览状态',
   );
+  assert.match(
+    app,
+    /const configResourceRisks = \(config\) =>/u,
+    '管理页必须独立识别尚未重启生效的高资源配置',
+  );
+  assert.match(
+    app,
+    /const resourceRisks = configResourceRisks\(this\.configState\?\.config\);[\s\S]+const hasConfigWarning = warningCount > 0 \|\| resourceRisks\.length > 0;/u,
+    '总览必须合并启动 warning 与当前配置中的高资源风险',
+  );
+  assert.match(
+    app,
+    /icon: hasConfigWarning \? '⚠' : '●'/u,
+    '总览中的高资源风险必须同时使用图标和文字表达',
+  );
+  assert.match(
+    app,
+    /const resourceRisks = configResourceRisks\(config\);[\s\S]+`⚠ 高内存风险：\$\{resourceRisks\.join\('、'\)\}`/u,
+    '本机服务摘要必须明确显示高内存风险，而不是只改变颜色',
+  );
+  assert.match(
+    app,
+    /label: '路由进程',[\s\S]+value: '在线'/u,
+    '总览只能声明本机路由进程在线，不能暗示上游健康',
+  );
+  assert.match(
+    app,
+    /配置与凭据存在；未探测上游/u,
+    '正常模型摘要必须明确说明未探测真实上游',
+  );
+  assert.doesNotMatch(
+    app,
+    /全部模型凭据与通道就绪/u,
+    '配置存在不得表述为模型或上游已经就绪',
+  );
+  assert.match(
+    app,
+    /return statusTarget \? Boolean\(statusTarget\.envSet\) : null;/u,
+    '运行时目标缺失时凭据状态必须是未知而不是默认 true',
+  );
+  assert.match(
+    app,
+    /凭据状态待确认/u,
+    '高级设置必须用文字呈现未知凭据状态',
+  );
   assert.doesNotMatch(page, /https?:\/\//iu, '管理页不应引用外部 CDN');
   assert.doesNotMatch(
     app,
     /<input[^>]+(?:type=["']password|(?:name|id|placeholder|value)=["'][^"']*(?:api[ _-]?key|authorization|cookie|token)[^"']*)/iu,
     '模型管理表单不能提供或暗示敏感凭据输入',
   );
+});
+
+test('浅色与深色弱化小字号文字保持至少 4.5:1 对比度', async () => {
+  const styles = await fs.readFile(path.join(PROJECT_DIR, 'web', 'styles.css'), 'utf8');
+  const faintValues = [...styles.matchAll(/--faint:\s*(#[0-9a-f]{6})/giu)].map((match) => match[1]);
+  assert.equal(faintValues.length, 2, '浅色与深色主题都必须声明 --faint');
+  assert.ok(contrastRatio(faintValues[0], '#f6f5f1') >= 4.5, '浅色主题弱化小字必须满足 WCAG AA');
+  assert.ok(contrastRatio(faintValues[1], '#232a27') >= 4.5, '深色主题弱化小字必须满足 WCAG AA');
 });
 
 function listen(server) {
@@ -92,7 +163,7 @@ async function freePort() {
   return port;
 }
 
-function request(port, method, requestPath, body) {
+function request(port, method, requestPath, body, extraHeaders = {}) {
   return new Promise((resolve, reject) => {
     const payload = body === undefined ? null : JSON.stringify(body);
     const req = http.request({
@@ -100,10 +171,13 @@ function request(port, method, requestPath, body) {
       port,
       path: requestPath,
       method,
-      headers: payload ? {
-        'content-type': 'application/json',
-        'content-length': Buffer.byteLength(payload),
-      } : {},
+      headers: {
+        ...extraHeaders,
+        ...(payload ? {
+          'content-type': 'application/json',
+          'content-length': Buffer.byteLength(payload),
+        } : {}),
+      },
     }, (res) => {
       const chunks = [];
       res.on('data', (chunk) => chunks.push(chunk));
@@ -237,20 +311,45 @@ test('隔离路由提供本地管理页和脱敏管理 API', async () => {
     assert.equal(page.status, 200);
     assert.match(page.headers['content-type'], /text\/html/);
     assert.match(page.text, /Codex.*路由/u);
+    assert.match(page.headers['content-security-policy'], /default-src 'self'/);
+    assert.match(page.headers['content-security-policy'], /frame-ancestors 'none'/);
+    assert.equal(page.headers['x-content-type-options'], 'nosniff');
+    assert.equal(page.headers['referrer-policy'], 'no-referrer');
+    assert.equal(page.headers['x-frame-options'], 'DENY');
     const assetReferences = [...page.text.matchAll(/(?:href|src)="([^"]+)"/g)]
       .map((match) => new URL(match[1], `http://127.0.0.1:${routerPort}/admin`).pathname)
       .filter((assetPath) => assetPath.endsWith('.css') || assetPath.endsWith('.js'));
     assert.deepEqual(assetReferences, ['/admin/styles.css', '/admin/app.js']);
     for (const assetPath of assetReferences) {
-      assert.equal((await request(routerPort, 'GET', assetPath)).status, 200);
+      const assetResponse = await request(routerPort, 'GET', assetPath);
+      assert.equal(assetResponse.status, 200);
+      assert.match(assetResponse.headers['content-security-policy'], /frame-ancestors 'none'/);
+      assert.equal(assetResponse.headers['x-content-type-options'], 'nosniff');
     }
 
     const status = await request(routerPort, 'GET', '/_admin/api/status');
     assert.equal(status.status, 200);
+    assert.match(status.headers['content-security-policy'], /frame-ancestors 'none'/);
+    assert.equal(status.headers['x-content-type-options'], 'nosniff');
     const statusBody = JSON.parse(status.text);
     assert.equal(statusBody.port, routerPort);
     assert.equal(statusBody.targets[0].envSet, true);
     assert.doesNotMatch(status.text, /admin-test-key|admin-integration-secret/);
+
+    const forgedHost = await request(routerPort, 'GET', '/admin', undefined, {
+      host: 'evil-secret.example:15730',
+    });
+    assert.equal(forgedHost.status, 403);
+    assert.equal(JSON.parse(forgedHost.text).error.code, 'admin_host_forbidden');
+    assert.doesNotMatch(forgedHost.text, /evil-secret|stack|admin-api\.mjs/i);
+
+    const crossSite = await request(routerPort, 'PUT', '/_admin/api/config', {}, {
+      origin: 'http://evil-secret.example',
+      'sec-fetch-site': 'cross-site',
+    });
+    assert.equal(crossSite.status, 403);
+    assert.equal(JSON.parse(crossSite.text).error.code, 'admin_cross_site_forbidden');
+    assert.doesNotMatch(crossSite.text, /evil-secret|stack|admin-api\.mjs/i);
 
     const config = await request(routerPort, 'GET', '/_admin/api/config');
     assert.equal(config.status, 200);

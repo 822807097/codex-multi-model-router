@@ -124,10 +124,10 @@ test('同名 key 并发刷新只执行一次查询', async () => {
   assert.equal(source.getKey('K'), 'old');
   const first = source.refreshNow('K');
   const second = source.refreshNow('K');
-  assert.equal(await first, true);
-  assert.equal(await second, false);
+  const third = source.refreshNow('K');
+  assert.deepEqual(await Promise.all([first, second, third]), [true, true, true]);
   await gate;
-  // 一次刷新 = 两个 hive 各查一次（并行）；并发去重后第二次调用不产生新查询
+  // 一次刷新 = 两个 hive 各查一次（并行）；所有等待者共享同一个刷新结果。
   assert.equal(queryCount, 2);
   assert.equal(source.getKey('K'), 'fresh');
 });
