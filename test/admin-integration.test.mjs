@@ -22,6 +22,11 @@ test('管理页加载自定义模型状态模块且不提供敏感凭据输入',
   assert.match(app, /新增自定义模型/u);
   assert.match(app, /model-dialog-form[^>]+model-dialog-form/u, '模型弹窗必须使用独立表单布局');
   assert.match(app, /route-summary/u, '复用通道必须提供可读摘要，而非直接展开完整配置');
+  assert.doesNotMatch(
+    app,
+    /model-target-summary-match/u,
+    '普通模型通道摘要不得默认展示正则匹配规则',
+  );
   assert.match(app, /route-editor-details/u, '编辑关联通道设置必须与复用摘要分层');
   assert.match(app, /fillModelTargetFields\(select\.value, model \? 'reuse' : 'dedicated'\)/u, '编辑模型必须按复用通道展示摘要');
   assert.match(app, /当前模型已关联已有通道/u, '编辑模型时必须显示准确的通道说明');
@@ -38,6 +43,31 @@ test('管理页加载自定义模型状态模块且不提供敏感凭据输入',
   assert.match(app, /loadEpoch/u, '异步基线加载必须由 epoch 防止旧响应回写');
   assert.match(app, /activeResyncPromise/u, '重复重新载入必须复用同一批次');
   assert.match(app, /另一侧仍有未保存更改/u, '放弃草稿前必须保护另一侧草稿');
+  assert.match(
+    app,
+    /else this\.openConfigGroups\.add\(group\);\s+this\.renderConfig\(\);/u,
+    '高级设置分组切换后必须重绘，确保展开状态进入 DOM',
+  );
+  assert.match(
+    app,
+    /this\.openTargetEditor = this\.openTargetEditor === editor\.dataset\.targetIndex \? null : editor\.dataset\.targetIndex;\s+this\.renderConfig\(\);/u,
+    '服务通道编辑切换后必须重绘，确保单条编辑器进入 DOM',
+  );
+  assert.match(
+    app,
+    /renderModelRouting\(\) \{\s+this\.renderOverview\(\);/u,
+    '模型状态或草稿重绘时必须同步总览中的模型总数与不可用数量',
+  );
+  assert.match(
+    app,
+    /this\.querySelector\('#restart-notice'\)\.hidden = !saved\.restartRequired;\s+this\.renderOverview\(\);/u,
+    '配置保存提示改变后必须同步总览中的待重启状态',
+  );
+  assert.match(
+    app,
+    /this\.querySelector\('#restart-notice'\)\.hidden = false;\s+this\.renderOverview\(\);\s+this\.showMessage\('自定义模型已保存/u,
+    '模型保存后必须显示统一重启提示并同步总览状态',
+  );
   assert.doesNotMatch(page, /https?:\/\//iu, '管理页不应引用外部 CDN');
   assert.doesNotMatch(
     app,
