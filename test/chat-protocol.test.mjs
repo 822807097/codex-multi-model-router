@@ -19,7 +19,7 @@ test('Responses 历史转换后保持函数调用与工具结果配对', () => {
   ], { autonomy: true, instructions: '只修改目标文件' });
 
   assert.equal(messages[0].role, 'system');
-  assert.match(messages[0].content, /自主使用可用工具/);
+  assert.match(messages[0].content, /自主执行的智能体/);
   assert.deepEqual(messages[1], { role: 'system', content: '只修改目标文件' });
   assert.deepEqual(messages[2], { role: 'system', content: '遵守仓库规范' });
   assert.equal(messages[4].tool_calls[0].id, 'call_1');

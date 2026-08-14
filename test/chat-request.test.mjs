@@ -168,7 +168,7 @@ test('上下文裁剪只写入带请求关联 ID 的结构化诊断字段', asyn
     target: 'chat-target',
     wire_api: 'chat',
     groups: 1,
-    tokens: 83,
+    tokens: 133,
     budget: 620,
   }]);
 });

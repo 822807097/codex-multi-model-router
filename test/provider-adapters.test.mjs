@@ -37,6 +37,24 @@ test('DeepSeek Chat 保留 reasoning_effort 并启用 usage 流', () => {
   assert.equal(request.parallel_tool_calls, true);
 });
 
+test('思考模型（enable_thinking）注入 thinking_budget 防止思考挤占输出配额', () => {
+  const request = applyChatProviderOptions(
+    { model: 'qwen3.8-max', messages: [] },
+    { reasoning: { effort: 'high' } },
+    resolveProvider({ name: 'bailian', wireApi: 'chat' }),
+  );
+  assert.equal(request.enable_thinking, true);
+  assert.equal(request.thinking_budget, 8192);
+  // effort=none 时关闭思考且不注入预算
+  const off = applyChatProviderOptions(
+    { model: 'qwen3.8-max', messages: [] },
+    { reasoning: { effort: 'none' } },
+    resolveProvider({ name: 'bailian', wireApi: 'chat' }),
+  );
+  assert.equal(off.enable_thinking, false);
+  assert.equal(off.thinking_budget, undefined);
+});
+
 test('Responses 强制工具选择转换为 Chat function 结构并使用工具别名', () => {
   const provider = resolveProvider({ name: 'bailian', wireApi: 'chat' });
   const toolContext = {
