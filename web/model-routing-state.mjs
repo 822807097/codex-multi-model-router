@@ -1,3 +1,5 @@
+import { routeMatchSafetyIssue } from './route-match-safety.mjs';
+
 const MAX_TREE_DEPTH = 32;
 const MAX_TREE_NODES = 2_048;
 const MAX_STRING_LENGTH = 65_536;
@@ -485,6 +487,9 @@ function assertPayload(snapshot) {
     if (typeof target.envSet !== 'boolean') throw invalid('管理 API envSet 无效');
     onlyFields(target, PAYLOAD_TARGET_FIELDS, '管理 API target');
     validateTargetDirectFields(target, '管理 API target');
+    if (routeMatchSafetyIssue(target.match)) {
+      throw invalid('管理 API target.match 含不安全正则结构', 'target_match_unsafe');
+    }
   }
   for (const binding of snapshot.bindings) {
     if (!binding || typeof binding !== 'object' || Array.isArray(binding)

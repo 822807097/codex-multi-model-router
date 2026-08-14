@@ -3,7 +3,7 @@
   color-scheme: light;
   --ink: #1b2320;
   --muted: #5d6a65;
-  --faint: #8a938f;
+  --faint: #66736d;
   --paper: #f6f5f1;
   --surface: #ffffff;
   --surface-2: #fbfaf7;
@@ -95,6 +95,8 @@ main { width: min(1060px, 92vw); margin: 0 auto; }
 .status-dot.ready::before { background: var(--green); }
 .status-dot.warning { color: var(--yellow); background: var(--yellow-soft); }
 .status-dot.warning::before { background: var(--yellow); }
+.status-dot.unknown { color: var(--muted); background: var(--surface-2); }
+.status-dot.unknown::before { background: currentColor; }
 .cap-pill { padding: 0.22rem 0.5rem; color: var(--muted); background: var(--surface-2); border: 1px solid var(--line); font-size: 0.66rem; }
 
 .notice { display: flex; flex-wrap: wrap; gap: 0.35rem 0.8rem; align-items: center; margin: 0 0 1.2rem; padding: 0.85rem 1rem; border-left: 3px solid var(--accent); border-radius: 0 var(--radius-sm) var(--radius-sm) 0; background: var(--accent-soft); box-shadow: var(--shadow); font-size: 0.82rem; }
@@ -345,6 +347,7 @@ footer { display: flex; justify-content: space-between; width: min(1060px, 92vw)
   .channel-head .status-dot { grid-column: 1 / -1; justify-self: start; }
   .channel-summary { flex-wrap: wrap; }
   .filter-bar { align-items: stretch; flex-direction: column; }
+  .filter-search { flex: 0 0 auto; width: 100%; }
   .filter-search, .filter-item, .filter-item select { width: 100%; }
   .filter-item { justify-content: space-between; }
   .filter-count { margin-left: 0; }
@@ -398,7 +401,7 @@ footer { display: flex; justify-content: space-between; width: min(1060px, 92vw)
     color-scheme: dark;
     --ink: #e8ede9;
     --muted: #9aa7a0;
-    --faint: #77837c;
+    --faint: #8a9690;
     --paper: #151918;
     --surface: #1e2422;
     --surface-2: #232a27;

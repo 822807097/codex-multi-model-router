@@ -42,6 +42,26 @@ import {
     return `${(bytes / 1024 ** 3).toFixed(1)} GB`;
   };
 
+  const REQUEST_LIMIT_WARNING_THRESHOLDS = Object.freeze({
+    maxRequestBytes: 256 * 1024 * 1024,
+    maxBufferedRequestBytes: 512 * 1024 * 1024,
+  });
+
+  const configResourceRisks = (config) => {
+    const risks = [];
+    const maxRequestBytes = Number(config?.maxRequestBytes);
+    const maxBufferedRequestBytes = Number(config?.maxBufferedRequestBytes);
+    if (Number.isFinite(maxRequestBytes)
+      && maxRequestBytes > REQUEST_LIMIT_WARNING_THRESHOLDS.maxRequestBytes) {
+      risks.push(`单请求 ${formatBytes(maxRequestBytes)}`);
+    }
+    if (Number.isFinite(maxBufferedRequestBytes)
+      && maxBufferedRequestBytes > REQUEST_LIMIT_WARNING_THRESHOLDS.maxBufferedRequestBytes) {
+      risks.push(`总缓冲 ${formatBytes(maxBufferedRequestBytes)}`);
+    }
+    return risks;
+  };
+
   // 纯展示层的易读单位换算；实际提交值不受影响。
   const compactNumber = (value) => new Intl.NumberFormat('zh-CN', { notation: 'compact', maximumFractionDigits: 1 }).format(Number(value));
 
@@ -190,7 +210,7 @@ import {
               <h1 id="page-title">路由管理</h1>
               <p class="page-subtitle">本机多模型路由的运行状态与配置。凭据只留在路由进程中，不会出现在页面。</p>
             </div>
-            <span class="live-pill"><i></i>本机服务</span>
+            <span class="live-pill"><i></i>本机进程</span>
           </div>
 
           <div id="restart-notice" class="notice restart" role="status" hidden>
@@ -608,6 +628,8 @@ import {
       const targets = data.targets || [];
       const readyCount = targets.filter((target) => target.envSet).length;
       const warningCount = data.warningCount ?? 0;
+      const resourceRisks = configResourceRisks(this.configState?.config);
+      const hasConfigWarning = warningCount > 0 || resourceRisks.length > 0;
       const models = this.modelRoutingState?.models || [];
       const modelCount = models.length;
       const attentionModels = models.filter((model) => {
@@ -633,9 +655,9 @@ import {
 
       grid.replaceChildren(
         card({
-          label: '服务状态',
-          value: '运行中',
-          note: `已运行 ${formatDuration(data.uptimeMs)} · 端口 ${data.port ?? '—'}（仅本机）`,
+          label: '路由进程',
+          value: '在线',
+          note: `本机进程已运行 ${formatDuration(data.uptimeMs)} · 端口 ${data.port ?? '—'}`,
           tone: 'ok',
           icon: '●',
         }),
@@ -643,8 +665,10 @@ import {
           label: '模型',
           value: modelCount ? `${modelCount} 个` : `${targets.length} 条通道`,
           note: modelCount
-            ? (attentionModels ? `${attentionModels} 个待配置凭据或通道` : '全部模型凭据与通道就绪')
-            : '模型目录载入后可查看详情',
+            ? (attentionModels
+                ? `${attentionModels} 个配置或凭据待确认；未探测上游`
+                : '配置与凭据存在；未探测上游')
+            : '模型目录载入后可查看配置；未探测上游',
           tone: attentionModels ? 'warn' : 'ok',
           icon: attentionModels ? '!' : '●',
           actionLabel: '管理模型',
@@ -652,17 +676,21 @@ import {
         }),
         card({
           label: '配置告警',
-          value: warningCount ? `${warningCount} 条` : '无',
-          note: warningCount ? '建议在高级设置中预检并查看详情' : '启动预检未发现问题',
-          tone: warningCount ? 'warn' : 'ok',
-          icon: warningCount ? '!' : '●',
-          actionLabel: warningCount ? '前往高级设置' : '',
-          action: warningCount ? 'goto-advanced' : '',
+          value: warningCount ? `${warningCount} 条` : (resourceRisks.length ? '高资源风险' : '无'),
+          note: resourceRisks.length
+            ? `⚠ 高资源配置：${resourceRisks.join('、')}${warningCount ? `；启动预检共 ${warningCount} 条提醒` : ''}`
+            : (warningCount ? '建议在高级设置中预检并查看详情' : '启动预检未发现问题'),
+          tone: hasConfigWarning ? 'warn' : 'ok',
+          icon: hasConfigWarning ? '⚠' : '●',
+          actionLabel: hasConfigWarning ? '前往高级设置' : '',
+          action: hasConfigWarning ? 'goto-advanced' : '',
         }),
         card({
           label: '生效状态',
-          value: restartRequired ? '待重启' : '已生效',
-          note: restartRequired ? '配置已保存，需手动重启路由后生效' : `通道凭据 ${readyCount}/${targets.length} 就绪`,
+          value: restartRequired ? '已保存，待重启' : '当前进程已加载',
+          note: restartRequired
+            ? '需手动重启路由；重启前仍使用旧配置'
+            : `凭据配置 ${readyCount}/${targets.length} 条存在；未探测上游`,
           tone: restartRequired ? 'warn' : 'ok',
           icon: restartRequired ? '!' : '●',
           actionLabel: '',
@@ -687,7 +715,11 @@ import {
       const attention = targets.filter((target) => !target.envSet);
       const expanded = this.channelsExpanded || attention.length > 0;
       if (summary) {
-        const pill = el('span', `status-dot ${attention.length ? 'warning' : 'ready'}`, attention.length ? `${attention.length} 条凭据待配置` : '凭据全部就绪');
+        const pill = el(
+          'span',
+          `status-dot ${attention.length ? 'warning' : 'ready'}`,
+          attention.length ? `${attention.length} 条凭据待配置` : '凭据已配置 · 未探测上游',
+        );
         const text = el('span', 'channel-summary-text', `${targets.length} 条服务通道 · ${targets.filter((t) => t.viaProxy).length} 条走代理`);
         const toggle = el('button', 'button ghost compact', expanded ? '收起通道详情' : '查看通道详情');
         toggle.type = 'button';
@@ -708,7 +740,11 @@ import {
         const symbol = el('span', 'channel-symbol', String(target.name || '?').slice(0, 2).toUpperCase());
         const title = el('div');
         title.append(el('h3', '', target.name || '未命名通道'), el('p', '', target.match || '未设置匹配规则'));
-        head.append(symbol, title, el('span', `status-dot ${target.envSet ? 'ready' : 'warning'}`, target.envSet ? '凭据就绪' : '凭据待配置'));
+        head.append(symbol, title, el(
+          'span',
+          `status-dot ${target.envSet ? 'ready' : 'warning'}`,
+          target.envSet ? '凭据已配置 · 未探测' : '凭据待配置',
+        ));
         const details = el('dl', 'channel-details');
         [
           ['接口类型', target.wireApi === 'chat' ? 'Chat Completions' : (target.wireApi || 'Responses')],
@@ -731,12 +767,14 @@ import {
       // 基础设置 → 本机服务
       {
         const group = this.configGroup('basics', '本机服务', '路由监听与请求资源上限', () => {
+          const resourceRisks = configResourceRisks(config);
           const parts = [];
           if (Object.hasOwn(config, 'port')) parts.push(`端口 ${config.port}`);
           if (Object.hasOwn(config, 'maxConcurrentRequests')) parts.push(`并发 ${config.maxConcurrentRequests}`);
           if (Object.hasOwn(config, 'maxRequestBytes')) parts.push(`单请求 ${formatBytes(config.maxRequestBytes)}`);
           if (Object.hasOwn(config, 'maxBufferedRequestBytes')) parts.push(`缓冲 ${formatBytes(config.maxBufferedRequestBytes)}`);
           if (Object.hasOwn(config, 'heartbeatMs')) parts.push(`心跳 ${formatSecondsShort(config.heartbeatMs)}`);
+          if (resourceRisks.length) parts.push(`⚠ 高内存风险：${resourceRisks.join('、')}`);
           return parts;
         });
         const appendRootNumber = (label, key, min, max) => {
@@ -839,7 +877,32 @@ import {
       const address = el('span', 'config-channel-meta', `${protocol}://${host}${prefix}`);
       const wire = el('span', 'config-channel-meta', target.wireApi === 'chat' ? 'Chat Completions' : 'Responses');
       const network = el('span', 'config-channel-meta', target.viaProxy ? '走代理' : '直连');
-      const cred = el('span', `status-dot ${target.envKey ? (this.channelEnvReady(target) ? 'ready' : 'warning') : 'ready'}`, target.envKey ? (this.channelEnvReady(target) ? '凭据就绪' : '凭据待配置') : (target.useOpenAiAuth ? '官方登录态' : '凭据就绪'));
+      const runtimeReady = this.channelEnvReady(target);
+      let credentialTone = 'unknown';
+      let credentialText = '凭据状态待确认';
+      if (target.envKey) {
+        if (runtimeReady === true) {
+          credentialTone = 'ready';
+          credentialText = '凭据已配置 · 未探测';
+        } else if (runtimeReady === false) {
+          credentialTone = 'warning';
+          credentialText = '凭据待配置';
+        }
+      } else if (target.useOpenAiAuth) {
+        if (runtimeReady === true) {
+          credentialTone = 'ready';
+          credentialText = '官方登录态已配置 · 未探测';
+        } else if (runtimeReady === false) {
+          credentialTone = 'warning';
+          credentialText = '官方登录态待配置';
+        } else {
+          credentialText = '官方登录态待确认';
+        }
+      } else {
+        credentialTone = 'unknown';
+        credentialText = '未声明凭据 · 未探测';
+      }
+      const cred = el('span', `status-dot ${credentialTone}`, credentialText);
       const toggle = el('button', 'button ghost compact', open ? '收起' : '编辑通道');
       toggle.type = 'button';
       toggle.dataset.action = 'toggle-target-editor';
@@ -856,7 +919,7 @@ import {
 
     channelEnvReady(target) {
       const statusTarget = (this.status?.targets || []).find((item) => item.name && item.name === target.name);
-      return statusTarget ? statusTarget.envSet : true;
+      return statusTarget ? Boolean(statusTarget.envSet) : null;
     }
 
     renderModelContextGroups(root, config) {
