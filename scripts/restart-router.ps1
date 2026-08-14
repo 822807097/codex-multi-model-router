@@ -84,7 +84,11 @@ if (Test-Path $cfgPath) {
 foreach ($k in $keySet.Keys) { $v = Get-EnvAny $k; if ($v) { Set-Item "env:$k" $v } }
 
 # 3. 直接后台启动 node（比隐藏 powershell 更可靠）
-Start-Process -WindowStyle Hidden node -ArgumentList "`"$router`"" | Out-Null
+# 控制台输出落盘（out/err 必须分文件）：崩溃/启动错误不再无声丢失，便于事后定位。
+$routerDir = Split-Path $router
+$consoleOut = Join-Path $routerDir 'router-console.out.log'
+$consoleErr = Join-Path $routerDir 'router-console.err.log'
+Start-Process -WindowStyle Hidden node -ArgumentList "`"$router`"" -RedirectStandardOutput $consoleOut -RedirectStandardError $consoleErr | Out-Null
 
 # 4. 等待新进程监听就绪
 for ($i = 0; $i -lt 10; $i++) {
