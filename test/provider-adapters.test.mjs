@@ -570,45 +570,17 @@ test('enforceToolOutputAdjacency 多组配对各自归位且保持稳定序', ()
   assert.deepEqual(result, [callA, outA, callB, outB, msg]);
 });
 
-test('Cursor 通道默认开启多智能体：保留协作工具并注入收尾总结指令', () => {
+test('Cursor 通道默认剥离协作工具（文字优先）并保留其余工具', () => {
   const provider = resolveProvider({ name: 'cursor-grok-4.6-high', wireApi: 'chat' });
-  assert.equal(provider.stripAgentTools, false, 'cursor 目标默认关闭剥离 = 支持子代理并行');
-  const base = {
-    model: 'grok-4.6[effort=high]',
-    messages: [
-      { role: 'developer', content: '你是编码助手。' },
-      { role: 'user', content: '帮我看看这个仓库' },
-    ],
-    tools: [
-      { type: 'function', function: { name: 'collaboration___spawn_agent' } },
-      { type: 'function', function: { name: 'collaboration___wait_agent' } },
-      { type: 'function', function: { name: 'exec' } },
-    ],
-  };
-  const once = applyChatProviderOptions(base, {}, provider);
-  const names = (once.tools || []).map((t) => t.function.name);
-  assert.deepEqual(names, ['collaboration___spawn_agent', 'collaboration___wait_agent', 'exec'], '协作工具默认保留');
-  assert.match(once.messages[0].content, /完成总结/, 'developer 消息被追加收尾总结指令');
-  // 幂等：重复调用不叠加指令
-  const twice = applyChatProviderOptions(once, {}, provider);
-  assert.equal(
-    (twice.messages[0].content.match(/完成总结/g) || []).length,
-    1,
-    '重复调用不重复追加总结指令',
-  );
-});
-
-test('Cursor 通道显式 stripAgentTools=true 时剥离协作工具（纯文字逃生）', () => {
-  const provider = resolveProvider({ name: 'cursor-grok-4.6-high', wireApi: 'chat', stripAgentTools: true });
-  assert.equal(provider.stripAgentTools, true);
+  assert.equal(provider.stripAgentTools, true, 'cursor 目标默认剥离 = 文字优先');
   const request = applyChatProviderOptions(
     {
       model: 'grok-4.6[effort=high]',
       messages: [{ role: 'developer', content: '你是编码助手。' }],
       tools: [
-        { type: 'function', function: { name: 'exec' } },
         { type: 'function', function: { name: 'collaboration___spawn_agent' } },
         { type: 'function', function: { name: 'collaboration___wait_agent' } },
+        { type: 'function', function: { name: 'exec' } },
       ],
     },
     {},
@@ -617,15 +589,33 @@ test('Cursor 通道显式 stripAgentTools=true 时剥离协作工具（纯文字
   const names = (request.tools || []).map((t) => t.function.name);
   assert.deepEqual(names, ['exec'], '协作工具被剥离，exec 保留');
   assert.equal(request.messages[0].content, '你是编码助手。', '剥离时不注入任何指令');
-  // 非 cursor 目标不受影响：cursorChannel=false，绝不追加收尾指令
-  const bailian = resolveProvider({ name: 'bailian', wireApi: 'chat' });
-  assert.equal(bailian.cursorChannel, false);
-  const noInline = applyChatProviderOptions(
-    { model: 'qwen', messages: [{ role: 'developer', content: '你是助手。' }] },
-    {},
-    bailian,
+});
+
+test('Cursor 通道显式 stripAgentTools=false 选装多智能体：保留协作工具并注入收尾总结指令', () => {
+  const provider = resolveProvider({ name: 'cursor-grok-4.6-high', wireApi: 'chat', stripAgentTools: false });
+  assert.equal(provider.stripAgentTools, false);
+  const base = {
+    model: 'grok-4.6[effort=high]',
+    messages: [
+      { role: 'developer', content: '你是编码助手。' },
+      { role: 'user', content: '帮我看看这个仓库' },
+    ],
+    tools: [
+      { type: 'function', function: { name: 'collaboration___spawn_agent' } },
+      { type: 'function', function: { name: 'exec' } },
+    ],
+  };
+  const once = applyChatProviderOptions(base, {}, provider);
+  const names = (once.tools || []).map((t) => t.function.name);
+  assert.deepEqual(names, ['collaboration___spawn_agent', 'exec'], '协作工具被保留');
+  assert.match(once.messages[0].content, /完成总结/, 'developer 消息被追加收尾总结指令');
+  // 幂等：重复调用不叠加指令
+  const twice = applyChatProviderOptions(once, {}, provider);
+  assert.equal(
+    (twice.messages[0].content.match(/完成总结/g) || []).length,
+    1,
+    '重复调用不重复追加总结指令',
   );
-  assert.equal(noInline.messages[0].content, '你是助手。', '非 cursor 通道不注入任何指令');
 });
 
 test('非 Cursor 通道保留 collaboration 工具：自定义模型支持 Codex 子代理并行', () => {
