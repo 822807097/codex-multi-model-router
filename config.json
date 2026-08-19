@@ -160,11 +160,11 @@
     ]
   },
   "visionRelay": {
-    "_comment": "视觉中继也可独立选择直连或共用顶层 HTTP CONNECT 代理；concurrency 为 1..8 的进程级总并发，相同图片并发请求使用 single-flight",
-    "host": "token-plan.cn-beijing.maas.aliyuncs.com",
-    "prefix": "/compatible-mode/v1",
-    "model": "qwen3.8-max",
-    "envKey": "aliyun_video_key",
+    "_comment": "示例为英伟达免费视觉模型（integrate.api.nvidia.com，nvapi- 密钥走环境变量，免费额度约 40 rpm / 每日 1 万次）；也可换国内厂商（如 aliyun）或接入多端点按顺序故障切换",
+    "host": "integrate.api.nvidia.com",
+    "prefix": "/v1",
+    "model": "nvidia/nemotron-nano-12b-v2-vl",
+    "envKey": "NVIDIA_API_KEY",
     "viaProxy": false,
     "concurrency": 3,
     "maxImagesPerRequest": 8,
