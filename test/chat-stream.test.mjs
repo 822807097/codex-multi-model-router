@@ -124,6 +124,69 @@ test('无输出且没有 finish_reason 的截断流返回 response.failed', asyn
   assert.equal(events.at(-1), '[DONE]');
 });
 
+test('成功停流但只有推理没有正文或工具调用时返回 empty_stop_response', async () => {
+  const events = await convert([
+    'data: {"choices":[{"delta":{"reasoning_content":"let me try searching for it with tool_search"}}]}\n\n',
+    'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\n',
+    'data: [DONE]\n\n',
+  ]);
+
+  assert.equal(events.some((event) => event.type === 'response.completed'), false);
+  const failed = events.find((event) => event.type === 'response.failed');
+  assert.equal(failed.response.error.code, 'empty_stop_response');
+  assert.equal(failed.response.error.type, 'upstream_error');
+  assert.equal(events.at(-1), '[DONE]');
+});
+
+test('成功停流且完全没有任何输出时返回 empty_stop_response', async () => {
+  const events = await convert([
+    'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\n',
+    'data: [DONE]\n\n',
+  ]);
+
+  assert.equal(events.some((event) => event.type === 'response.completed'), false);
+  const failed = events.find((event) => event.type === 'response.failed');
+  assert.equal(failed.response.error.code, 'empty_stop_response');
+});
+
+test('纯推理 + tool_calls 停流但未实际发出工具调用同样判 empty_stop_response', async () => {
+  const events = await convert([
+    'data: {"choices":[{"delta":{"reasoning_content":"准备调用工具"}}]}\n\n',
+    'data: {"choices":[{"delta":{},"finish_reason":"tool_calls"}]}\n\n',
+    'data: [DONE]\n\n',
+  ]);
+
+  assert.equal(events.some((event) => event.type === 'response.completed'), false);
+  assert.equal(events.find((event) => event.type === 'response.failed').response.error.code, 'empty_stop_response');
+});
+
+test('length 截断的纯推理响应保持 incomplete 语义不受空停判定影响', async () => {
+  const events = await convert([
+    'data: {"choices":[{"delta":{"reasoning_content":"思考中途被截断"}}]}\n\n',
+    'data: {"choices":[{"delta":{},"finish_reason":"length"}]}\n\n',
+    'data: [DONE]\n\n',
+  ]);
+
+  const completed = events.find((event) => event.type === 'response.completed');
+  assert.equal(completed.response.status, 'incomplete');
+  assert.deepEqual(completed.response.incomplete_details, { reason: 'max_output_tokens' });
+});
+
+test('纯推理空停响应发布 failed 状态供上层记录', async () => {
+  const transform = createChatSseToResponsesTransform('test-model');
+  let response;
+  transform.once('response', (value) => { response = value; });
+  for await (const _chunk of Readable.from([
+    'data: {"choices":[{"delta":{"reasoning_content":"let me search"}}]}\n\n',
+    'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\n',
+    'data: [DONE]\n\n',
+  ]).pipe(transform)) { /* 消费输出，驱动转换完成 */ }
+
+  assert.ok(response);
+  assert.equal(response.status, 'failed');
+  assert.equal(response.error.code, 'empty_stop_response');
+});
+
 test('content 中跨分片的 think 标签拆分为推理摘要和正文', async () => {
   const events = await convert([
     'data: {"choices":[{"delta":{"content":"<thi"}}]}\n\n',

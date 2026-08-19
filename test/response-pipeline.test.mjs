@@ -137,6 +137,63 @@ test('Chat 上游流错误通过窄回调标记诊断状态', async () => {
   assert.equal(response.writableEnded, true);
 });
 
+test('Chat 空停响应通过窄回调标记 upstream_error 诊断终态', async () => {
+  const pipeline = createResponsePipeline({ heartbeatMs: 15_000 });
+  const response = new FakeResponse();
+  response.headersSent = true;
+  const upstream = new PassThrough();
+  const failures = [];
+
+  pipeline.pipeChatResponse(
+    { stream: upstream },
+    response,
+    'qwen3.8-max',
+    'test-tag',
+    () => {},
+    { byChatName: {} },
+    {},
+    null,
+    { markFailure: (fields) => failures.push(fields) },
+  );
+  upstream.write('data: {"choices":[{"delta":{"reasoning_content":"let me search"}}]}\n\n');
+  upstream.write('data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n');
+  await new Promise((resolve) => setImmediate(() => resolve()));
+
+  assert.deepEqual(failures, [{
+    outcome: 'upstream_error',
+    error_code: 'empty_stop_response',
+    error_stage: 'chat_response_stream',
+  }]);
+  const terminal = responseEvents(response)
+    .filter((event) => ['response.completed', 'response.failed', 'response.incomplete'].includes(event.type));
+  assert.equal(terminal.length, 1);
+  assert.equal(terminal[0].type, 'response.failed');
+});
+
+test('Chat 正常完成响应不触发诊断失败标记', async () => {
+  const pipeline = createResponsePipeline({ heartbeatMs: 15_000 });
+  const response = new FakeResponse();
+  response.headersSent = true;
+  const upstream = new PassThrough();
+  const failures = [];
+
+  pipeline.pipeChatResponse(
+    { stream: upstream },
+    response,
+    'qwen3.8-max',
+    'test-tag',
+    () => {},
+    { byChatName: {} },
+    {},
+    null,
+    { markFailure: (fields) => failures.push(fields), streamError: (fields) => failures.push(fields) },
+  );
+  upstream.write('data: {"choices":[{"delta":{"content":"最终答案"},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n');
+  await new Promise((resolve) => setImmediate(() => resolve()));
+
+  assert.deepEqual(failures, []);
+});
+
 test('Chat 已开始响应后的流错误以同一 response id 发送唯一失败终态', async () => {
   const pipeline = createResponsePipeline({ heartbeatMs: 15_000 });
   const response = new FakeResponse();
@@ -230,4 +287,37 @@ test('原生非 SSE 上游空闲超时通过窄回调标记 timeout', () => {
     error_stage: 'native_response_stream',
   }]);
   assert.equal(response.destroyed, true);
+});
+
+test('Chat 响应完成时自动向 tokenTracker 上报 usage 数据', async () => {
+  const records = [];
+  const fakeTracker = {
+    recordUsage: (entry) => records.push(entry),
+  };
+  const pipeline = createResponsePipeline({
+    heartbeatMs: 60000,
+    tokenTracker: fakeTracker,
+  });
+  const upstream = new PassThrough();
+  const response = new FakeResponse();
+
+  pipeline.pipeChatResponse(
+    { status: 200, headers: {}, stream: upstream, socket: { destroy() {} } },
+    response,
+    'test-model',
+    'test-target',
+    () => {},
+    null,
+  );
+
+  upstream.write('data: {"choices":[{"delta":{"content":"ok"}}],"usage":{"prompt_tokens":10,"completion_tokens":5,"total_tokens":15}}\n\n');
+  upstream.write('data: [DONE]\n\n');
+  upstream.end();
+
+  await new Promise((resolve) => setTimeout(resolve, 30));
+  assert.equal(records.length, 1);
+  assert.equal(records[0].model, 'test-model');
+  assert.equal(records[0].target, 'test-target');
+  assert.equal(records[0].usage.input_tokens, 10);
+  assert.equal(records[0].usage.output_tokens, 5);
 });

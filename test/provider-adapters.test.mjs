@@ -6,6 +6,8 @@ import {
   applyCheckpointProviderOptions,
   applyChatProviderOptions,
   buildProviderAuthHeaders,
+  enforceToolOutputAdjacency,
+  repairOrphanToolCalls,
   resolveOAuthViaProxy,
   resolveRequestProtocol,
   resolveProvider,
@@ -442,4 +444,198 @@ test('compact 仅允许原生 Responses 通道透传', () => {
     isCompact: true,
     allowed: false,
   });
+});
+
+
+test('官方 Responses 修复孤儿工具调用：补中断 output、移除孤儿 output', () => {
+  const body = {
+    model: 'gpt-5.6-sol',
+    stream: true,
+    input: [
+      { role: 'user', content: [{ type: 'input_text', text: 'list files' }] },
+      { type: 'function_call', call_id: 'call_00_abc', name: 'shell_command', arguments: '{"command":"ls"}' },
+      { role: 'user', content: [{ type: 'input_text', text: 'continue' }] },
+      { type: 'custom_tool_call', call_id: 'ctc_01', name: 'apply_patch', input: '*** patch' },
+    ],
+  };
+  const repairs = [];
+  adaptOfficialResponsesBody(body, '/v1/responses', { onRepair: (info) => repairs.push(info) });
+
+  const types = body.input.map((i) => i.type);
+  // 孤儿 function_call 后紧跟占位 output；custom_tool_call 同理
+  assert.deepEqual(types, [
+    undefined, // user 消息项
+    'function_call',
+    'function_call_output',
+    undefined, // user 消息项
+    'custom_tool_call',
+    'custom_tool_call_output',
+  ]);
+  const placeholder = body.input[2];
+  assert.equal(placeholder.call_id, 'call_00_abc');
+  assert.match(placeholder.output, /interrupted/i);
+  assert.equal(body.input[5].call_id, 'ctc_01');
+  assert.equal(repairs.length, 2, '两次修复均产生脱敏诊断');
+});
+
+test('官方 Responses 修复孤儿 output（配对调用已被剥离的残留）', () => {
+  const body = {
+    stream: true,
+    input: [
+      { type: 'function_call', call_id: 'call_ok', name: 'f', arguments: '{}' },
+      { type: 'function_call_output', call_id: 'call_ok', output: 'ok' },
+      { type: 'function_call_output', call_id: 'call_gone', output: 'stale' },
+    ],
+  };
+  adaptOfficialResponsesBody(body, '/v1/responses');
+  const ids = body.input.map((i) => i.call_id);
+  assert.deepEqual(ids, ['call_ok', 'call_ok'], '孤儿 output 被移除，正常配对不动');
+});
+
+test('配对完好的 input 不被修复逻辑改动', () => {
+  const input = [
+    { role: 'user', content: [{ type: 'input_text', text: 'hi' }] },
+    { type: 'function_call', call_id: 'call_1', name: 'f', arguments: '{}' },
+    { type: 'function_call_output', call_id: 'call_1', output: 'done' },
+  ];
+  const body = { stream: true, input: JSON.parse(JSON.stringify(input)) };
+  adaptOfficialResponsesBody(body, '/v1/responses');
+  assert.deepEqual(body.input, input);
+});
+
+// ---- 第三方原生 Responses 透传路径直接使用的修复函数 ----
+test('repairOrphanToolCalls 直接导出可用：孤儿调用补占位 output 且保持原位', () => {
+  const input = [
+    { role: 'user', content: [{ type: 'input_text', text: 'run ls' }] },
+    { type: 'function_call', call_id: 'call_repro', name: 'shell_command', arguments: '{}' },
+  ];
+  const repairs = [];
+  const out = repairOrphanToolCalls(input, (r) => repairs.push(r));
+  assert.equal(out.length, 3);
+  assert.equal(out[1].type, 'function_call');
+  assert.equal(out[2].type, 'function_call_output');
+  assert.equal(out[2].call_id, 'call_repro');
+  assert.match(out[2].output, /interrupted/i);
+  assert.equal(repairs.length, 1);
+  assert.equal(repairs[0].call_id_prefix, 'call_r');
+});
+
+test('repairOrphanToolCalls 不影响配对完好与官方私有类型', () => {
+  const input = [
+    { type: 'function_call', call_id: 'call_1', name: 'f', arguments: '{}' },
+    { type: 'function_call_output', call_id: 'call_1', output: 'done' },
+    { type: 'tool_search_call', call_id: 'tsc_x', id: 'tsc_x' },
+  ];
+  const out = repairOrphanToolCalls(input);
+  assert.deepEqual(out, input, '完好配对与非修复集合类型原样保留');
+});
+
+// ---- 第三方 Responses 上游的 call→output 相邻归一化 ----
+test('enforceToolOutputAdjacency 把交错的 output 上提到紧跟调用之后', () => {
+  const msg = { role: 'assistant', content: [{ type: 'output_text', text: 'ok' }] };
+  const call = { type: 'function_call', call_id: 'call_1', name: 'f', arguments: '{}' };
+  const out1 = { type: 'function_call_output', call_id: 'call_1', output: 'done' };
+  const user = { role: 'user', content: [{ type: 'input_text', text: 'go' }] };
+  const reorders = [];
+  const result = enforceToolOutputAdjacency([call, msg, out1, user], (r) => reorders.push(r));
+  assert.deepEqual(result, [call, out1, msg, user], 'output 紧跟 call，message 顺位后移');
+  assert.equal(reorders.length, 1);
+  assert.equal(reorders[0].moved_outputs, 1);
+});
+
+test('enforceToolOutputAdjacency 已相邻时原样返回（幂等零改动）', () => {
+  const input = [
+    { type: 'function_call', call_id: 'call_1', name: 'f', arguments: '{}' },
+    { type: 'function_call_output', call_id: 'call_1', output: 'done' },
+    { role: 'user', content: [{ type: 'input_text', text: 'hi' }] },
+  ];
+  assert.equal(enforceToolOutputAdjacency(input), input, '返回同一数组引用');
+});
+
+test('enforceToolOutputAdjacency output 先于 call 时不产生重复条目', () => {
+  const out1 = { type: 'function_call_output', call_id: 'call_1', output: 'done' };
+  const call = { type: 'function_call', call_id: 'call_1', name: 'f', arguments: '{}' };
+  const result = enforceToolOutputAdjacency([out1, call]);
+  assert.equal(result.length, 2, '不出现重复 output');
+  assert.equal(result.filter((i) => i === out1).length, 1);
+});
+
+test('enforceToolOutputAdjacency 多组配对各自归位且保持稳定序', () => {
+  const msg = { role: 'assistant', content: [{ type: 'output_text', text: 'mid' }] };
+  const callA = { type: 'function_call', call_id: 'call_A', name: 'f', arguments: '{}' };
+  const callB = { type: 'function_call', call_id: 'call_B', name: 'g', arguments: '{}' };
+  const outA = { type: 'function_call_output', call_id: 'call_A', output: 'a' };
+  const outB = { type: 'function_call_output', call_id: 'call_B', output: 'b' };
+  const result = enforceToolOutputAdjacency([callA, callB, msg, outA, outB]);
+  assert.deepEqual(result, [callA, outA, callB, outB, msg]);
+});
+
+test('Cursor 通道默认开启多智能体：保留协作工具并注入收尾总结指令', () => {
+  const provider = resolveProvider({ name: 'cursor-grok-4.6-high', wireApi: 'chat' });
+  assert.equal(provider.stripAgentTools, false, 'cursor 目标默认关闭剥离 = 支持子代理并行');
+  const base = {
+    model: 'grok-4.6[effort=high]',
+    messages: [
+      { role: 'developer', content: '你是编码助手。' },
+      { role: 'user', content: '帮我看看这个仓库' },
+    ],
+    tools: [
+      { type: 'function', function: { name: 'collaboration___spawn_agent' } },
+      { type: 'function', function: { name: 'collaboration___wait_agent' } },
+      { type: 'function', function: { name: 'exec' } },
+    ],
+  };
+  const once = applyChatProviderOptions(base, {}, provider);
+  const names = (once.tools || []).map((t) => t.function.name);
+  assert.deepEqual(names, ['collaboration___spawn_agent', 'collaboration___wait_agent', 'exec'], '协作工具默认保留');
+  assert.match(once.messages[0].content, /完成总结/, 'developer 消息被追加收尾总结指令');
+  // 幂等：重复调用不叠加指令
+  const twice = applyChatProviderOptions(once, {}, provider);
+  assert.equal(
+    (twice.messages[0].content.match(/完成总结/g) || []).length,
+    1,
+    '重复调用不重复追加总结指令',
+  );
+});
+
+test('Cursor 通道显式 stripAgentTools=true 时剥离协作工具（纯文字逃生）', () => {
+  const provider = resolveProvider({ name: 'cursor-grok-4.6-high', wireApi: 'chat', stripAgentTools: true });
+  assert.equal(provider.stripAgentTools, true);
+  const request = applyChatProviderOptions(
+    {
+      model: 'grok-4.6[effort=high]',
+      messages: [{ role: 'developer', content: '你是编码助手。' }],
+      tools: [
+        { type: 'function', function: { name: 'exec' } },
+        { type: 'function', function: { name: 'collaboration___spawn_agent' } },
+        { type: 'function', function: { name: 'collaboration___wait_agent' } },
+      ],
+    },
+    {},
+    provider,
+  );
+  const names = (request.tools || []).map((t) => t.function.name);
+  assert.deepEqual(names, ['exec'], '协作工具被剥离，exec 保留');
+  assert.equal(request.messages[0].content, '你是编码助手。', '剥离时不注入任何指令');
+  // 非 cursor 目标不受影响：cursorChannel=false，绝不追加收尾指令
+  const bailian = resolveProvider({ name: 'bailian', wireApi: 'chat' });
+  assert.equal(bailian.cursorChannel, false);
+  const noInline = applyChatProviderOptions(
+    { model: 'qwen', messages: [{ role: 'developer', content: '你是助手。' }] },
+    {},
+    bailian,
+  );
+  assert.equal(noInline.messages[0].content, '你是助手。', '非 cursor 通道不注入任何指令');
+});
+
+test('非 Cursor 通道保留 collaboration 工具：自定义模型支持 Codex 子代理并行', () => {
+  const provider = resolveProvider({ name: 'bailian', wireApi: 'chat' });
+  const tools = [
+    { type: 'function', function: { name: 'exec' } },
+    { type: 'function', function: { name: 'collaboration___spawn_agent' } },
+  ];
+  const request = applyChatProviderOptions({ model: 'qwen3.8-max', messages: [{ role: 'user', content: 'hi' }], tools }, {}, provider);
+  const names = (request.tools || []).map((t) => t.function.name);
+  assert.deepEqual(names, ['exec', 'collaboration___spawn_agent'], '协作工具必须原样转发，不剥离不注入');
+  assert.equal(request.messages[0].content, 'hi', '非 cursor 通道不注入任何指令');
 });

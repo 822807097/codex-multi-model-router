@@ -16,6 +16,181 @@ function target(overrides = {}) {
   };
 }
 
+const VALID_CHECKPOINT = `目标
+持续完成工具任务
+
+硬性约束
+不得丢失未完成调用
+
+已完成
+早期工具周期已整理
+
+进行中
+继续当前任务
+
+待完成
+剩余工具步骤
+
+关键决定
+保留最近四个周期
+
+当前工作集
+路由请求
+
+失败与原因
+无
+
+下一步
+执行下一工具`;
+
+function responsesToolCycle(index, output = `工具结果 ${index}`) {
+  return [
+    {
+      type: 'function_call',
+      call_id: `call_${index}`,
+      name: 'run_task',
+      arguments: JSON.stringify({ index }),
+    },
+    { type: 'function_call_output', call_id: `call_${index}`, output },
+  ];
+}
+
+function compactionConfig() {
+  return {
+    goalCheckpoint: { enabled: true, maxOutputTokens: 2_048 },
+    modelCapabilities: [{
+      match: '^large-model$',
+      contextWindow: 1_000_000,
+      maxOutputTokens: 65_536,
+      safetyRatio: 0.9,
+      protocolReserveTokens: 512,
+      imageTokens: 2_048,
+    }],
+  };
+}
+
+function emptyCheckpointStore(previous = null) {
+  return {
+    getTask: () => previous,
+    getExact: () => null,
+  };
+}
+
+test('Chat 请求装配不会重放模型已查看的大型 data image', async () => {
+  const currentTarget = target();
+  const events = [];
+  const builder = createChatRequestBuilder({
+    config: { goalCheckpoint: { enabled: false } },
+    goalCheckpoints: {},
+    proxy: null,
+    request: async () => { throw new Error('检查点已关闭，不应调用上游'); },
+    flog: (event) => events.push(event),
+  });
+  const largeImage = `data:image/png;base64,${'a'.repeat(500_000)}`;
+
+  const result = await builder.buildChatRequest({
+    input: [
+      { role: 'user', content: [{ type: 'input_text', text: '生成并检查图片' }] },
+      ...responsesToolCycle(1, [{ type: 'input_image', image_url: largeImage }]),
+      { type: 'reasoning', summary: [] },
+      ...responsesToolCycle(2),
+    ],
+  }, currentTarget, resolveProvider(currentTarget), 'large-model', {
+    requestId: 'req_image', headers: {}, signal: undefined, timeouts: {},
+  });
+
+  const serialized = JSON.stringify(result.request);
+  assert.doesNotMatch(serialized, /data:image\/png;base64/);
+  assert.match(serialized, /图片.*已.*查看.*省略/);
+  assert.ok(Buffer.byteLength(serialized) < 20_000);
+  assert.deepEqual(events, [{
+    event: 'context.images.compacted',
+    request_id: 'req_image',
+    model: 'large-model',
+    target: 'chat-target',
+    wire_api: 'chat',
+  }]);
+});
+
+test('第五个完整工具周期在硬上下文裁剪前触发检查点并只保留最近四个', async () => {
+  const checkpointBodies = [];
+  const currentTarget = target();
+  const builder = createChatRequestBuilder({
+    config: compactionConfig(),
+    goalCheckpoints: emptyCheckpointStore(),
+    proxy: null,
+    request: async ({ body }) => {
+      checkpointBodies.push(JSON.parse(body));
+      return {
+        status: 200,
+        bodyText: JSON.stringify({ choices: [{ message: { content: VALID_CHECKPOINT } }] }),
+      };
+    },
+  });
+  const input = [
+    { role: 'user', content: [{ type: 'input_text', text: '连续执行工具任务' }] },
+    ...responsesToolCycle(1),
+    ...responsesToolCycle(2),
+    ...responsesToolCycle(3),
+    ...responsesToolCycle(4),
+    ...responsesToolCycle(5),
+  ];
+
+  const result = await builder.buildChatRequest({ input }, currentTarget,
+    resolveProvider(currentTarget), 'large-model', {
+      taskKey: 'task:tool-cycles', requestId: 'req_cycles', requestSequence: 1,
+      headers: {}, signal: undefined, timeouts: {},
+    });
+
+  assert.equal(checkpointBodies.length, 1);
+  assert.match(checkpointBodies[0].messages[1].content, /工具结果 1/);
+  assert.equal(result.checkpointInfo?.persistCheckpoint, true);
+  assert.deepEqual(
+    result.request.messages
+      .filter((message) => message.role === 'assistant' && message.tool_calls)
+      .map((message) => message.tool_calls[0].id),
+    ['call_2', 'call_3', 'call_4', 'call_5'],
+  );
+  assert.equal(result.request.messages.some((message) => message.content === result.checkpointInfo.checkpoint), true);
+});
+
+test('主动工具周期检查点失败时回退完整历史且不丢失任何周期', async () => {
+  let checkpointRequests = 0;
+  const currentTarget = target();
+  const builder = createChatRequestBuilder({
+    config: compactionConfig(),
+    goalCheckpoints: emptyCheckpointStore(VALID_CHECKPOINT),
+    proxy: null,
+    request: async () => {
+      checkpointRequests += 1;
+      throw new Error('checkpoint unavailable');
+    },
+  });
+  const input = [
+    { role: 'user', content: [{ type: 'input_text', text: '连续执行工具任务' }] },
+    ...responsesToolCycle(1),
+    ...responsesToolCycle(2),
+    ...responsesToolCycle(3),
+    ...responsesToolCycle(4),
+    ...responsesToolCycle(5),
+  ];
+
+  const result = await builder.buildChatRequest({ input }, currentTarget,
+    resolveProvider(currentTarget), 'large-model', {
+      taskKey: 'task:tool-cycles', requestId: 'req_fallback',
+      headers: {}, signal: undefined, timeouts: {},
+    });
+
+  assert.equal(checkpointRequests, 1);
+  assert.equal(result.checkpointInfo, null);
+  assert.deepEqual(
+    result.request.messages
+      .filter((message) => message.role === 'assistant' && message.tool_calls)
+      .map((message) => message.tool_calls[0].id),
+    ['call_1', 'call_2', 'call_3', 'call_4', 'call_5'],
+  );
+});
+
 test('Chat 请求装配独立完成工具转换、模型映射和上下文预算', async () => {
   const config = {
     goalCheckpoint: { enabled: false },

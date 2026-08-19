@@ -2181,3 +2181,70 @@ test('检查点持久化启用时严格校验显式路径和锁定预算', () =>
     '/goalCheckpoint/persistence/lockStaleMs',
   ]);
 });
+
+test('target.proxyUrl：节点/本地代理链接校验（ss/trojan/vless/socks5/http）', () => {
+  const { inspectRouterConfig } = requireProxyConfig();
+  const base = { port: 15730, targets: [{ name: 't', match: '^x$', host: 'api.x.com', wireApi: 'chat' }] };
+
+  // 合法链接
+  for (const url of [
+    'ss://aes-256-gcm:cGFzcw@1.2.3.4:8388',
+    'trojan://pass@node.example.com:443?security=tls&sni=cdn.example.com',
+    'vless://3f9e8c1a-0000-4000-8000-1234567890ab@v.example.com:443?security=tls',
+    'socks5://127.0.0.1:10808',
+    'socks5://host', // 缺端口时 transport 默认 10808
+    'http://127.0.0.1:10809',
+  ]) {
+    const inspected = inspectRouterConfig({ ...base, targets: [{ ...base.targets[0], proxyUrl: url }] });
+    assert.equal(
+      inspected.errors.some((e) => e.code === 'target_proxy_url_invalid'),
+      false,
+      `应接受 ${url}`,
+    );
+  }
+
+  // 非法：未支持协议 / 缺端口 / 含空格
+  for (const url of ['vmess://bad', 'socks5://', 'trojan://p@host:443 extra']) {
+    const inspected = inspectRouterConfig({ ...base, targets: [{ ...base.targets[0], proxyUrl: url }] });
+    assert.equal(
+      inspected.errors.some((e) => e.code === 'target_proxy_url_invalid'),
+      true,
+      `应拒绝 ${url}`,
+    );
+  }
+
+  // 未配置 proxyUrl 时正常
+  const inspected = inspectRouterConfig(base);
+  assert.equal(inspected.errors.length, 0);
+});
+
+function requireProxyConfig() {
+  // 动态 import 避免模块顶部重复加载（测试文件顶部已 import 部分导出时用别名）
+  return { inspectRouterConfig };
+}
+
+test('visionRelay.endpoints：多端点数组校验', () => {
+  // 注意：visionRelay 校验仅在存在 vision:false 通道（needsRelay）时生效
+  const base = { port: 15730, targets: [{ name: 't', match: '^x$', host: 'api.x.com', envKey: 'K', vision: false }] };
+  // 合法：两个端点
+  const ok = inspectRouterConfig({
+    ...base,
+    visionRelay: {
+      endpoints: [
+        { host: 'a.example.com', model: 'm1', envKey: 'K1' },
+        { host: 'b.example.com', prefix: '/v1', model: 'm2', envKey: 'K2', protocol: 'https', viaProxy: false },
+      ],
+    },
+  });
+  assert.equal(ok.errors.length, 0, JSON.stringify(ok.errors));
+
+  // 非法：缺 host / 非法协议 / 非数组
+  const bad1 = inspectRouterConfig({ ...base, visionRelay: { endpoints: [{ model: 'm1', envKey: 'K1' }] } });
+  assert.equal(bad1.errors.some((e) => e.path.includes('/endpoints/0/host')), true, '缺 host 应报错');
+  const bad2 = inspectRouterConfig({ ...base, visionRelay: { endpoints: [{ host: 'a.com', model: 'm1', envKey: 'K1', protocol: 'ftp' }] } });
+  assert.equal(bad2.errors.some((e) => e.path.includes('/endpoints/0/protocol')), true, '非法协议应报错');
+  const bad3 = inspectRouterConfig({ ...base, visionRelay: { endpoints: 'nope' } });
+  assert.equal(bad3.errors.some((e) => e.path.includes('/endpoints')), true, '非数组应报错');
+  const bad4 = inspectRouterConfig({ ...base, visionRelay: { endpoints: [] } });
+  assert.equal(bad4.errors.some((e) => e.path.includes('/endpoints')), true, '空数组应报错');
+});

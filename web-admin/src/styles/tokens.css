@@ -1,0 +1,90 @@
+/*
+ * 设计 Token 唯一来源（Design Tokens）
+ * 修改品牌色/表面色只需改这里，Tailwind 语义类与 Element Plus 变量全部引用本文件。
+ *
+ * 配色基调：明亮清爽的浅色方案（2026-08 起由 dark-dimmed 暗色迁移）。
+ * 页面底色为极浅的蓝灰 (#f4f6fa)，卡片纯白浮于其上，
+ * 文本为深青灰梯度，语义色中等饱和、与白色调和出浅底，
+ * 长时间管理操作不刺眼，所有正文文字保持 WCAG AA 对比度。
+ *
+ * 命名约定：
+ *   --xxx-rgb  为 RGB 三通道数值（供 Tailwind rgb(var(--xxx-rgb) / <alpha-value>) 使用，支持透明度修饰符）
+ *   --xxx      为完整颜色（供普通 CSS 直接使用）
+ */
+:root {
+  /* ---- 表面层级（浅蓝灰底 + 纯白卡片，层级靠细边框与柔和阴影区分） ---- */
+  --bg-canvas-rgb: 244 246 250;      /* #f4f6fa 页面底色 */
+  --bg-surface-rgb: 255 255 255;     /* #ffffff 卡片/侧栏/顶栏 */
+  --bg-surface-2-rgb: 238 242 247;   /* #eef2f7 悬浮层/条目 hover 底 */
+  --border-default-rgb: 216 224 234; /* #d8e0ea 常规边框 */
+  --border-muted-rgb: 229 234 241;   /* #e5eaf1 弱化分隔线 */
+  --border-strong-rgb: 185 198 213;  /* #b9c6d5 hover 高亮边框 */
+
+  --bg-canvas: rgb(var(--bg-canvas-rgb));
+  --bg-surface: rgb(var(--bg-surface-rgb));
+  --bg-surface-2: rgb(var(--bg-surface-2-rgb));
+  --border-default: rgb(var(--border-default-rgb));
+  --border-muted: rgb(var(--border-muted-rgb));
+  --border-strong: rgb(var(--border-strong-rgb));
+
+  /* ---- 品牌与语义色（中等饱和、清爽不荧光；text 阶压深保证浅底可读） ---- */
+  --accent-primary-rgb: 59 116 196;    /* #3b74c4 主按钮/强调底（沉稳钢蓝） */
+  --accent-hover-rgb: 91 139 212;      /* #5b8bd4 hover 提亮 */
+  --success-rgb: 52 158 102;           /* #349e66 实心底 */
+  --success-text-rgb: 37 128 80;       /* #258050 文字/图标（浅底可读阶） */
+  --warning-rgb: 206 145 32;           /* #ce9120 实心底 */
+  --warning-text-rgb: 152 104 14;      /* #98680e 文字/图标（深琥珀） */
+  --danger-rgb: 211 84 76;             /* #d3544c 实心底 */
+  --danger-text-rgb: 185 62 54;        /* #b93e36 文字/图标 */
+  --info-text-rgb: 47 102 176;         /* #2f66b0 链接/信息文字 */
+
+  --accent-primary: rgb(var(--accent-primary-rgb));
+  --accent-hover: rgb(var(--accent-hover-rgb));
+  --success: rgb(var(--success-rgb));
+  --success-text: rgb(var(--success-text-rgb));
+  --warning: rgb(var(--warning-rgb));
+  --warning-text: rgb(var(--warning-text-rgb));
+  --danger: rgb(var(--danger-rgb));
+  --danger-text: rgb(var(--danger-text-rgb));
+  --info-text: rgb(var(--info-text-rgb));
+
+  /* ---- 平台品牌色（供订阅页平台标识使用，浅底可读阶） ---- */
+  --brand-claude-rgb: 204 108 74;      /* #cc6c4a Anthropic 珊瑚 */
+  --brand-google-rgb: 74 124 214;      /* #4a7cd6 Google 蓝 */
+  --brand-openai-rgb: 43 152 122;      /* #2b987a OpenAI 青绿 */
+
+  --brand-claude: rgb(var(--brand-claude-rgb));
+  --brand-google: rgb(var(--brand-google-rgb));
+  --brand-openai: rgb(var(--brand-openai-rgb));
+
+  /* ---- 文本（深青灰梯度，纯白卡片上的层级） ---- */
+  --text-primary-rgb: 35 48 68;        /* #233044 标题/正文主色 */
+  --text-regular-rgb: 74 90 112;       /* #4a5a70 常规正文 */
+  --text-secondary-rgb: 113 128 154;   /* #71809a 辅助说明 */
+
+  --text-primary: rgb(var(--text-primary-rgb));
+  --text-regular: rgb(var(--text-regular-rgb));
+  --text-secondary: rgb(var(--text-secondary-rgb));
+
+  /* ---- 模型图表色板（堆叠柱状图 / 图例 / 分组圆点，白底协调色） ---- */
+  --chart-1-rgb: 91 141 217;    /* #5b8dd9 柔蓝 */
+  --chart-2-rgb: 217 161 63;    /* #d9a13f 柔琥珀 */
+  --chart-3-rgb: 77 176 138;    /* #4db08a 柔绿 */
+  --chart-4-rgb: 224 112 95;    /* #e0705f 柔珊瑚红 */
+  --chart-5-rgb: 154 130 217;   /* #9a82d9 柔紫 */
+  --chart-6-rgb: 79 181 174;    /* #4fb5ae 柔青 */
+
+  --chart-1: rgb(var(--chart-1-rgb));
+  --chart-2: rgb(var(--chart-2-rgb));
+  --chart-3: rgb(var(--chart-3-rgb));
+  --chart-4: rgb(var(--chart-4-rgb));
+  --chart-5: rgb(var(--chart-5-rgb));
+  --chart-6: rgb(var(--chart-6-rgb));
+
+  /* ---- 活跃热力图色阶（浅底绿阶，GitHub 贡献图风格） ---- */
+  --heat-0-rgb: 233 238 244;    /* #e9eef4 空格与页面同调 */
+  --heat-1-rgb: 185 226 200;    /* #b9e2c8 */
+  --heat-2-rgb: 127 207 160;    /* #7fcfa0 */
+  --heat-3-rgb: 69 181 114;     /* #45b572 */
+  --heat-4-rgb: 44 143 86;      /* #2c8f56 */
+}

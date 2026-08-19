@@ -1,7 +1,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { createModelQuotaCooldownStore } from '../lib/model-quota-cooldown.mjs';
+import {
+  createModelQuotaCooldownStore,
+  isExplicitLongQuota,
+  parsedQuotaError,
+  retryAtFromMessageText,
+} from '../lib/model-quota-cooldown.mjs';
 
 test('任意供应商明确的长期套餐额度 429 建立模型级冷却且不保存上游正文', () => {
   let now = Date.parse('2026-08-13T12:00:00Z');
@@ -151,4 +156,80 @@ test('冷却存储按最近使用有界淘汰且拒绝无效键', () => {
   assert.equal(store.get('two', 'b'), null);
   assert.ok(store.get('three', 'c'));
   assert.equal(store.size, 2);
+});
+
+
+// ---------- 百炼 token-plan 真实报文（2026-08-16 实测捕获） ----------
+const BAILIAN_QUOTA_BODY = JSON.stringify({
+  error: {
+    message: 'Your token-plan 1-week quota has been exhausted. The quota will reset at 08-21 11:36:00 UTC.',
+    id: '50264f09-efff-4375-adf9-a2daca2476ff',
+    type: 'insufficient_quota',
+    code: 'insufficient_quota',
+  },
+});
+
+test('百炼 insufficient_quota 报文被识别为长期配额冷却（retry-after 头优先）', () => {
+  const now = Date.parse('2026-08-16T01:00:00Z');
+  const store = createModelQuotaCooldownStore({ now: () => now });
+  assert.equal(isExplicitLongQuota(429, BAILIAN_QUOTA_BODY), true);
+  assert.equal(parsedQuotaError(BAILIAN_QUOTA_BODY).error.code, 'insufficient_quota');
+
+  const entry = store.observe({
+    target: 'bailian', model: 'qwen3.8-max', status: 429,
+    headers: { 'retry-after': '467583' },
+    bodyText: BAILIAN_QUOTA_BODY,
+  });
+  assert.ok(entry);
+  assert.equal(entry.retryAt, now + 467583_000, 'retry-after 头必须优先于 message 文本');
+});
+
+test('百炼缺失 retry-after 头时从 message 文本解析重置时间', () => {
+  const now = Date.parse('2026-08-16T01:00:00Z');
+  assert.equal(retryAtFromMessageText(BAILIAN_QUOTA_BODY, now), Date.parse('2026-08-21T11:36:00Z'));
+
+  const store = createModelQuotaCooldownStore({ now: () => now });
+  const entry = store.observe({
+    target: 'bailian', model: 'qwen3.7-max', status: 429,
+    headers: {},
+    bodyText: BAILIAN_QUOTA_BODY,
+  });
+  assert.ok(entry);
+  assert.equal(entry.retryAt, Date.parse('2026-08-21T11:36:00Z'));
+  assert.ok(entry.retryAfterSeconds > 5 * 86400, '一周量级的重置时间不应退化为分钟级默认值');
+});
+
+test('瞬时 rate limit 报文仍不建立冷却且文本解析不误报', () => {
+  const transient = JSON.stringify({ error: { code: 'rate_limit_exceeded', message: 'too many requests, retry in 30s' } });
+  assert.equal(isExplicitLongQuota(429, transient), false);
+  assert.equal(retryAtFromMessageText(transient, Date.now()), null, '无 reset 时间文本不得解析出值');
+});
+
+test('message 文本重置时间不合法时不产生冷却时间（结构化兜底链继续）', () => {
+  const now = Date.parse('2026-08-16T01:00:00Z');
+  const vague = JSON.stringify({ error: { code: 'insufficient_quota', message: 'quota has been exhausted. The quota will reset soon.' } });
+  assert.equal(retryAtFromMessageText(vague, now), null);
+  const store = createModelQuotaCooldownStore({ now: () => now, defaultCooldownMs: 300_000 });
+  const entry = store.observe({
+    target: 'vague', model: 'm', status: 429, headers: {}, bodyText: vague,
+  });
+  assert.equal(entry.retryAt, now + 300_000, '无可解析时间时回落默认冷却');
+});
+
+// ---------- 透传层摘要（router-handler.summarizeUpstreamError） ----------
+test('summarizeUpstreamError：百炼配额报文产出重置时间与上游摘要；瞬时限流仅摘要', async () => {
+  const { summarizeUpstreamError } = await import('../lib/router-handler.mjs');
+
+  const quota = summarizeUpstreamError(429, BAILIAN_QUOTA_BODY, { 'retry-after': '467583' });
+  assert.equal(quota.quotaExhausted, true);
+  assert.ok(quota.retryAt > Date.now());
+  assert.equal(quota.upstream.code, 'insufficient_quota');
+  assert.equal(quota.upstream.status, 429);
+  assert.match(quota.upstream.message, /quota has been exhausted/);
+
+  const transient = summarizeUpstreamError(429, JSON.stringify({ error: { code: 'rate_limit_exceeded', message: 'slow down' } }), {});
+  assert.equal(transient.quotaExhausted, false);
+  assert.equal(transient.retryAt, null);
+  assert.equal(transient.upstream.code, 'rate_limit_exceeded');
+  assert.match(transient.upstream.message, /slow down/);
 });

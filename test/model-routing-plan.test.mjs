@@ -1015,10 +1015,10 @@ test('安全投影与稳定摘要不会遍历超出预算的 primitive 数组尾
 
 test('目标引用对超预算、超深和循环身份 fail closed 而不产生碰撞摘要', () => {
   const oversizedA = target('oversized', '^model-a$', {
-    forwardHeaders: Array.from({ length: 3_000 }, (_, index) => `x-a-${index}`),
+    forwardHeaders: Array.from({ length: 5_000 }, (_, index) => `x-a-${index}`),
   });
   const oversizedB = target('oversized', '^model-a$', {
-    forwardHeaders: Array.from({ length: 3_000 }, (_, index) => `x-b-${index}`),
+    forwardHeaders: Array.from({ length: 5_000 }, (_, index) => `x-b-${index}`),
   });
   const deep = target('deep', '^model-a$');
   let cursor = deep;
@@ -1509,4 +1509,106 @@ test('操作错误转成稳定诊断而不抛异常并保留原始状态副本',
     targets: { created: [], updated: [], deleted: [] },
     references: { replaced: [], removed: [] },
   });
+});
+
+test('catalog 预检拦截非法 apply_patch_tool_type（桌面端启动崩溃防护）', () => {
+  // 非法值：桌面端报 unknown variant `apply_patch_legacy`，expected `freeform`
+  const bad = inspectModelCatalog({
+    models: [{ slug: 'm1', display_name: 'M1', apply_patch_tool_type: 'apply_patch_legacy' }],
+  });
+  assert.ok(bad.errors.some((e) => e.code === 'catalog_apply_patch_tool_type_invalid'), '应拦截 apply_patch_legacy');
+
+  // 合法值：freeform 与缺省都通过
+  const ok = inspectModelCatalog({
+    models: [
+      { slug: 'm1', display_name: 'M1', apply_patch_tool_type: 'freeform' },
+      { slug: 'm2', display_name: 'M2' },
+      { slug: 'm3', display_name: 'M3', apply_patch_tool_type: null },
+    ],
+  });
+  assert.equal(ok.errors.length, 0, `应通过：${ok.errors.map((e) => e.code).join(',')}`);
+});
+
+test('catalog 拦截非法 web_search_tool_type（桌面端启动崩溃防护）', () => {
+  // 非法值：桌面端报 unknown variant `web_search`, expected `text` or `text_and_image`
+  const bad = inspectModelCatalog({
+    models: [{ slug: 'm1', display_name: 'M1', web_search_tool_type: 'web_search' }],
+  });
+  assert.ok(bad.errors.some((e) => e.code === 'catalog_web_search_tool_type_invalid'), '应拦截 web_search');
+
+  // 官方合法值：text / text_and_image 都通过
+  const ok = inspectModelCatalog({
+    models: [
+      { slug: 'm1', display_name: 'M1', web_search_tool_type: 'text' },
+      { slug: 'm2', display_name: 'M2', web_search_tool_type: 'text_and_image' },
+      { slug: 'm3', display_name: 'M3', shell_type: 'shell_command', tool_mode: 'code_mode_only' },
+    ],
+  });
+  assert.equal(ok.errors.length, 0, `官方值不应被拦截：${ok.errors.map((e) => e.code).join(',')}`);
+});
+
+test('model.create 自动补全桌面端必填字段（防止打不开整目录）', () => {
+  const slug = 'brand-new-model';
+  const base = {
+    catalog: { models: [{ slug: 'existing', display_name: 'Existing',
+      input_modalities: ['text'], description: 'x', default_reasoning_level: 'medium',
+      supported_reasoning_levels: [{ effort: 'medium', description: 'b' }] }] },
+    config: { targets: [] },
+    operations: [{ kind: 'model.create', model: { slug, display_name: slug } }],
+  };
+  const result = applyModelRoutingOperations(structuredClone(base));
+  const created = result.catalog.models.find((m) => m.slug === slug);
+  assert.equal(created.display_name, slug);
+  assert.equal(created.description, slug, '应补全 description');
+  assert.deepEqual(created.input_modalities, ['text']);
+  assert.equal(created.default_reasoning_level, 'medium', '应补全 default_reasoning_level');
+  assert.ok(Array.isArray(created.supported_reasoning_levels) && created.supported_reasoning_levels.length > 0,
+    '应补全 supported_reasoning_levels');
+});
+
+
+test('model 写入自动补全桌面端必填字段（残缺也应被补全而非打不开目录）', () => {
+  // 缺 display_name：既有必填契约，写入必须被拒（assertModelFields 层）
+  assert.throws(
+    () => applyModelRoutingOperations({
+      catalog: { models: [] }, config: { targets: [] },
+      operations: [{ kind: 'model.create', model: { slug: 'auto0' } }],
+    }),
+    undefined, // 抛错即可（可能 display_name 或 snapshot 校验）
+  );
+  const r1 = applyModelRoutingOperations({
+    catalog: { models: [] }, config: { targets: [] },
+    operations: [{ kind: 'model.create', model: { slug: 'auto1', display_name: 'Auto1' } }],
+  });
+  const c1 = r1.catalog.models.find((m) => m.slug === 'auto1');
+  assert.equal(c1.default_reasoning_level, 'medium');
+  assert.ok(Array.isArray(c1.supported_reasoning_levels) && c1.supported_reasoning_levels.length > 0,
+    '空 supported_reasoning_levels 应自动补全');
+
+  applyModelRoutingOperations({
+    catalog: { models: [] }, config: { targets: [] },
+    operations: [{ kind: 'model.create', model: {
+      slug: 'inc2', display_name: 'I2', default_reasoning_level: 'high', supported_reasoning_levels: [{ effort: 'high', description: 'x' }],
+    } }],
+  });
+
+  const r3 = applyModelRoutingOperations({
+    catalog: { models: [] }, config: { targets: [] },
+    operations: [{ kind: 'model.create', model: {
+      slug: 'inc3', display_name: 'I3', default_reasoning_level: 42,
+      supported_reasoning_levels: [{ effort: 'high', description: 'x' }],
+    } }],
+  });
+  const c3 = r3.catalog.models.find((m) => m.slug === 'inc3');
+  assert.equal(c3.default_reasoning_level, 'medium', '非法 default_reasoning_level 应补全为 medium');
+
+  const r4 = applyModelRoutingOperations({
+    catalog: { models: [{ slug: 'ok', display_name: 'Ok', input_modalities: ['text'], description: 'x',
+      default_reasoning_level: 'medium', supported_reasoning_levels: [{ effort: 'medium', description: 'b' }] }] },
+    config: { targets: [] },
+    operations: [{ kind: 'model.update', slug: 'ok', patch: { supported_reasoning_levels: [] } }],
+  });
+  const c4 = r4.catalog.models.find((m) => m.slug === 'ok');
+  assert.ok(Array.isArray(c4.supported_reasoning_levels) && c4.supported_reasoning_levels.length > 0,
+    'update 置空 supported_reasoning_levels 应自动补全');
 });

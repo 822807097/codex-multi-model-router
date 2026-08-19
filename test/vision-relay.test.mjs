@@ -96,3 +96,106 @@ test('同一图片的并发请求共享一次视觉调用', async () => {
   await Promise.all([firstPending, secondPending]);
   assert.equal(calls, 1);
 });
+
+test('多端点：第一端点额度耗尽自动冷却并切换第二端点', async () => {
+  const calls = [];
+  const relay = createVisionRelay({
+    config: relayConfig({
+      endpoints: [
+        { host: 'ep1.example.test', prefix: '/v1', model: 'vision-a', envKey: 'VISION_KEY' },
+        { host: 'ep2.example.test', prefix: '/v1', model: 'vision-b', envKey: 'VISION_KEY' },
+      ],
+    }),
+    proxy: { host: '127.0.0.1', port: 10808 },
+    timeouts: { requestMs: 1000 },
+    getKey: () => 'test-key',
+    request: async (options) => {
+      calls.push(options.host);
+      if (options.host === 'ep1.example.test') {
+        return { status: 429, bodyText: '{"error":{"message":"insufficient_quota: 5-hour usage limit reached"}}' };
+      }
+      return { status: 200, bodyText: '{"choices":[{"message":{"content":"ep2 描述"}}]}' };
+    },
+  });
+  const body = { input: [{ role: 'user', content: [{ type: 'input_image', image_url: { url: 'https://x.test/a.png' } }] }] };
+  const stripped = await relay.relayNonTextParts(body, new AbortController().signal);
+  assert.equal(stripped, 1);
+  assert.deepEqual(calls, ['ep1.example.test', 'ep2.example.test'], '先试端点1，额度失败后切端点2');
+  const content = body.input[0].content[0];
+  assert.equal(content.type, 'input_text');
+  assert.match(content.text, /ep2 描述/);
+
+  // 端点1 已冷却：下一次请求直接走端点2
+  const body2 = { input: [{ role: 'user', content: [{ type: 'input_image', image_url: { url: 'https://x.test/b.png' } }] }] };
+  await relay.relayNonTextParts(body2, new AbortController().signal);
+  assert.equal(calls[calls.length - 1], 'ep2.example.test', '冷却中的端点不再尝试');
+
+  // 端点状态查询：端点1 冷却中
+  const status = relay.endpointStatus();
+  assert.equal(status[0].cooldown, true);
+  assert.equal(status[1].cooldown, false);
+});
+
+test('多端点：全部失败时抛出聚合错误且不污染缓存', async () => {
+  const relay = createVisionRelay({
+    config: relayConfig({
+      endpoints: [
+        { host: 'ep1.example.test', prefix: '/v1', model: 'vision-a', envKey: 'VISION_KEY' },
+        { host: 'ep2.example.test', prefix: '/v1', model: 'vision-b', envKey: 'VISION_KEY' },
+      ],
+    }),
+    proxy: { host: '127.0.0.1', port: 10808 },
+    timeouts: { requestMs: 1000 },
+    getKey: () => 'test-key',
+    request: async () => ({ status: 500, bodyText: '{"error":"boom"}' }),
+  });
+  const body = { input: [{ role: 'user', content: [{ type: 'input_image', image_url: { url: 'https://x.test/c.png' } }] }] };
+  await relay.relayNonTextParts(body, new AbortController().signal);
+  // 失败降级为占位文本（不抛给上层）
+  assert.equal(body.input[0].content[0].type, 'input_text');
+  assert.match(body.input[0].content[0].text, /omitted/);
+  // 网络类错误不进入额度冷却，端点仍可用
+  const status = relay.endpointStatus();
+  assert.equal(status[0].cooldown, false);
+  assert.equal(status[1].cooldown, false);
+});
+
+test('chat completions messages 格式：图片同样走视觉中继转换', async () => {
+  const requests = [];
+  const relay = createVisionRelay({
+    config: relayConfig(),
+    proxy: { host: '127.0.0.1', port: 10808 },
+    timeouts: { requestMs: 1000 },
+    getKey: () => 'test-key',
+    request: async (options) => {
+      requests.push(options);
+      return {
+        status: 200,
+        bodyText: JSON.stringify({ choices: [{ message: { content: 'chat-caption' } }] }),
+      };
+    },
+  });
+  const body = {
+    messages: [
+      { role: 'user', content: '纯文本' },
+      { role: 'user', content: [
+        { type: 'text', text: '看图' },
+        { type: 'image_url', image_url: { url: 'data:image/png;base64,chat-one' } },
+      ] },
+      { role: 'assistant', content: [
+        { type: 'image_url', image_url: { url: 'data:image/png;base64,chat-two' } },
+      ] },
+    ],
+  };
+
+  const stripped = await relay.relayNonTextParts(body);
+
+  assert.equal(stripped, 2);
+  assert.equal(requests.length, 2);
+  // 字符串 content 的纯文本消息不得被破坏
+  assert.equal(body.messages[0].content, '纯文本');
+  // 图片被替换为描述文本（chat 格式用 text 类型保持格式一致）
+  assert.equal(body.messages[1].content[1].type, 'text');
+  assert.match(body.messages[1].content[1].text, /chat-caption/);
+  assert.equal(body.messages[2].content[0].type, 'text');
+});

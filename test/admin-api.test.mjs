@@ -898,6 +898,50 @@ test('联合模型路由 HTTP 拒绝绕过 UI 删除非专属 target 并允许 U
   }
 });
 
+test('/_admin/api/token-usage 返回 Token 用量统计并支持 reset', async () => {
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'router-admin-token-usage-'));
+  const { createTokenTracker } = await import('../lib/token-tracker.mjs');
+  const tokenTracker = createTokenTracker();
+  tokenTracker.recordUsage({
+    model: 'gpt-5.6-sol',
+    target: 'openai',
+    usage: {
+      input_tokens: 1000,
+      output_tokens: 200,
+      input_tokens_details: { cached_tokens: 400 },
+      output_tokens_details: { reasoning_tokens: 100 },
+    },
+  });
+
+  const admin = await startAdmin(tempDir, { tokenTracker });
+  try {
+    const res = await request(admin.port, 'GET', '/_admin/api/token-usage');
+    assert.equal(res.status, 200);
+    const body = JSON.parse(res.text);
+    assert.equal(body.ok, true);
+    assert.equal(body.enabled, true);
+    assert.equal(body.summary.totalRequests, 1);
+    assert.equal(body.summary.inputTokens, 1000);
+    assert.equal(body.summary.outputTokens, 200);
+    assert.equal(body.summary.reasoningTokens, 100);
+    assert.equal(body.summary.cachedTokens, 400);
+    assert.equal(body.models['gpt-5.6-sol'].requests, 1);
+
+    const resetRes = await request(admin.port, 'POST', '/_admin/api/token-usage/reset');
+    assert.equal(resetRes.status, 200);
+    const resetBody = JSON.parse(resetRes.text);
+    assert.equal(resetBody.ok, true);
+
+    const afterRes = await request(admin.port, 'GET', '/_admin/api/token-usage');
+    const afterBody = JSON.parse(afterRes.text);
+    assert.equal(afterBody.summary.totalRequests, 0);
+    assert.equal(afterBody.summary.totalTokens, 0);
+  } finally {
+    await new Promise((resolve) => admin.server.close(resolve));
+    await fs.rm(tempDir, { recursive: true, force: true });
+  }
+});
+
 test('联合模型路由 HTTP 校验新草稿连续改名不替换孤立引用或要求确认', async () => {
   const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'router-admin-routing-new-draft-rename-'));
   const admin = await startAdmin(tempDir);
@@ -1028,6 +1072,37 @@ test('联合模型路由拒绝 operation 中的认证字段与嵌套秘密', asy
         /Bearer leaked|"leaked"|OAUTH-LEAK|API-LEAK|AUTH-LEAK|COOKIE-LEAK|TOKEN-LEAK|PRIVATE-KEY-LEAK/,
       );
     }
+  } finally {
+    await new Promise((resolve) => admin.server.close(resolve));
+    await fs.rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test('管理接口通过 /_admin/api/accounts 返回脱敏后的订阅账号列表', async () => {
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'router-admin-accounts-'));
+  const { createAuthManager } = await import('../lib/auth/auth-manager.mjs');
+  const authManager = createAuthManager();
+  authManager.addAccount({
+    id: 'claude-pro-1',
+    provider: 'claude',
+    email: 'user@example.com',
+    credentials: { sessionKey: 'sk-ant-sid01-secret-session-key-12345' },
+    status: 'active',
+  });
+
+  const admin = await startAdmin(tempDir, { authManager });
+  try {
+    const res = await request(admin.port, 'GET', '/_admin/api/accounts');
+    assert.equal(res.status, 200);
+    const body = JSON.parse(res.text);
+    assert.equal(body.ok, true);
+    assert.equal(body.accounts.length, 1);
+    assert.equal(body.accounts[0].id, 'claude-pro-1');
+    assert.equal(body.accounts[0].provider, 'claude');
+    assert.equal(body.accounts[0].email, 'user@example.com');
+    // 绝不暴露敏感 sessionKey
+    assert.equal(body.accounts[0].credentials, undefined);
+    assert.doesNotMatch(res.text, /secret-session-key/);
   } finally {
     await new Promise((resolve) => admin.server.close(resolve));
     await fs.rm(tempDir, { recursive: true, force: true });

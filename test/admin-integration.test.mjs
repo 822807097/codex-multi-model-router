@@ -10,141 +10,25 @@ import { fileURLToPath } from 'node:url';
 
 const PROJECT_DIR = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 
-function relativeLuminance(hex) {
-  const channels = [1, 3, 5].map((offset) => Number.parseInt(hex.slice(offset, offset + 2), 16) / 255);
-  const linear = channels.map((value) => (
-    value <= 0.04045 ? value / 12.92 : ((value + 0.055) / 1.055) ** 2.4
-  ));
-  return (0.2126 * linear[0]) + (0.7152 * linear[1]) + (0.0722 * linear[2]);
-}
+test('管理页构建产物只引用本地资源且不提供敏感凭据输入', async () => {
+  const page = await fs.readFile(path.join(PROJECT_DIR, 'web', 'index.html'), 'utf8');
 
-function contrastRatio(foreground, background) {
-  const values = [relativeLuminance(foreground), relativeLuminance(background)].sort((a, b) => b - a);
-  return (values[0] + 0.05) / (values[1] + 0.05);
-}
-
-test('管理页加载自定义模型状态模块且不提供敏感凭据输入', async () => {
-  const [page, app, styles] = await Promise.all([
-    fs.readFile(path.join(PROJECT_DIR, 'web', 'index.html'), 'utf8'),
-    fs.readFile(path.join(PROJECT_DIR, 'web', 'app.js'), 'utf8'),
-    fs.readFile(path.join(PROJECT_DIR, 'web', 'styles.css'), 'utf8'),
-  ]);
-
-  assert.match(page, /自定义模型/u);
-  assert.match(app, /from '\.\/model-routing-state\.mjs'/u);
-  assert.match(app, /新增自定义模型/u);
-  assert.match(app, /model-dialog-form[^>]+model-dialog-form/u, '模型弹窗必须使用独立表单布局');
-  assert.match(app, /route-summary/u, '复用通道必须提供可读摘要，而非直接展开完整配置');
-  assert.doesNotMatch(
-    app,
-    /model-target-summary-match/u,
-    '普通模型通道摘要不得默认展示正则匹配规则',
-  );
-  assert.match(app, /route-editor-details/u, '编辑关联通道设置必须与复用摘要分层');
-  assert.match(app, /fillModelTargetFields\(select\.value, model \? 'reuse' : 'dedicated'\)/u, '编辑模型必须按复用通道展示摘要');
-  assert.match(app, /当前模型已关联已有通道/u, '编辑模型时必须显示准确的通道说明');
-  assert.match(styles, /dialog\.model-dialog/u, '模型弹窗必须使用独立宽屏样式钩子');
-  assert.match(styles, /\.dialog-section-heading \{ flex-direction: column;/u, '手机端模型分区标题必须纵向排列');
-  assert.match(
-    styles,
-    /\.filter-search \{ flex: 0 0 auto; width: 100%; \}/u,
-    '手机端搜索框不得把桌面 flex-basis 误用为纵向高度',
-  );
-  assert.match(app, /保存后需手动重启路由与 Codex/u);
-  assert.match(app, /modelValidationCache/u, '保存前必须缓存一次预检的确认信息');
-  assert.match(app, /await this\.resyncBaselines\(\)/u, '任一保存后必须重新载入两侧基线');
-  assert.match(app, /renderModelImpact/u, '预检影响必须以安全 DOM 方式呈现');
-  assert.match(app, /resyncRequired/u, '提交成功后必须冻结直到双基线重新载入');
-  assert.match(app, /discard-model-drafts-reload/u, '模型冲突必须提供放弃草稿后重新载入入口');
-  assert.match(app, /errorMessageForCode/u, '所有 API 错误必须由本地安全文案映射');
-  assert.doesNotMatch(app, /body\?\.error\?\.message/u, '页面不得显示服务端 error.message');
-  assert.match(app, /loadEpoch/u, '异步基线加载必须由 epoch 防止旧响应回写');
-  assert.match(app, /activeResyncPromise/u, '重复重新载入必须复用同一批次');
-  assert.match(app, /另一侧仍有未保存更改/u, '放弃草稿前必须保护另一侧草稿');
-  assert.match(
-    app,
-    /else this\.openConfigGroups\.add\(group\);\s+this\.renderConfig\(\);/u,
-    '高级设置分组切换后必须重绘，确保展开状态进入 DOM',
-  );
-  assert.match(
-    app,
-    /this\.openTargetEditor = this\.openTargetEditor === editor\.dataset\.targetIndex \? null : editor\.dataset\.targetIndex;\s+this\.renderConfig\(\);/u,
-    '服务通道编辑切换后必须重绘，确保单条编辑器进入 DOM',
-  );
-  assert.match(
-    app,
-    /renderModelRouting\(\) \{\s+this\.renderOverview\(\);/u,
-    '模型状态或草稿重绘时必须同步总览中的模型总数与不可用数量',
-  );
-  assert.match(
-    app,
-    /this\.querySelector\('#restart-notice'\)\.hidden = !saved\.restartRequired;\s+this\.renderOverview\(\);/u,
-    '配置保存提示改变后必须同步总览中的待重启状态',
-  );
-  assert.match(
-    app,
-    /this\.querySelector\('#restart-notice'\)\.hidden = false;\s+this\.renderOverview\(\);\s+this\.showMessage\('自定义模型已保存/u,
-    '模型保存后必须显示统一重启提示并同步总览状态',
-  );
-  assert.match(
-    app,
-    /const configResourceRisks = \(config\) =>/u,
-    '管理页必须独立识别尚未重启生效的高资源配置',
-  );
-  assert.match(
-    app,
-    /const resourceRisks = configResourceRisks\(this\.configState\?\.config\);[\s\S]+const hasConfigWarning = warningCount > 0 \|\| resourceRisks\.length > 0;/u,
-    '总览必须合并启动 warning 与当前配置中的高资源风险',
-  );
-  assert.match(
-    app,
-    /icon: hasConfigWarning \? '⚠' : '●'/u,
-    '总览中的高资源风险必须同时使用图标和文字表达',
-  );
-  assert.match(
-    app,
-    /const resourceRisks = configResourceRisks\(config\);[\s\S]+`⚠ 高内存风险：\$\{resourceRisks\.join\('、'\)\}`/u,
-    '本机服务摘要必须明确显示高内存风险，而不是只改变颜色',
-  );
-  assert.match(
-    app,
-    /label: '路由进程',[\s\S]+value: '在线'/u,
-    '总览只能声明本机路由进程在线，不能暗示上游健康',
-  );
-  assert.match(
-    app,
-    /配置与凭据存在；未探测上游/u,
-    '正常模型摘要必须明确说明未探测真实上游',
-  );
-  assert.doesNotMatch(
-    app,
-    /全部模型凭据与通道就绪/u,
-    '配置存在不得表述为模型或上游已经就绪',
-  );
-  assert.match(
-    app,
-    /return statusTarget \? Boolean\(statusTarget\.envSet\) : null;/u,
-    '运行时目标缺失时凭据状态必须是未知而不是默认 true',
-  );
-  assert.match(
-    app,
-    /凭据状态待确认/u,
-    '高级设置必须用文字呈现未知凭据状态',
-  );
+  assert.match(page, /<div id="app"><\/div>/u, 'Vite 构建产物必须保留 #app 挂载点');
   assert.doesNotMatch(page, /https?:\/\//iu, '管理页不应引用外部 CDN');
+  const assetReferences = [...page.matchAll(/(?:href|src)="([^"]+)"/g)]
+    .map((match) => match[1])
+    .filter((ref) => ref.endsWith('.css') || ref.endsWith('.js'));
+  assert.ok(assetReferences.length > 0, '管理页必须引用构建后的 JS/CSS 资源');
+  for (const ref of assetReferences) {
+    assert.match(ref, /^(?:\/assets\/|\.\/assets\/)[^/]+$/u, `资源必须来自本地 assets 目录: ${ref}`);
+    const fileName = ref.replace(/^.*\/assets\//, '');
+    await fs.access(path.join(PROJECT_DIR, 'web', 'assets', fileName));
+  }
   assert.doesNotMatch(
-    app,
+    page,
     /<input[^>]+(?:type=["']password|(?:name|id|placeholder|value)=["'][^"']*(?:api[ _-]?key|authorization|cookie|token)[^"']*)/iu,
-    '模型管理表单不能提供或暗示敏感凭据输入',
+    '模型管理页面不能提供或暗示敏感凭据输入',
   );
-});
-
-test('浅色与深色弱化小字号文字保持至少 4.5:1 对比度', async () => {
-  const styles = await fs.readFile(path.join(PROJECT_DIR, 'web', 'styles.css'), 'utf8');
-  const faintValues = [...styles.matchAll(/--faint:\s*(#[0-9a-f]{6})/giu)].map((match) => match[1]);
-  assert.equal(faintValues.length, 2, '浅色与深色主题都必须声明 --faint');
-  assert.ok(contrastRatio(faintValues[0], '#f6f5f1') >= 4.5, '浅色主题弱化小字必须满足 WCAG AA');
-  assert.ok(contrastRatio(faintValues[1], '#232a27') >= 4.5, '深色主题弱化小字必须满足 WCAG AA');
 });
 
 function listen(server) {
@@ -319,7 +203,10 @@ test('隔离路由提供本地管理页和脱敏管理 API', async () => {
     const assetReferences = [...page.text.matchAll(/(?:href|src)="([^"]+)"/g)]
       .map((match) => new URL(match[1], `http://127.0.0.1:${routerPort}/admin`).pathname)
       .filter((assetPath) => assetPath.endsWith('.css') || assetPath.endsWith('.js'));
-    assert.deepEqual(assetReferences, ['/admin/styles.css', '/admin/app.js']);
+    assert.ok(assetReferences.length > 0, '管理页必须引用构建后的 JS/CSS 资源');
+    for (const assetPath of assetReferences) {
+      assert.match(assetPath, /^\/assets\/[^/]+$/u, `资源必须来自本地 assets 目录: ${assetPath}`);
+    }
     for (const assetPath of assetReferences) {
       const assetResponse = await request(routerPort, 'GET', assetPath);
       assert.equal(assetResponse.status, 200);

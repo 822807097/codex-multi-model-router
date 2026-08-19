@@ -3,11 +3,212 @@ import assert from 'node:assert/strict';
 import crypto from 'node:crypto';
 
 import {
+  compactSeenDataImages,
   convertResponsesTools,
+  planToolCycleCompaction,
   responsesToChatMessages,
   responsesToolsToChat,
   trimToBudget,
 } from '../lib/chat-protocol.mjs';
+
+function chatToolCycle(index, output = `结果 ${index}`) {
+  return [
+    {
+      role: 'assistant',
+      content: '',
+      tool_calls: [{
+        id: `call_${index}`,
+        type: 'function',
+        function: { name: 'run_task', arguments: JSON.stringify({ index }) },
+      }],
+    },
+    { role: 'tool', tool_call_id: `call_${index}`, content: output },
+  ];
+}
+
+test('四个以内完整工具周期保持原样', () => {
+  const messages = [
+    { role: 'user', content: '执行任务' },
+    ...chatToolCycle(1),
+    ...chatToolCycle(2),
+    ...chatToolCycle(3),
+    ...chatToolCycle(4),
+  ];
+
+  assert.deepEqual(planToolCycleCompaction(messages), {
+    messages,
+    removedMessages: [],
+    compactedCycles: 0,
+  });
+});
+
+test('第五个完整工具周期使最早周期进入检查点来源并保留最近四个', () => {
+  const messages = [
+    { role: 'user', content: '执行任务' },
+    ...chatToolCycle(1),
+    ...chatToolCycle(2),
+    ...chatToolCycle(3),
+    ...chatToolCycle(4),
+    ...chatToolCycle(5),
+  ];
+
+  const result = planToolCycleCompaction(messages);
+
+  assert.equal(result.compactedCycles, 1);
+  assert.deepEqual(result.removedMessages, chatToolCycle(1));
+  assert.deepEqual(
+    result.messages.filter((message) => message.role === 'assistant').map((message) => message.tool_calls[0].id),
+    ['call_2', 'call_3', 'call_4', 'call_5'],
+  );
+  assert.deepEqual(result.messages[0], { role: 'user', content: '执行任务' });
+});
+
+test('未配对工具调用不能被周期压缩拆除', () => {
+  const incomplete = {
+    role: 'assistant',
+    content: '',
+    tool_calls: [{
+      id: 'pending_call',
+      type: 'function',
+      function: { name: 'wait_for_result', arguments: '{}' },
+    }],
+  };
+  const messages = [
+    { role: 'user', content: '执行任务' },
+    incomplete,
+    ...chatToolCycle(1),
+    ...chatToolCycle(2),
+    ...chatToolCycle(3),
+    ...chatToolCycle(4),
+    ...chatToolCycle(5),
+  ];
+
+  const result = planToolCycleCompaction(messages);
+
+  assert.equal(result.messages.includes(incomplete), true);
+  assert.equal(result.removedMessages.includes(incomplete), false);
+  assert.equal(result.removedMessages.some((message) => message.tool_call_id === 'pending_call'), false);
+});
+
+test('重复 call id 的畸形周期不能被单条输出误判为完整', () => {
+  const malformed = {
+    role: 'assistant',
+    content: '',
+    tool_calls: [
+      { id: 'duplicate', type: 'function', function: { name: 'first', arguments: '{}' } },
+      { id: 'duplicate', type: 'function', function: { name: 'second', arguments: '{}' } },
+    ],
+  };
+  const messages = [
+    { role: 'user', content: '执行任务' },
+    malformed,
+    { role: 'tool', tool_call_id: 'duplicate', content: '只有一条输出' },
+    ...chatToolCycle(1),
+    ...chatToolCycle(2),
+    ...chatToolCycle(3),
+    ...chatToolCycle(4),
+    ...chatToolCycle(5),
+  ];
+
+  const result = planToolCycleCompaction(messages);
+
+  assert.equal(result.messages.includes(malformed), true);
+  assert.equal(result.removedMessages.includes(malformed), false);
+});
+
+test('包含错误或冲突信号的工具周期始终保留', () => {
+  const messages = [
+    { role: 'user', content: '执行任务' },
+    ...chatToolCycle(0, 'Error: save conflict detected'),
+    ...chatToolCycle(1),
+    ...chatToolCycle(2),
+    ...chatToolCycle(3),
+    ...chatToolCycle(4),
+    ...chatToolCycle(5),
+  ];
+
+  const result = planToolCycleCompaction(messages);
+
+  assert.equal(result.messages.some((message) => message.tool_call_id === 'call_0'), true);
+  assert.equal(result.removedMessages.some((message) => message.tool_call_id === 'call_0'), false);
+  assert.deepEqual(result.removedMessages, chatToolCycle(1));
+});
+
+test('当前用户尚未被模型查看的 data image 保持原样', () => {
+  const input = [{
+    role: 'user',
+    content: [
+      { type: 'input_text', text: '请查看这张图' },
+      { type: 'input_image', image_url: 'data:image/png;base64,current-image' },
+    ],
+  }];
+
+  assert.deepEqual(compactSeenDataImages(input), input);
+});
+
+test('模型已产生后续输出时用安全文本替换较早的 data image', () => {
+  const input = [
+    {
+      type: 'function_call_output',
+      call_id: 'image_1',
+      output: [{
+        type: 'input_image',
+        image_url: { url: 'data:image/png;base64,seen-image', detail: 'high' },
+      }],
+    },
+    { type: 'reasoning', summary: [] },
+    { type: 'function_call', call_id: 'next_1', name: 'inspect', arguments: '{}' },
+  ];
+
+  const compacted = compactSeenDataImages(input);
+
+  assert.equal(compacted[0].output[0].type, 'input_text');
+  assert.match(compacted[0].output[0].text, /图片.*已.*查看.*省略/);
+  assert.doesNotMatch(JSON.stringify(compacted), /seen-image/);
+});
+
+test('较早的远程图片 URL 不被压缩', () => {
+  const input = [
+    {
+      role: 'user',
+      content: [{ type: 'input_image', image_url: 'https://example.test/image.png' }],
+    },
+    { role: 'assistant', content: [{ type: 'output_text', text: '已经查看' }] },
+  ];
+
+  assert.deepEqual(compactSeenDataImages(input), input);
+});
+
+test('压缩已查看图片不修改原始 Responses input', () => {
+  const input = [
+    {
+      role: 'user',
+      content: [{ type: 'input_image', image_url: 'data:image/jpeg;base64,immutable' }],
+    },
+    { role: 'assistant', content: [{ type: 'output_text', text: '已经查看' }] },
+  ];
+  const snapshot = structuredClone(input);
+
+  compactSeenDataImages(input);
+
+  assert.deepEqual(input, snapshot);
+});
+
+test('压缩已查看的 data image 会显著减小后续请求序列化体积', () => {
+  const input = [
+    {
+      type: 'function_call_output',
+      call_id: 'image_1',
+      output: [{ type: 'input_image', image_url: `data:image/png;base64,${'a'.repeat(500_000)}` }],
+    },
+    { role: 'assistant', content: [{ type: 'output_text', text: '图像分析完成' }] },
+  ];
+
+  const before = Buffer.byteLength(JSON.stringify(input));
+  const after = Buffer.byteLength(JSON.stringify(compactSeenDataImages(input)));
+
+  assert.ok(after < before * 0.01, `${after} should be less than 1% of ${before}`);
+});
 
 test('Responses 历史转换后保持函数调用与工具结果配对', () => {
   const messages = responsesToChatMessages([
