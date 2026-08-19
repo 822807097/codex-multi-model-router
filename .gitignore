@@ -1,7 +1,10 @@
 # 依赖与日志
 node_modules/
+**/node_modules/
+.npm-cache*/
 *.log
 package-lock.json
+!web-admin/package-lock.json
 scripts/router.log
 
 # 用户数据（绝不含密钥/登录态/模型目录）
@@ -26,3 +29,37 @@ Thumbs.db
 
 # 本地验证产物（Playwright 截图/脚本/日志）
 output/
+
+# 第三方依赖（cursor2api 等外部网关，运行库不入库）
+external/
+
+# 运行时数据库（SQLite：含账号凭据/API Key/通道密钥，绝不提交）
+data/
+*.db
+*.db-shm
+*.db-wal
+
+# 本地工具状态（Mimosa 扫描记录、WorkBuddy 会话等）
+.mimosa/
+.workbuddy/
+
+# 临时调试脚本与截图（本机排障产物，不入库）
+/capture.ps1
+/check_admin.ps1
+/dump_*.ps1
+/dump_win32.ps1
+/find_config.ps1
+/get_proc.ps1
+/get_wmi.ps1
+/list_dir.ps1
+/restore_win.ps1
+/run*.sh
+/screen_*.png
+/step*.ps1
+/test_click.ps1
+/scripts/audit-scan-round.sh
+/scripts/run_screen.bat
+/scripts/take_screenshot.ps1
+
+# 私有部署脚本（含本机绝对路径，仅本人使用，不入库）
+/scripts/deploy-*.ps1

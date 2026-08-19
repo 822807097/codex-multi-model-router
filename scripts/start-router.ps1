@@ -1,4 +1,4 @@
-# start-router.ps1 — 启动本地路由（前台运行，便于看日志）
+﻿# start-router.ps1 — 启动本地路由（前台运行，便于看日志）
 # 说明：路由进程启动时才会读取环境变量 key，因此这里从 User+Machine 双作用域
 #       显式注入，避免「key 是后设的、当前 shell 没继承」导致 401。
 $ErrorActionPreference = 'Stop'
@@ -36,4 +36,42 @@ if (-not (Test-Path $router)) { $router = Join-Path $PSScriptRoot 'codex-router.
 # 核心诊断日志；上下文维护日志默认自动派生为 router-context.log。
 # 两类 JSONL 都按 UTC 日轮转，并自动清理超过 72 小时的归档。
 $env:ROUTER_LOG = Join-Path $PSScriptRoot 'router.log'
+
+# Cursor 订阅额度网关联动启动：优先仓库 external\cursor2api（实际部署位置），
+# 其次运行实例同级 external\cursor2api；确保其先行就绪（Codex 桌面端使用 cursor-* 模型
+# 依赖它；多 Cursor 账号额度池由网关内部轮换/熔断）。
+$repoRoot = Split-Path (Split-Path $PSScriptRoot -Parent) -Parent
+$cursor2apiCandidates = @(
+    (Join-Path $repoRoot 'external\cursor2api'),
+    (Join-Path $PSScriptRoot '..\external\cursor2api')
+) | Where-Object { Test-Path (Join-Path $_ 'server.mjs') }
+$cursor2api = $cursor2apiCandidates | Select-Object -First 1
+if ($cursor2api) {
+    $crsrHealth = "http://127.0.0.1:6718/health"
+    $crsrUp = $false
+    try { $crsrUp = (Invoke-WebRequest -Uri $crsrHealth -TimeoutSec 2 -UseBasicParsing).StatusCode -eq 200 } catch { }
+    if (-not $crsrUp) {
+        $crsrKey = Get-EnvAny 'CURSOR_KEY'
+        if ($crsrKey) {
+            $bunDir = Join-Path $env:APPDATA 'npm\node_modules\bun\bin'
+            $env:PATH = "$bunDir;$env:PATH"
+            $env:CURSOR_API_KEYS = "main=$crsrKey"
+            try {
+                # 前台同步等网关 health；SDK bridge 与 sidecar 由 server.mjs 自管
+                $p = Start-Process -FilePath 'node' -ArgumentList 'server.mjs','start' `
+                    -WorkingDirectory $cursor2api -WindowStyle Hidden -PassThru `
+                    -RedirectStandardOutput (Join-Path $cursor2api 'run.out.log') `
+                    -RedirectStandardError (Join-Path $cursor2api 'run.err.log')
+                Write-Host "cursor2api 已启动 (PID $($p.Id))"
+            } catch { Write-Host "cursor2api 启动失败: $($_.Exception.Message)" -ForegroundColor Yellow }
+        } else {
+            Write-Host "警告: 未检测到 CURSOR_KEY，cursor 通道不可用" -ForegroundColor Yellow
+        }
+    } else {
+        Write-Host "cursor2api 已在运行（health OK）"
+    }
+} else {
+    Write-Host "未安装 cursor2api（external\cursor2api 缺失），cursor 通道不可用" -ForegroundColor Yellow
+}
+
 node $router

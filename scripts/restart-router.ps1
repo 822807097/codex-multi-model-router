@@ -88,7 +88,8 @@ foreach ($k in $keySet.Keys) { $v = Get-EnvAny $k; if ($v) { Set-Item "env:$k" $
 $routerDir = Split-Path $router
 $consoleOut = Join-Path $routerDir 'router-console.out.log'
 $consoleErr = Join-Path $routerDir 'router-console.err.log'
-Start-Process -WindowStyle Hidden node -ArgumentList "`"$router`"" -RedirectStandardOutput $consoleOut -RedirectStandardError $consoleErr | Out-Null
+# 显式指定工作目录：计划任务等场景默认 CWD 是 System32，相对路径会解析到系统目录。
+Start-Process -WindowStyle Hidden node -ArgumentList "`"$router`"" -WorkingDirectory $routerDir -RedirectStandardOutput $consoleOut -RedirectStandardError $consoleErr | Out-Null
 
 # 4. 等待新进程监听就绪
 for ($i = 0; $i -lt 10; $i++) {

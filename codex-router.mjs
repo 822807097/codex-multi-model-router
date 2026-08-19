@@ -11,6 +11,7 @@
 //     · DeepSeek 系列  → api.deepseek.com（环境变量 key，直连）
 //     · Qwen 系列      → 阿里云 Token Plan 端点（环境变量 key，直连）
 //   并附带「视觉中继」：给不支持图片的文本模型发图时，先调一个视觉模型把图片
+//   转成文字描述再注入请求（vision:false 通道自动启用）。
 //   启动时先执行聚合配置预检；错误在绑定端口前退出，警告不影响其他模型通道。
 //
 // 配套 config.toml 关键写法（详见 README.md）：
@@ -57,11 +58,20 @@ import { createChatRequestBuilder } from './lib/chat-request.mjs';
 import { createRouterHandler } from './lib/router-handler.mjs';
 import { createEnvKeySource } from './lib/env-key-source.mjs';
 import { createAdminHandler } from './lib/admin-api.mjs';
+import { createChannelKeyPool } from './lib/channel-key-pool.mjs';
 import { readRevisionedJson } from './lib/json-file-store.mjs';
 import { inspectModelCatalog } from './lib/model-routing-plan.mjs';
 import { recoverModelRoutingTransaction } from './lib/model-routing-transaction.mjs';
 import { createDiagnosticLog } from './lib/diagnostic-log.mjs';
 import { createModelQuotaCooldownStore } from './lib/model-quota-cooldown.mjs';
+import { createTokenTracker } from './lib/token-tracker.mjs';
+import { createAuthManager } from './lib/auth/auth-manager.mjs';
+import { createCredentialsStore, createCredentialsVault } from './lib/auth/credentials-store.mjs';
+import { refreshGoogleTokens } from './lib/auth/google-sub-auth.mjs';
+import { refreshOpenAiTokens } from './lib/auth/openai-sub-auth.mjs';
+import { refreshClaudeTokens } from './lib/auth/claude-sub-auth.mjs';
+import { getDatabase, dbListAccounts, dbRecordTokenLog } from './lib/db.mjs';
+import { createApiKeyStore } from './lib/api-keys.mjs';
 import {
   computeCheckpointNamespace,
   createCheckpointPersistence,
@@ -106,7 +116,8 @@ try {
   preparedConfig = prepareRouterConfig(rawConfig, {
     configPath: CONFIG_PATH,
     baseDir: path.dirname(CONFIG_PATH),
-    defaultCodexHome: path.join(os.homedir(), '.codex'),
+    // CODEX_HOME 优先（Codex 桌面端实际配置目录），回退 ~/.codex
+    defaultCodexHome: process.env.CODEX_HOME || path.join(os.homedir(), '.codex'),
     env: process.env,
   });
 } catch (error) {
@@ -247,13 +258,114 @@ const { relayNonTextParts } = createVisionRelay({
   log,
 });
 
+// ---------- Token 用量追踪器（总量与模型明细监控） ----------
+// 每条真实使用记录同时写入 SQLite token_logs，Dashboard 统计从此表读取（真实调用数据）
+const tokenTracker = createTokenTracker({
+  persistPath: path.join(path.dirname(CONFIG_PATH), 'token-usage.json'),
+  onRecord: (record) => {
+    try { dbRecordTokenLog(record); } catch { /* 统计旁路不得影响请求 */ }
+  },
+});
+
+// ---------- Sub2API 订阅账号管理器 ----------
+// SQLite accounts 表是账号元数据的权威来源；OAuth 凭据存独立 vault 文件。
+// 两者启动时合并载入 authManager，授权成功后由 admin API 同步写回。
+const credentialsStore = createCredentialsStore({
+  persistPath: path.join(path.dirname(CONFIG_PATH), 'accounts.json'),
+});
+const credentialsVault = createCredentialsVault({
+  vaultPath: path.join(path.dirname(CONFIG_PATH), 'credentials-vault.json'),
+});
+const authManager = createAuthManager();
+// 恢复顺序：先脱敏 accounts.json（历史遗留），再以 SQLite 为准覆盖合并 vault 凭据。
+try {
+  for (const acc of credentialsStore.loadAccounts()) authManager.addAccount(acc);
+} catch { /* 容错 */ }
+try {
+  // loadAll 已归一为「accountId -> 凭据」纯 map（含历史损坏文件兼容修复）
+  const vaultAll = credentialsVault.loadAll();
+  for (const row of dbListAccounts()) {
+    let metadata = {};
+    try { metadata = row.metadata ? JSON.parse(row.metadata) : {}; } catch { /* 容错 */ }
+    authManager.addAccount({
+      id: row.id,
+      provider: row.provider,
+      alias: row.alias,
+      email: row.email || '',
+      status: row.status || 'active',
+      credentials: vaultAll[row.id] || {},
+      proxy: {
+        enabled: row.proxyEnabled ?? true,
+        url: row.proxyUrl || '',
+      },
+      quota: {
+        used: row.quotaUsed || 0,
+        limit: row.quotaLimit || 100,
+        resetsAt: row.resetsAt || 0,
+      },
+      metadata,
+    });
+  }
+} catch (err) {
+  console.warn(`[accounts] 从 SQLite 恢复订阅账号失败: ${err.message}`);
+}
+
+// ---------- 订阅账号 Token 自动续期（google / openai / claude） ----------
+// 账号级代理优先；未单独配置的账号走全局代理（出海通道）。
+function resolveAccountProxy(account) {
+  if (account?.proxy?.enabled && account?.proxy?.url) return account.proxy.url;
+  return V2RAY_PROXY;
+}
+authManager.registerRefresher('google', async ({ account }) => {
+  const tokens = await refreshGoogleTokens({
+    refreshToken: account.credentials.refreshToken,
+    proxy: resolveAccountProxy(account),
+  });
+  return {
+    credentials: { accessToken: tokens.accessToken, refreshToken: tokens.refreshToken },
+    expiresAt: Date.now() + Math.max(60, tokens.expiresIn - 300) * 1000,
+  };
+});
+authManager.registerRefresher('openai', async ({ account }) => {
+  const tokens = await refreshOpenAiTokens({
+    refreshToken: account.credentials.refreshToken,
+    proxy: resolveAccountProxy(account),
+  });
+  return {
+    credentials: {
+      accessToken: tokens.accessToken,
+      refreshToken: tokens.refreshToken,
+      ...(tokens.idToken ? { idToken: tokens.idToken } : {}),
+    },
+    expiresAt: Date.now() + Math.max(60, tokens.expiresIn - 300) * 1000,
+  };
+});
+authManager.registerRefresher('claude', async ({ account }) => {
+  const tokens = await refreshClaudeTokens({
+    refreshToken: account.credentials.refreshToken,
+    proxy: resolveAccountProxy(account),
+  });
+  return {
+    credentials: { accessToken: tokens.accessToken, refreshToken: tokens.refreshToken },
+    expiresAt: Date.now() + Math.max(60, tokens.expiresIn - 300) * 1000,
+  };
+});
+// 刷新得到的新 token 立即写回 vault（重启后凭据不丢）——上游 OAuth 可能轮换 refresh_token，
+// 只在内存持有的话重启后旧 refresh_token 失效会导致账号静默不可用。
+authManager.onCredentialsRefreshed((accountId, credentials) => {
+  try {
+    credentialsVault.set(accountId, credentials);
+  } catch { /* vault 写入失败不影响本次请求继续使用内存凭据 */ }
+});
+
 // ---------- Responses SSE 生命周期 ----------
 const {
   startResponsesSse,
   emitResponsesErrorSse,
   pipeNativeResponse,
   pipeChatResponse,
-} = createResponsePipeline({ heartbeatMs: HEARTBEAT_MS, log });
+  pipeChatCompletionsResponse,
+} = createResponsePipeline({ heartbeatMs: HEARTBEAT_MS, log, tokenTracker });
 
 // ---------- ChatGPT 登录态：读 auth.json，临期自动 refresh 并原子写回 ----------
 const openAiAuth = createOpenAiAuthManager({
@@ -267,7 +379,16 @@ const openAiAuth = createOpenAiAuthManager({
   request: rawHttpsRequest,
   log,
 });
-const { get: getOpenAiAuth } = openAiAuth;
+// 每次走 ChatGPT 官方通道的请求都记一次账号额度使用（本地 5 小时窗口统计；
+// 上游未提供公开额度接口，此计数是「真实使用量」而非占位假数据）
+const getOpenAiAuth = async (target) => {
+  const auth = await openAiAuth.get(target);
+  if (auth?.accountId) {
+    const account = authManager.findByMetadataField?.('chatgptAccountId', auth.accountId);
+    if (account) authManager.recordQuotaUsage(account.id, 1);
+  }
+  return auth;
+};
 
 // ---------- 长任务检查点冷重启持久化 ----------
 // 默认关闭；启用时只保存已哈希索引和九栏目摘要，不保存请求历史或任何凭据原值。
@@ -297,11 +418,15 @@ const { buildChatRequest } = createChatRequestBuilder({
 
 // ---------- 本地管理页 ----------
 // 只绑定在同一个 127.0.0.1 服务上；页面不接收或展示任何密钥，也不负责进程启停。
+const apiKeyStore = createApiKeyStore({ db: getDatabase() });
+// 通道密钥池：同通道多账号 key（双形态/优先级），key 级冷却持久化；env_ref 经 envKeySource 热更新解析
+const keyPool = createChannelKeyPool({ db: getDatabase(), envKeySource, log });
+
 const adminHandler = createAdminHandler({
   configPath: CONFIG_PATH,
   catalogPath: CATALOG_PATH,
   webRoot: path.join(__dirname, 'web'),
-  defaultCodexHome: path.join(os.homedir(), '.codex'),
+  defaultCodexHome: process.env.CODEX_HOME || path.join(os.homedir(), '.codex'),
   env: process.env,
   runtime: preparedConfig.runtime,
   targets: TARGETS,
@@ -309,6 +434,19 @@ const adminHandler = createAdminHandler({
   startedAt: ROUTER_STARTED_AT,
   checkpointStore: goalCheckpoints,
   persistence: checkpointPersistence,
+  tokenTracker,
+  authManager,
+  credentialsVault,
+  apiKeyStore,
+  oauthProxy: V2RAY_PROXY,
+  // 通道模型列表拉取与路由请求共用 envKey 热更新源（注册表轮换后无需重启即可拉取）
+  getKey: getEnvKey,
+  // 通道密钥池（管理端点与路由请求共用同一实例）
+  keyPool,
+  // 官方登录态通道的连通性测试：用已绑定账号的 token（含额度计数）
+  getOpenAiAuth,
+  // 模型连通性探测经本机回环走完整路由管线，需要知道自身监听端口
+  port: PORT,
 });
 
 let routerHandler;
@@ -323,18 +461,22 @@ try {
     goalCheckpoints,
     requestBudget,
     modelQuotaCooldown,
+    apiKeyStore,
     maxRequestBytes: MAX_REQUEST_BYTES,
     proxy: V2RAY_PROXY,
     timeouts: ROUTER_TIMEOUTS,
     getOpenAiAuth,
     getKey: getEnvKey,
     refreshEnvKey: (name) => envKeySource.refreshNow(name),
+    keyPool,
+    authManager,
     relayNonTextParts,
     buildChatRequest,
     startResponsesSse,
     emitResponsesErrorSse,
     pipeNativeResponse,
     pipeChatResponse,
+    pipeChatCompletionsResponse,
     adminHandler,
     log,
     flog,
@@ -365,14 +507,19 @@ function gracefulExit(exitCode = 0) {
   shuttingDown = true;
   log('graceful shutdown: 释放端口，排空在跑任务');
   try { server.closeIdleConnections(); } catch { /* 旧版 Node 无此方法 */ }
-  server.close(async () => {
-    try { await checkpointPersistence.close(); } catch (error) {
-      log('checkpoint persistence close failed:', error.message);
-    }
-    await Promise.all([diagnosticLog.flush(), contextDiagnosticLog.flush()]);
-    log('在跑任务已排空，退出');
+  try {
+    server.close(async () => {
+      try { await checkpointPersistence.close(); } catch (error) {
+        log('checkpoint persistence close failed:', error.message);
+      }
+      await Promise.all([diagnosticLog.flush(), contextDiagnosticLog.flush()]);
+      log('在跑任务已排空，退出');
+      process.exit(exitCode);
+    });
+  } catch {
+    // 启动早期尚未 listen：无连接可排空，直接退出（避免 close 抛 ERR_SERVER_NOT_RUNNING 绕过优雅流程）
     process.exit(exitCode);
-  });
+  }
   // 安全阀：最多等 10 分钟，避免超长任务挂住旧进程
   setTimeout(() => { log('drain timeout, force exit'); process.exit(exitCode); }, 10 * 60 * 1000).unref();
 }

@@ -1,0 +1,247 @@
+/*
+ * 全局样式入口
+ * 1. Tailwind 三件套（原子类由 tailwind.config.js 中的 Token 语义色生成）
+ * 2. Element Plus 浅色主题变量接管（全部引用 tokens.css，不再硬编码色值）
+ * 3. 少量组件级样式（弹窗等），颜色一律走 var(--token)
+ */
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ---- 页面底色与文本（无 !important，来源 tokens.css） ---- */
+body {
+  background-color: var(--bg-canvas);
+  color: var(--text-primary);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
+}
+
+/* 文本选中色：柔和品牌蓝半透明，替代系统默认高亮蓝 */
+::selection {
+  background-color: rgb(var(--accent-primary-rgb) / 0.22);
+  color: var(--text-primary);
+}
+
+/* 细滚动条：与表面色同调，降低视觉噪音 */
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background-color: rgb(var(--border-strong-rgb) / 0.55);
+  border-radius: 6px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+::-webkit-scrollbar-thumb:hover {
+  background-color: rgb(var(--border-strong-rgb) / 0.85);
+}
+
+/* 键盘焦点环：统一柔和品牌色，兼顾可访问性 */
+:focus-visible {
+  outline: 2px solid rgb(var(--accent-primary-rgb) / 0.55);
+  outline-offset: 2px;
+}
+
+/*
+ * Element Plus 变量覆盖（浅色主题）
+ * 浅色方案下 EP 默认变量定义在 :root（特异性 0,1,0），
+ * 本文件在 element-plus/dist/index.css 之后导入，同特异性靠层叠顺序稳定接管。
+ *
+ * 语义色的 light-N 派生阶用 color-mix 与白色现场调和，
+ * 保证 plain 按钮 / 标签 / 提示的底色与品牌色同族、清爽不发灰。
+ */
+:root {
+  /* 品牌色 */
+  --el-color-primary: var(--accent-primary);
+  --el-color-primary-light-3: color-mix(in srgb, var(--accent-primary) 70%, white);
+  --el-color-primary-light-5: color-mix(in srgb, var(--accent-primary) 50%, white);
+  --el-color-primary-light-7: color-mix(in srgb, var(--accent-primary) 28%, white);
+  --el-color-primary-light-8: color-mix(in srgb, var(--accent-primary) 18%, white);
+  --el-color-primary-light-9: color-mix(in srgb, var(--accent-primary) 10%, white);
+  --el-color-primary-dark-2: color-mix(in srgb, var(--accent-primary) 82%, black);
+
+  /* 语义色：基色取 Token 实心底，浅底调和白色 */
+  --el-color-success: var(--success);
+  --el-color-success-light-3: color-mix(in srgb, var(--success) 70%, white);
+  --el-color-success-light-5: color-mix(in srgb, var(--success) 50%, white);
+  --el-color-success-light-7: color-mix(in srgb, var(--success) 28%, white);
+  --el-color-success-light-8: color-mix(in srgb, var(--success) 18%, white);
+  --el-color-success-light-9: color-mix(in srgb, var(--success) 10%, white);
+  --el-color-success-dark-2: color-mix(in srgb, var(--success) 82%, black);
+
+  --el-color-warning: var(--warning);
+  --el-color-warning-light-3: color-mix(in srgb, var(--warning) 70%, white);
+  --el-color-warning-light-5: color-mix(in srgb, var(--warning) 50%, white);
+  --el-color-warning-light-7: color-mix(in srgb, var(--warning) 28%, white);
+  --el-color-warning-light-8: color-mix(in srgb, var(--warning) 18%, white);
+  --el-color-warning-light-9: color-mix(in srgb, var(--warning) 10%, white);
+  --el-color-warning-dark-2: color-mix(in srgb, var(--warning) 82%, black);
+
+  --el-color-danger: var(--danger);
+  --el-color-danger-light-3: color-mix(in srgb, var(--danger) 70%, white);
+  --el-color-danger-light-5: color-mix(in srgb, var(--danger) 50%, white);
+  --el-color-danger-light-7: color-mix(in srgb, var(--danger) 28%, white);
+  --el-color-danger-light-8: color-mix(in srgb, var(--danger) 18%, white);
+  --el-color-danger-light-9: color-mix(in srgb, var(--danger) 10%, white);
+  --el-color-danger-dark-2: color-mix(in srgb, var(--danger) 82%, black);
+
+  --el-color-error: var(--danger);
+  --el-color-error-light-3: color-mix(in srgb, var(--danger) 70%, white);
+  --el-color-error-light-5: color-mix(in srgb, var(--danger) 50%, white);
+  --el-color-error-light-7: color-mix(in srgb, var(--danger) 28%, white);
+  --el-color-error-light-8: color-mix(in srgb, var(--danger) 18%, white);
+  --el-color-error-light-9: color-mix(in srgb, var(--danger) 10%, white);
+  --el-color-error-dark-2: color-mix(in srgb, var(--danger) 82%, black);
+
+  --el-color-info: var(--text-secondary);
+  --el-color-info-light-3: color-mix(in srgb, var(--text-secondary) 70%, white);
+  --el-color-info-light-5: color-mix(in srgb, var(--text-secondary) 50%, white);
+  --el-color-info-light-7: color-mix(in srgb, var(--text-secondary) 28%, white);
+  --el-color-info-light-8: color-mix(in srgb, var(--text-secondary) 18%, white);
+  --el-color-info-light-9: color-mix(in srgb, var(--text-secondary) 10%, white);
+  --el-color-info-dark-2: var(--text-regular);
+
+  /* 表面与边框 */
+  --el-bg-color: var(--bg-surface);
+  --el-bg-color-overlay: var(--bg-surface);
+  --el-bg-color-page: var(--bg-canvas);
+  --el-fill-color-blank: var(--bg-surface);
+  --el-fill-color: var(--bg-surface-2);
+  --el-fill-color-light: var(--bg-surface-2);
+  --el-fill-color-lighter: color-mix(in srgb, var(--bg-surface-2) 55%, white);
+  --el-fill-color-extra-light: color-mix(in srgb, var(--bg-surface-2) 35%, white);
+  --el-border-color: var(--border-default);
+  --el-border-color-light: var(--border-default);
+  --el-border-color-lighter: var(--border-muted);
+  --el-border-color-extra-light: var(--border-muted);
+  --el-border-color-hover: var(--border-strong);
+
+  /* 文本 */
+  --el-text-color-primary: var(--text-primary);
+  --el-text-color-regular: var(--text-regular);
+  --el-text-color-secondary: var(--text-secondary);
+  --el-text-color-placeholder: color-mix(in srgb, var(--text-secondary) 78%, white);
+  --el-text-color-disabled: color-mix(in srgb, var(--text-secondary) 62%, white);
+
+  /* 圆角 */
+  --el-border-radius-base: 6px;
+
+  /* 遮罩：浅色下用偏蓝的柔和暗罩，避免死黑压迫感 */
+  --el-overlay-color-lighter: rgba(35, 48, 68, 0.45);
+
+  /* 输入框 */
+  --el-input-bg-color: var(--bg-surface);
+  --el-input-border-color: var(--border-default);
+  --el-input-hover-border-color: var(--border-strong);
+  --el-input-focus-border-color: var(--accent-primary);
+  --el-input-text-color: var(--text-primary);
+
+  /* 弹窗 */
+  --el-dialog-bg-color: var(--bg-surface);
+
+  /* 卡片 */
+  --el-card-bg-color: var(--bg-surface);
+  --el-card-border-color: var(--border-muted);
+  --el-card-border-radius: 12px;
+
+  /* 表格 */
+  --el-table-bg-color: transparent;
+  --el-table-tr-bg-color: transparent;
+  --el-table-border-color: var(--border-muted);
+  --el-table-header-bg-color: var(--bg-surface-2);
+  --el-table-header-text-color: var(--text-secondary);
+  --el-table-text-color: var(--text-regular);
+  --el-table-row-hover-bg-color: var(--bg-surface-2);
+
+  /* 分段单选（OAuth 弹窗三模式 Tab 等） */
+  --el-radio-button-checked-bg-color: var(--accent-primary);
+  --el-radio-button-checked-text-color: #ffffff;
+  --el-radio-button-checked-border-color: var(--accent-primary);
+}
+
+/* ---- 卡片层次感：柔和投影 + hover 微浮起（浅色下层级靠阴影而非边框硬度） ---- */
+.el-card {
+  box-shadow: 0 1px 2px rgba(35, 48, 68, 0.04), 0 2px 8px rgba(35, 48, 68, 0.04);
+  transition: border-color 0.2s ease, box-shadow 0.2s ease, transform 0.2s ease;
+}
+.el-card:hover {
+  border-color: var(--border-strong);
+  box-shadow: 0 2px 4px rgba(35, 48, 68, 0.05), 0 8px 20px rgba(35, 48, 68, 0.07);
+}
+
+/* ---- 标签：统一中等圆角与字重，弱化边框硬度 ---- */
+.el-tag {
+  border-radius: 6px;
+  font-weight: 500;
+}
+
+/* ---- 按钮：统一圆角、字重与过渡；点击微下沉给出明确操作反馈 ---- */
+.el-button {
+  border-radius: 8px;
+  font-weight: 500;
+  transition: background-color 0.18s ease, border-color 0.18s ease, color 0.18s ease,
+    box-shadow 0.18s ease, transform 0.06s ease;
+}
+.el-button:not(.is-disabled):active {
+  transform: translateY(1px);
+}
+.el-button--primary:not(.is-link):not(.is-plain):not(.is-text) {
+  box-shadow: 0 1px 2px rgba(35, 48, 68, 0.08), 0 2px 6px rgb(var(--accent-primary-rgb) / 0.25);
+}
+.el-button--primary:not(.is-link):not(.is-plain):not(.is-text):hover {
+  box-shadow: 0 2px 4px rgba(35, 48, 68, 0.08), 0 4px 12px rgb(var(--accent-primary-rgb) / 0.32);
+}
+
+/* ---- 输入框聚焦：品牌色柔光晕，反馈更清晰 ---- */
+.el-input__wrapper,
+.el-select__wrapper,
+.el-textarea__inner {
+  transition: box-shadow 0.18s ease;
+}
+.el-input__wrapper.is-focus,
+.el-select__wrapper.is-focused,
+.el-textarea__inner:focus {
+  box-shadow: 0 0 0 1px var(--accent-primary) inset, 0 0 0 3px rgb(var(--accent-primary-rgb) / 0.14);
+}
+
+/* ---- 进度条轨道与表面同调 ---- */
+.el-progress-bar__outer {
+  background-color: var(--bg-surface-2);
+}
+
+/* ---- 弹窗：圆角 / 柔和阴影 / 结构间距 ---- */
+.custom-dialog-pro .el-dialog {
+  border: 1px solid var(--border-muted);
+  border-radius: 14px;
+  box-shadow:
+    0 20px 40px -12px rgba(35, 48, 68, 0.22),
+    0 8px 16px -8px rgba(35, 48, 68, 0.12);
+}
+.custom-dialog-pro .el-dialog__header {
+  border-bottom: 1px solid var(--border-muted);
+  padding: 1.25rem 1.5rem;
+  margin-right: 0;
+}
+.custom-dialog-pro .el-dialog__title {
+  color: var(--text-primary);
+  font-weight: 600;
+  font-size: 1rem;
+}
+.custom-dialog-pro .el-dialog__body {
+  padding: 1.5rem;
+}
+.custom-dialog-pro .el-dialog__footer {
+  border-top: 1px solid var(--border-muted);
+  padding: 1rem 1.5rem;
+}
+
+/* ---- 全局消息：柔和阴影与圆角 ---- */
+.el-message {
+  border-radius: 10px;
+  box-shadow: 0 6px 20px rgba(35, 48, 68, 0.14);
+}
