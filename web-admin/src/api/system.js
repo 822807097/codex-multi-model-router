@@ -37,7 +37,8 @@ export function testVisionRelay(data) {
     url: '/vision-relay/test',
     method: 'post',
     data,
-    timeout: 45_000,
+    // 免费共享端点（如 NVIDIA Trial）响应可到数十秒，放宽到 2.5 分钟
+    timeout: 160_000,
   });
 }
 

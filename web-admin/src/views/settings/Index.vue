@@ -331,6 +331,8 @@ async function handleVisionTest(idx) {
   }
   visionTestingIdx.value = idx;
   visionTestResult.value = null;
+  // 免费共享端点（如 NVIDIA Trial）可能几十秒才响应，先给即时反馈，避免「点击像没反应」
+  ElMessage.info('正在测试该视觉端点…免费共享端较慢，最长约 2.5 分钟，请稍候');
   try {
     const res = await testVisionRelay({ relay: serializeVisionEndpoint(ep) });
     visionTestResult.value = { ...(res || { ok: false, error: '无响应' }), idx };
