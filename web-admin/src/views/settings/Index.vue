@@ -274,7 +274,7 @@
       </template>
       <div class="text-xs text-secondary leading-relaxed mb-3">
         <b>恢复官方直连</b>：把 Codex 配置还原为纯官方（config.toml 去掉路由、models.json 只留官方 gpt 模型，改前自动备份），用于验证「直连官方是否正常」；
-        <b>一键接入路由</b>：把 Codex 指回本路由（<code>{{ desktopState.routerBaseUrl }}</code>），并将下方勾选的模型写入桌面端目录（不勾选任何额外模型 = 只加载官方模型走路由转发）。两种操作改完都需<b>完全退出并重启 Codex 桌面端</b>。
+        <b>一键接入路由</b>：弹窗勾选要加载的模型（可单选/多选/全选）并选默认启动模型，写入桌面端目录后指回本路由（<code>{{ desktopState.routerBaseUrl }}</code>）。两种操作改完都需<b>完全退出并重启 Codex 桌面端</b>（可用下方按钮一键重启）。
       </div>
       <div class="flex items-center gap-3 flex-wrap">
         <el-button type="primary" :loading="desktopSaving" @click="openDesktopRouterDialog">
@@ -735,7 +735,13 @@ const desktopIndeterminate = computed(() => (
 
 function openDesktopRouterDialog() {
   if (desktopState.models.length === 0) {
-    loadDesktopState().then(() => { desktopDialogOpen.value = true; });
+    loadDesktopState().then(() => {
+      if (desktopState.models.length === 0) {
+        ElMessage.error('桌面端状态加载失败，请先点击「刷新状态」后重试');
+        return;
+      }
+      desktopDialogOpen.value = true;
+    });
     return;
   }
   desktopDialogOpen.value = true;
