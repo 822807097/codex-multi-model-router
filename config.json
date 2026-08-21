@@ -113,10 +113,18 @@
     }
   ],
   "supportsResponses": {
-    "_comment": "兼容旧配置名：这些模型在 /models 中只声明 streaming；有界工具历史不等于完整会话状态，因此不声明 previous_response_id",
+    "_comment": "声明 previous_response_id/parallel_tool_calls：桌面端据此启用链式增量续聊，避免每轮全量重发烧周额度；跨模型切换时路由自动移除私有的 previous_response_id",
     "slugs": [
       "deepseek-v4-flash",
-      "qwen3.8-max"
+      "qwen3.8-max",
+      "gpt-5.6-sol",
+      "gpt-5.6-terra",
+      "gpt-5.6-luna",
+      "gpt-5.5",
+      "gpt-5.4",
+      "gpt-5.4-mini",
+      "gpt-5.2",
+      "codex-auto-review"
     ]
   },
   "modelCapabilities": [

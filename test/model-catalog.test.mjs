@@ -60,7 +60,7 @@ test('/models 列表只为声明的模型暴露 streaming 能力', () => {
       object: 'model',
       created: 0,
       owned_by: 'local-router',
-      capabilities: { streaming: true },
+      capabilities: { streaming: true, previous_response_id: true, parallel_tool_calls: true },
     },
     {
       id: 'chat',

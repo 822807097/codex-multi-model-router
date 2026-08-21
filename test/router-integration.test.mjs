@@ -712,7 +712,7 @@ test('隔离路由完成心跳、failover、工具历史和 compact 拒绝', asy
   try {
     await waitUntilHealthy(routerPort, child);
     const models = await request(routerPort, 'GET', '/v1/models');
-    assert.deepEqual(JSON.parse(models.text).data[0].capabilities, { streaming: true });
+    assert.deepEqual(JSON.parse(models.text).data[0].capabilities, { streaming: true, previous_response_id: true, parallel_tool_calls: true });
 
     const compact = await request(routerPort, 'POST', '/v1/responses/compact', { model: 'test-model', input: 'x' });
     assert.equal(compact.status, 400);

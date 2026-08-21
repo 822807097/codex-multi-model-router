@@ -146,7 +146,7 @@ test('模型菜单使用创建时的深隔离 catalog 快照且两个路径完�
       object: 'model',
       created: 0,
       owned_by: 'local-router',
-      capabilities: { streaming: true },
+      capabilities: { streaming: true, previous_response_id: true, parallel_tool_calls: true },
     }]);
   } finally {
     await fs.rm(tempDir, { recursive: true, force: true });
