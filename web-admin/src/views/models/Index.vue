@@ -495,6 +495,7 @@ const CODEX_TOOL_OPTIONS = [
   { value: 'mcp_write', label: 'MCP 写入 (mcp_write)' },
   { value: 'code_analysis', label: '代码分析 (code_analysis)' },
   { value: 'vision', label: '视觉 (vision)' },
+  { value: 'image_generation', label: '生图 (image_generation)' },
 ];
 
 const EFFORT_LABELS = {
