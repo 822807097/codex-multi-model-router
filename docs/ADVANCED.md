@@ -117,6 +117,25 @@
 - 免费额度：约 **40 请求/分钟、每日约 1 万次**，共享端点可能被他人流量节流（API Trial ToS）；生产级需付费部署专用 NIM 端点。
 - 更强免费档 `meta/llama-3.2-90b-vision-instruct` 同一地址也可绑定，但免费档冷启动可能极慢（实测 150 秒不响应），日常建议用 12B 档。
 
+## 图像生成 API（外部智能体调用，OpenAI 兼容）
+
+路由器对外提供 OpenAI 兼容的图像生成接口，ZCode / Trae / Qoder / OpenCode 等任意工具都能直接调用：
+
+```
+POST http://127.0.0.1:15730/v1/images/generations
+Authorization: Bearer <sk-router-...>（开启鉴权时）
+Content-Type: application/json
+```
+
+```jsonc
+{ "model": "gpt-image-2", "prompt": "一只红色猫头鹰图标，扁平风格", "n": 1, "size": "1024x1024" }
+```
+
+- 上游为 OpenAI 平台 `api.openai.com/v1/images/generations`（模型 `gpt-image-2`，**按张计费**，不是订阅 Plus/Pro 额度）。
+- 密钥只从环境变量读取：`OPENAI_IMAGE_API_KEY`（优先）或 `OPENAI_API_KEY`。未配置时接口返回 `401 image_provider_unconfigured` 的可读提示，配置后即出图。响应为标准 `{ object:"list", created, data:[{b64_json|url}] }`。
+- Codex 桌面端的「画图」走的是另一条路：官方模型通过 `image_generation` 工具由 Codex 宿主用订阅额度执行（已默认启用，不消耗本接口的 API 余额）。
+- 说明：为什么没有「用订阅额度」的公开生图接口——OpenAI 的 Plus/Pro 生图额度只存在于官方应用与 Codex 工具内部，`/v1/images/generations` 只认平台 API 计费；本接口严格对齐该公开契约。
+
 ## 用量看板与令牌追踪
 
 「使用统计」页：最近 7/30 天的 Token 总量、调用次数、活跃天数、最常用模型、GitHub 风格活跃热力图、按天多模型堆叠柱状图、各模型消耗明细（含思考 token、缓存命中）。
