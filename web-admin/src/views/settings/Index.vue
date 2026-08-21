@@ -787,9 +787,10 @@ async function applyDesktopRouter() {
       slugs,
       defaultModel: desktopDefaultModel.value,
     });
-    ElMessage.success(res.message || '已接入路由，请重启 Codex 桌面端生效');
+    ElMessage.success(res.message || '已接入路由');
     desktopDialogOpen.value = false;
     await loadDesktopState();
+    await autoRestartDesktopPrompt();
   } catch { /* 拦截器提示 */ } finally {
     desktopSaving.value = false;
   }
@@ -806,10 +807,31 @@ async function restoreDesktopOfficial() {
   desktopRestoring.value = true;
   try {
     const res = await restoreCodexDesktopOfficial({ defaultModel: desktopDefaultModel.value || 'gpt-5.6-sol' });
-    ElMessage.success(res.message || '已恢复官方直连，请重启 Codex 桌面端生效');
+    ElMessage.success(res.message || '已恢复官方直连');
     await loadDesktopState();
+    await autoRestartDesktopPrompt();
   } catch { /* 拦截器提示 */ } finally {
     desktopRestoring.value = false;
+  }
+}
+
+// 配置写入成功后：询问是否立即重启桌面端生效（不打断用户的自行安排）
+async function autoRestartDesktopPrompt() {
+  let proceed = true;
+  try {
+    await ElMessageBox.confirm(
+      '配置已写入。ChatGPT 桌面端只在启动时读取配置，需完全重启才生效。是否立即重启？',
+      '重启生效',
+      { confirmButtonText: '立即重启', cancelButtonText: '稍后自己重启', type: 'info' },
+    );
+  } catch { proceed = false; }
+  if (!proceed) return;
+  desktopRestarting.value = true;
+  try {
+    const res = await restartCodexDesktopApp();
+    ElMessage.success(res.message || '桌面端重启中…');
+  } catch { /* 拦截器提示 */ } finally {
+    desktopRestarting.value = false;
   }
 }
 </script>
