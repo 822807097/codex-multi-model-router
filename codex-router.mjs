@@ -66,7 +66,7 @@ import { createDiagnosticLog } from './lib/diagnostic-log.mjs';
 import { createModelQuotaCooldownStore } from './lib/model-quota-cooldown.mjs';
 import { createTokenTracker } from './lib/token-tracker.mjs';
 import { createAuthManager } from './lib/auth/auth-manager.mjs';
-import { generateOpenAIImages, normalizeImageRequest, resolveOpenAIImageKey, imagesErrorBody } from './lib/imagebridge.mjs';
+import { generateOpenAIImages, normalizeImageRequest, resolveOpenAIImageKey, resolveChatGptImageToken, imagesErrorBody } from './lib/imagebridge.mjs';
 import { createCredentialsStore, createCredentialsVault } from './lib/auth/credentials-store.mjs';
 import { refreshGoogleTokens } from './lib/auth/google-sub-auth.mjs';
 import { refreshOpenAiTokens } from './lib/auth/openai-sub-auth.mjs';
@@ -552,8 +552,13 @@ async function handleImagesGenerations(req, res) {
     return;
   }
   try {
+    // OpenAI 图片接口（api.openai.com/v1/images/generations）只认平台 API key；
+    // ChatGPT 桌面登录 token（chatgpt.com 类）会被上游 401，因此平台 key 优先，
+    // oauth token 仅作未配置 key 时的最后尝试（部分 OpenAI 账号体系接受）。
+    const keyToken = resolveOpenAIImageKey();
+    const oauthToken = keyToken ? '' : await resolveChatGptImageToken(openAiAuth.get);
     const result = await generateOpenAIImages({
-      apiKey: resolveOpenAIImageKey(),
+      authToken: keyToken || oauthToken,
       payload,
       proxy: V2RAY_PROXY,
     });

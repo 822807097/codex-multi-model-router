@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {
   normalizeImageRequest,
   resolveOpenAIImageKey,
+  resolveChatGptImageToken,
   generateOpenAIImages,
   imagesErrorBody,
   OPENAI_IMAGES_UPSTREAM,
@@ -34,7 +35,7 @@ test('normalizeImageRequest 拒绝非法输入', () => {
 
 test('generateOpenAIImages 无密钥时返回可读 401 桥接错误', async () => {
   await assert.rejects(
-    generateOpenAIImages({ apiKey: '', payload: { model: 'gpt-image-2', prompt: 'p', n: 1 } }),
+    generateOpenAIImages({ authToken: '', payload: { model: 'gpt-image-2', prompt: 'p', n: 1 } }),
     (e) => e.code === 'image_provider_unconfigured' && e.status === 401,
   );
 });
@@ -46,7 +47,7 @@ test('generateOpenAIImages 请求组装命中 OpenAI 上游并为 Bearer 鉴权'
     return { status: 200, bodyText: JSON.stringify({ created: 123, data: [{ b64_json: 'AAAA' }] }) };
   };
   const payload = { model: 'gpt-image-2', prompt: 'p', n: 1, size: '1024x1024' };
-  const result = await generateOpenAIImages({ apiKey: 'sk-test', payload, viaProxy: true, requestFn: fake });
+  const result = await generateOpenAIImages({ authToken: 'sk-test', payload, viaProxy: true, requestFn: fake });
   assert.equal(result.created, 123);
   assert.equal(result.data[0].b64_json, 'AAAA');
   assert.equal(captured.protocol, OPENAI_IMAGES_UPSTREAM.protocol);
@@ -60,13 +61,13 @@ test('generateOpenAIImages 请求组装命中 OpenAI 上游并为 Bearer 鉴权'
 
 test('generateOpenAIImages 映射上游 402/429/401 到可读错误', async () => {
   const stub = (status) => async () => ({ status, bodyText: '{}' });
-  await assert.rejects(generateOpenAIImages({ apiKey: 'sk', payload: { prompt: 'p' }, requestFn: stub(402) }),
+  await assert.rejects(generateOpenAIImages({ authToken: 'sk', payload: { prompt: 'p' }, requestFn: stub(402) }),
     (e) => e.code === 'image_insufficient_balance' && e.status === 402);
-  await assert.rejects(generateOpenAIImages({ apiKey: 'sk', payload: { prompt: 'p' }, requestFn: stub(429) }),
+  await assert.rejects(generateOpenAIImages({ authToken: 'sk', payload: { prompt: 'p' }, requestFn: stub(429) }),
     (e) => e.code === 'image_rate_limited');
-  await assert.rejects(generateOpenAIImages({ apiKey: 'sk', payload: { prompt: 'p' }, requestFn: stub(401) }),
+  await assert.rejects(generateOpenAIImages({ authToken: 'sk', payload: { prompt: 'p' }, requestFn: stub(401) }),
     (e) => e.code === 'image_credentials_invalid');
-  await assert.rejects(generateOpenAIImages({ apiKey: 'sk', payload: { prompt: 'p' }, requestFn: stub(500) }),
+  await assert.rejects(generateOpenAIImages({ authToken: 'sk', payload: { prompt: 'p' }, requestFn: stub(500) }),
     (e) => e.code === 'image_upstream_error' && e.status === 502);
 });
 
@@ -91,4 +92,17 @@ test('resolveOpenAIImageKey 与 env 联动（不依赖真实密钥）', () => {
   assert.equal(resolveOpenAIImageKey(), 'k2');
   if (prev1 !== undefined) process.env.OPENAI_IMAGE_API_KEY = prev1;
   if (prev2 !== undefined) process.env.OPENAI_API_KEY = prev2;
+});
+
+test('resolveChatGptImageToken 从登录态解析生图 Bearer，未登录返回空串', async () => {
+  assert.equal(await resolveChatGptImageToken(async () => ({ token: 'chatgpt-token' })), 'chatgpt-token');
+  assert.equal(await resolveChatGptImageToken(async () => null), '');
+  assert.equal(await resolveChatGptImageToken(async () => { throw new Error('no auth'); }), '');
+});
+
+test('优先订阅 token：authToken 走 ChatGPT OAuth 打到 OpenAI 上游', async () => {
+  let captured = null;
+  const fake = async (request) => { captured = request; return { status: 200, bodyText: JSON.stringify({ data: [{ url: 'x' }] }) }; };
+  await generateOpenAIImages({ authToken: 'chatgpt-oauth', payload: { prompt: 'p' }, requestFn: fake });
+  assert.equal(captured.headers.authorization, 'Bearer chatgpt-oauth');
 });
