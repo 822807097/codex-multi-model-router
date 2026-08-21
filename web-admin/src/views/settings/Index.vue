@@ -108,6 +108,7 @@
             </el-tag>
           </div>
           <div class="flex gap-2">
+            <el-button size="small" :loading="cursorGwRestarting" @click="restartCursorGw">重启网关</el-button>
             <el-button size="small" :loading="cursorGwLoading" @click="loadCursorGw">刷新状态</el-button>
           </div>
         </div>
@@ -282,6 +283,9 @@
         <el-button type="danger" plain :loading="desktopRestoring" @click="restoreDesktopOfficial">
           恢复官方直连
         </el-button>
+        <el-button plain :loading="desktopRestarting" @click="restartDesktopApp">
+          重启 ChatGPT 桌面端（应用改动后必做）
+        </el-button>
         <span class="text-xs text-secondary">
           当前加载 {{ desktopLoadedCount }} 个模型 · 默认 {{ desktopState.defaultModel || '—' }}
         </span>
@@ -331,7 +335,7 @@
 
 <script setup>
 import { ref, reactive, computed, onMounted } from 'vue';
-import { getSystemConfig, saveSystemConfig, testVisionRelay, getCursorGatewayStatus, listCursorGatewayAccounts, addCursorGatewayAccount, removeCursorGatewayAccount, getCodexDesktopState, restoreCodexDesktopOfficial, applyCodexDesktopRouter } from '../../api/system.js';
+import { getSystemConfig, saveSystemConfig, testVisionRelay, getCursorGatewayStatus, listCursorGatewayAccounts, addCursorGatewayAccount, removeCursorGatewayAccount, restartCursorGateway, restartCodexDesktopApp, getCodexDesktopState, restoreCodexDesktopOfficial, applyCodexDesktopRouter } from '../../api/system.js';
 import { listChannelKeys } from '../../api/channelKeys.js';
 import { getModelRouting, commitModelOperations, testTargetConnection } from '../../api/models.js';
 import { ElMessage, ElMessageBox } from 'element-plus';
@@ -516,10 +520,46 @@ const configLoaded = ref(false);
 // ---- Cursor 订阅网关（内置面板管理）----
 const cursorGw = ref({ running: false, port: 6718, error: '' });
 const cursorGwLoading = ref(false);
+const cursorGwRestarting = ref(false);
 const cursorAccounts = ref([]);
 const cursorNewKey = ref('');
 const cursorNewLabel = ref('');
 const cursorAdding = ref(false);
+
+async function restartCursorGw() {
+  try {
+    await ElMessageBox.confirm(
+      '将重启内置 Cursor 网关（停掉 6718/6719 旧进程后重新拉起，账号池与凭据保留）。确定？',
+      '重启 Cursor 网关',
+      { confirmButtonText: '重启网关', cancelButtonText: '取消', type: 'warning' },
+    );
+  } catch { return; }
+  cursorGwRestarting.value = true;
+  try {
+    const res = await restartCursorGateway();
+    ElMessage.success(res.message || '网关重启中，约 5 秒后就绪');
+    setTimeout(() => loadCursorGw(), 6000);
+  } catch { /* 拦截器提示 */ } finally {
+    cursorGwRestarting.value = false;
+  }
+}
+
+async function restartDesktopApp() {
+  try {
+    await ElMessageBox.confirm(
+      '将完全退出并重新拉起 ChatGPT 桌面端（config.toml / models.json 改动必须重启才生效）。现在执行？',
+      '重启 ChatGPT 桌面端',
+      { confirmButtonText: '重启', cancelButtonText: '取消', type: 'warning' },
+    );
+  } catch { return; }
+  desktopRestarting.value = true;
+  try {
+    const res = await restartCodexDesktopApp();
+    ElMessage.success(res.message || '桌面端重启中…');
+  } catch { /* 拦截器提示 */ } finally {
+    desktopRestarting.value = false;
+  }
+}
 
 async function loadCursorGw() {
   cursorGwLoading.value = true;
@@ -676,6 +716,7 @@ onMounted(() => {
 const desktopLoading = ref(false);
 const desktopSaving = ref(false);
 const desktopRestoring = ref(false);
+const desktopRestarting = ref(false);
 const desktopState = reactive({ mode: '', defaultModel: '', models: [], routerBaseUrl: 'http://127.0.0.1:15730/v1' });
 const desktopSelectedModels = ref([]);
 const desktopDefaultModel = ref('');

@@ -104,13 +104,17 @@ test('冷却恢复时间解析：retry-after 头 → 错误体文本 → 默认 
   let row = db.prepare('SELECT cooldown_until FROM channel_keys WHERE id = ?').get(a);
   assert.ok(Math.abs(row.cooldown_until - (now + 120_000)) < 5_000, `retry-after 秒解析: ${row.cooldown_until}`);
 
-  // 2. 错误体文本（百炼式 "quota will reset at 08-21 11:36:00 UTC"）
-  const bodyText = 'insufficient_quota: quota will reset at 08-21 11:36:00 UTC';
+  // 2. 错误体文本（百炼式 "quota will reset at MM-DD HH:MM:SS UTC"）
+  // 用「明天」构造确定性未来时刻：解析器对过去/已过的文本会放弃（回退默认冷却）。
+  const future = new Date(now + 86400_000);
+  const mm = String(future.getUTCMonth() + 1).padStart(2, '0');
+  const dd = String(future.getUTCDate()).padStart(2, '0');
+  const bodyText = `insufficient_quota: quota will reset at ${mm}-${dd} 11:36:00 UTC`;
   pool.markKeyCooldown(a, { bodyText });
   row = db.prepare('SELECT cooldown_until, cooldown_note FROM channel_keys WHERE id = ?').get(a);
-  // 解析时间应落在「补当年份的 08-21 11:36 UTC」附近
-  const expected = Date.parse(`${new Date(now).getUTCFullYear()}-08-21 11:36:00 UTC`);
-  assert.ok(Math.abs(row.cooldown_until - expected) < 5_000, `文本解析: ${row.cooldown_until}`);
+  const expected = Date.parse(`${future.getUTCFullYear()}-${mm}-${dd} 11:36:00 UTC`);
+  assert.ok(Number.isFinite(expected), `未来日期可解析: ${bodyText}`);
+  assert.ok(Math.abs(row.cooldown_until - expected) < 5_000, `文本解析: ${row.cooldown_until} vs ${expected}`);
 
   // 3. 无可解析来源 → 默认 5 分钟
   pool.markKeyCooldown(a, {});

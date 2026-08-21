@@ -52,6 +52,21 @@ export function getCursorGatewayStatus(config = {}) {
   });
 }
 
+export function restartCursorGateway() {
+  return request({
+    url: '/cursor-gateway/restart',
+    method: 'post',
+    timeout: 30_000,
+  });
+}
+
+export function restartCodexDesktopApp() {
+  return request({
+    url: '/codex-desktop/restart-app',
+    method: 'post',
+  });
+}
+
 export function listCursorGatewayAccounts(config = {}) {
   return request({
     url: '/cursor-gateway/accounts',
