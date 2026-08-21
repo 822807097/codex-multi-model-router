@@ -493,6 +493,21 @@ try {
     refreshEnvKey: (name) => envKeySource.refreshNow(name),
     keyPool,
     authManager,
+    // 用量统计兜底：官方通道 usage 帧缺失时按请求体量估算记入 token_logs，
+    // 让「周额度烧在哪」可度量（估算口径 ~4 字节/token × 0.75 JSON 开销折扣）
+    onRequestFinished: (_diag, { bodyBytes, target, model } = {}) => {
+      try {
+        if (target !== 'openai' || !(Number(bodyBytes) > 0)) return;
+        const estimatedInput = Math.round((Number(bodyBytes) / 4) * 0.75);
+        if (!(estimatedInput > 0)) return;
+        tokenTracker.recordUsage({
+          model: typeof model === 'string' && model ? model : 'gpt-5.6-sol',
+          target: 'openai',
+          inputTokens: estimatedInput,
+          outputTokens: 0,
+        });
+      } catch { /* 统计旁路不得影响请求 */ }
+    },
     relayNonTextParts,
     buildChatRequest,
     startResponsesSse,
