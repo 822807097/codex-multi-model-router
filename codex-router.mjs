@@ -66,6 +66,7 @@ import { createDiagnosticLog } from './lib/diagnostic-log.mjs';
 import { createModelQuotaCooldownStore } from './lib/model-quota-cooldown.mjs';
 import { createTokenTracker } from './lib/token-tracker.mjs';
 import { createAuthManager } from './lib/auth/auth-manager.mjs';
+import { generateOpenAIImages, normalizeImageRequest, resolveOpenAIImageKey, imagesErrorBody } from './lib/imagebridge.mjs';
 import { createCredentialsStore, createCredentialsVault } from './lib/auth/credentials-store.mjs';
 import { refreshGoogleTokens } from './lib/auth/google-sub-auth.mjs';
 import { refreshOpenAiTokens } from './lib/auth/openai-sub-auth.mjs';
@@ -487,7 +488,83 @@ try {
   process.stderr.write('[catalog] 模型目录启动快照失败（catalog_snapshot_invalid）\n');
   process.exit(1);
 }
-server = http.createServer(routerHandler);
+server = http.createServer((clientReq, clientRes) => {
+  const pathname = (clientReq.url || '/').split('?')[0];
+  // 外部图像生成桥接（OpenAI 兼容，独立于主路由管线）
+  if (clientReq.method === 'POST' && (pathname === '/v1/images/generations' || pathname === '/images/generations')) {
+    handleImagesGenerations(clientReq, clientRes);
+    return;
+  }
+  routerHandler(clientReq, clientRes);
+});
+
+// 读取小体积 JSON 请求体（图片请求体很小，2MB 上限足够）。
+function readSmallJsonBody(req, res, limitBytes = 2 * 1024 * 1024) {
+  return new Promise((resolve) => {
+    const chunks = [];
+    let size = 0;
+    const done = (error, value) => {
+      clean();
+      resolve(error ? { error } : { value });
+    };
+    const clean = () => {
+      req.removeListener('data', onData);
+      req.removeListener('end', onEnd);
+      req.removeListener('error', onError);
+    };
+    const onData = (chunk) => {
+      size += chunk.length;
+      if (size > limitBytes) {
+        req.destroy();
+        done(Object.assign(new Error('request body too large'), { status: 413, code: 'request_body_too_large' }));
+        return;
+      }
+      chunks.push(chunk);
+    };
+    const onEnd = () => {
+      try {
+        done(null, JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}'));
+      } catch (error) {
+        done(Object.assign(new Error('invalid JSON body'), { status: 400, code: 'invalid_json' }));
+      }
+    };
+    const onError = () => done(Object.assign(new Error('request read error'), { status: 400, code: 'json_read_failed' }));
+    req.on('data', onData);
+    req.on('end', onEnd);
+    req.on('error', onError);
+  });
+}
+
+// 对外暴露 OpenAI 兼容图像接口；未配置 API key 时给出可读错误。
+async function handleImagesGenerations(req, res) {
+  const parsed = await readSmallJsonBody(req, res);
+  if (parsed.error) {
+    res.writeHead(parsed.error.status || 400, { 'content-type': 'application/json' });
+    res.end(JSON.stringify(imagesErrorBody(parsed.error)));
+    return;
+  }
+  let payload;
+  try {
+    payload = normalizeImageRequest(parsed.value);
+  } catch (error) {
+    res.writeHead(error.status || 400, { 'content-type': 'application/json' });
+    res.end(JSON.stringify(imagesErrorBody(error)));
+    return;
+  }
+  try {
+    const result = await generateOpenAIImages({
+      apiKey: resolveOpenAIImageKey(),
+      payload,
+      proxy: V2RAY_PROXY,
+    });
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ object: 'list', created: result.created, data: result.data }));
+  } catch (error) {
+    const status = error.status || 502;
+    res.writeHead(status, { 'content-type': 'application/json' });
+    res.end(JSON.stringify(imagesErrorBody(error)));
+  }
+}
 
 server.listen(PORT, '127.0.0.1', () => {
   log(`codex-router listening on 127.0.0.1:${PORT}`);
