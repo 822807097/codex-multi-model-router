@@ -275,42 +275,48 @@
         <b>恢复官方直连</b>：把 Codex 配置还原为纯官方（config.toml 去掉路由、models.json 只留官方 gpt 模型，改前自动备份），用于验证「直连官方是否正常」；
         <b>一键接入路由</b>：把 Codex 指回本路由（<code>{{ desktopState.routerBaseUrl }}</code>），并将下方勾选的模型写入桌面端目录（不勾选任何额外模型 = 只加载官方模型走路由转发）。两种操作改完都需<b>完全退出并重启 Codex 桌面端</b>。
       </div>
-      <div class="flex flex-wrap gap-4 items-end">
-        <div class="flex flex-col gap-1 min-w-[280px]">
-          <span class="text-xs text-secondary">加载到 Codex 的模型（多选，{{ desktopState.models.length }} 个可选）</span>
-          <el-select
-            v-model="desktopSelectedModels"
-            multiple
-            filterable
-            collapse-tags
-            style="width: 460px"
-            placeholder="选择要加载的模型"
-          >
-            <el-option
-              v-for="m in desktopState.models"
-              :key="m.slug"
-              :value="m.slug"
-              :label="`${m.displayName}${m.official ? '' : ''} (${m.slug})`"
-            >
-              <span class="font-mono text-xs">{{ m.slug }}</span>
-              <el-tag v-if="m.official" size="small" type="success" effect="plain" class="ml-1">官方</el-tag>
-            </el-option>
-          </el-select>
-        </div>
-        <div class="flex flex-col gap-1">
-          <span class="text-xs text-secondary">默认启动模型</span>
-          <el-select v-model="desktopDefaultModel" filterable style="width: 200px" placeholder="默认模型">
-            <el-option v-for="s in desktopSelectedModels" :key="s" :value="s" :label="s" />
-          </el-select>
-        </div>
-        <el-button type="primary" :loading="desktopSaving" @click="applyDesktopRouter">
-          <el-icon class="mr-1"><Connection /></el-icon>一键接入路由
+      <div class="flex items-center gap-3 flex-wrap">
+        <el-button type="primary" :loading="desktopSaving" @click="openDesktopRouterDialog">
+          <el-icon class="mr-1"><Connection /></el-icon>一键接入路由（选择模型）
         </el-button>
         <el-button type="danger" plain :loading="desktopRestoring" @click="restoreDesktopOfficial">
           恢复官方直连
         </el-button>
+        <span class="text-xs text-secondary">
+          当前加载 {{ desktopLoadedCount }} 个模型 · 默认 {{ desktopState.defaultModel || '—' }}
+        </span>
       </div>
     </el-card>
+
+    <!-- 接入路由：模型选择弹窗（可单选/多选/全选） -->
+    <el-dialog v-model="desktopDialogOpen" title="接入路由：选择要加载到 Codex 的模型" width="640px" class="custom-dialog-pro" append-to-body>
+      <div class="text-xs text-secondary mb-2">勾选要写入 Codex 桌面端目录的模型（单选、多选、全选均可）：</div>
+      <div class="flex items-center gap-3 mb-2">
+        <el-checkbox v-model="desktopSelectAll" :indeterminate="desktopIndeterminate">全选</el-checkbox>
+        <el-button size="small" text type="primary" @click="desktopSelectedModels = []">清空</el-button>
+        <span class="text-xs text-secondary">已选 {{ desktopSelectedModels.length }} / {{ desktopState.models.length }}</span>
+      </div>
+      <el-checkbox-group
+        v-model="desktopSelectedModels"
+        class="grid grid-cols-2 gap-1 max-h-72 overflow-y-auto border border-muted rounded-lg p-2"
+      >
+        <el-checkbox v-for="m in desktopState.models" :key="m.slug" :value="m.slug">
+          <span class="font-mono text-xs">{{ m.slug }}</span>
+          <el-tag v-if="m.official" size="small" type="success" effect="plain" class="ml-1">官方</el-tag>
+        </el-checkbox>
+      </el-checkbox-group>
+      <el-form label-position="top" class="mt-3">
+        <el-form-item label="默认启动模型">
+          <el-select v-model="desktopDefaultModel" filterable style="width: 280px" placeholder="选择默认模型">
+            <el-option v-for="s in desktopSelectedModels" :key="s" :value="s" :label="s" />
+          </el-select>
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="desktopDialogOpen = false">取消</el-button>
+        <el-button type="primary" :loading="desktopSaving" @click="applyDesktopRouter">应用并接入路由</el-button>
+      </template>
+    </el-dialog>
 
     <!-- 通道编辑弹窗（自定义厂商动态管理） -->
     <TargetEditorDialog
@@ -673,6 +679,26 @@ const desktopRestoring = ref(false);
 const desktopState = reactive({ mode: '', defaultModel: '', models: [], routerBaseUrl: 'http://127.0.0.1:15730/v1' });
 const desktopSelectedModels = ref([]);
 const desktopDefaultModel = ref('');
+const desktopDialogOpen = ref(false);
+const desktopLoadedCount = computed(() => desktopSelectedModels.value.length);
+const desktopSelectAll = computed({
+  get: () => desktopState.models.length > 0 && desktopSelectedModels.value.length === desktopState.models.length,
+  set: (val) => {
+    desktopSelectedModels.value = val ? desktopState.models.map((m) => m.slug) : [];
+  },
+});
+const desktopIndeterminate = computed(() => (
+  desktopSelectedModels.value.length > 0
+  && desktopSelectedModels.value.length < desktopState.models.length
+));
+
+function openDesktopRouterDialog() {
+  if (desktopState.models.length === 0) {
+    loadDesktopState().then(() => { desktopDialogOpen.value = true; });
+    return;
+  }
+  desktopDialogOpen.value = true;
+}
 
 async function loadDesktopState() {
   desktopLoading.value = true;
@@ -695,12 +721,15 @@ async function loadDesktopState() {
 async function applyDesktopRouter() {
   const slugs = desktopSelectedModels.value;
   if (!slugs.length) {
-    ElMessage.warning('请至少选择一个要加载的模型');
+    ElMessage.warning('请至少勾选一个模型');
     return;
+  }
+  if (!slugs.includes(desktopDefaultModel.value)) {
+    desktopDefaultModel.value = slugs[0];
   }
   try {
     await ElMessageBox.confirm(
-      `将把 Codex 指回路由（${desktopState.routerBaseUrl}），并加载 ${slugs.length} 个模型（默认 ${desktopDefaultModel.value || slugs[0]}）。现有 config.toml / models.json 会自动备份。确定？`,
+      `将把 Codex 指回路由（${desktopState.routerBaseUrl}），加载 ${slugs.length} 个模型（默认 ${desktopDefaultModel.value}）。现有 config.toml / models.json 会自动备份。确定？`,
       '接入路由',
       { confirmButtonText: '接入路由', cancelButtonText: '取消', type: 'warning' },
     );
@@ -709,9 +738,10 @@ async function applyDesktopRouter() {
   try {
     const res = await applyCodexDesktopRouter({
       slugs,
-      defaultModel: desktopDefaultModel.value || slugs[0],
+      defaultModel: desktopDefaultModel.value,
     });
     ElMessage.success(res.message || '已接入路由，请重启 Codex 桌面端生效');
+    desktopDialogOpen.value = false;
     await loadDesktopState();
   } catch { /* 拦截器提示 */ } finally {
     desktopSaving.value = false;

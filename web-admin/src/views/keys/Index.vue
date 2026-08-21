@@ -21,6 +21,23 @@
       </div>
     </div>
 
+    <!-- 对外调用地址与协议（常驻展示，任意工具/智能体接入用） -->
+    <div class="border border-border/60 rounded-xl bg-surface shadow-sm p-4 mb-3">
+      <div class="flex items-center justify-between flex-wrap gap-2">
+        <span class="text-xs font-semibold text-primary">对外调用地址（OpenAI 兼容协议）</span>
+        <el-button size="small" text type="primary" @click="copyKey(routerBaseUrl)">
+          <el-icon class="mr-0.5"><CopyDocument /></el-icon>复制 Base URL
+        </el-button>
+      </div>
+      <code class="block font-mono text-sm text-primary select-all break-all mt-1">{{ routerBaseUrl }}</code>
+      <div class="text-[11px] text-secondary mt-1.5 leading-relaxed">
+        协议：<b>HTTP</b> · OpenAI 兼容 · 端点：
+        <code>POST /v1/chat/completions</code>（对话）· <code>POST /v1/responses</code>（Codex）·
+        <code>GET /v1/models</code>（模型列表）· <code>POST /v1/images/generations</code>（生图）·
+        鉴权：<code>Authorization: Bearer sk-router-...</code>（未创建密钥时开放直连）
+      </div>
+    </div>
+
     <!-- 异步内容区 -->
     <AsyncContainer :loading="loading" :error="!!loadError" :error-detail="loadError" @retry="loadKeys">
       <div v-if="keys.length === 0" class="border border-border/60 rounded-xl p-8 bg-surface text-center">

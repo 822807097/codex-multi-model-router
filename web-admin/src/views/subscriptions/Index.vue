@@ -60,24 +60,19 @@
             </div>
           </div>
 
-          <!-- 周期额度（本地真实请求计数：上游未提供公开额度接口；官方 2026 起按周计） -->
+          <!-- 周额度（本地真实统计：上游未提供公开剩余额度接口，官方 2026 起按周计） -->
           <div class="mt-3">
             <div class="flex items-center justify-between text-xs text-secondary mb-1.5">
-              <span>周额度用量（本地统计 · 7 天窗口）</span>
-              <span class="font-mono">已用 {{ acc.quota?.used || 0 }} 次</span>
+              <span>本周已用（本地统计 · 7 天滚动窗口）</span>
+              <span class="font-mono">{{ acc.quota?.used || 0 }} 次请求<template v-if="acc.quota?.resetsAt > 0"> · {{ formatQuotaReset(acc.quota.resetsAt) }} 重置</template></span>
             </div>
-            <el-progress
-              :percentage="acc.status === 'cooldown' ? 100 : quotaPercent(acc)"
-              :stroke-width="8"
-              :show-text="false"
-              :color="acc.status === 'cooldown' ? 'var(--danger-text)' : quotaColor(acc)"
-            />
-            <div class="text-[11px] text-secondary mt-1">
-              {{ quotaNote(acc) }}
-              <template v-if="acc.status === 'cooldown' && acc.cooldownUntil > 0">
-                <span class="font-semibold text-danger">额度于 {{ formatQuotaReset(acc.cooldownUntil) }} 恢复</span>
-                <span v-if="acc.metadata?.lastCooldownReason">（{{ acc.metadata.lastCooldownReason }}）</span>
+            <div class="text-[11px] text-secondary mt-1 leading-relaxed">
+              <template v-if="acc.status === 'cooldown'">
+                <span class="font-semibold text-danger">额度受限：于 {{ formatQuotaReset(acc.cooldownUntil) }} 恢复</span>
+                <template v-if="acc.metadata?.lastCooldownReason">（{{ acc.metadata.lastCooldownReason }}）</template>
               </template>
+              <template v-else>正常使用中</template>
+              <div class="mt-0.5">{{ quotaNote(acc) }}</div>
             </div>
           </div>
 
@@ -208,36 +203,18 @@ function statusMeta(acc) {
   return { type: 'success', label: 'Active' };
 }
 
-function quotaPercent(acc) {
-  const used = Number(acc.quota?.used) || 0;
-  // 上游不提供额度上限：进度条按「已用次数」相对显示（100 次为满格基准，仅展示用途）
-  return Math.min(100, Math.round((used / 100) * 100));
-}
-
 // 额度数据来源说明：上游（ChatGPT/Claude/Google 订阅）均未提供公开额度接口，
 // 展示的是路由真实统计的本地请求次数，非占位假数据
 function quotaNote(acc) {
-  const resetsAt = Number(acc.quota?.resetsAt);
-  const resetText = resetsAt > 0
-    ? `，${formatQuotaReset(resetsAt)} 重置`
-    : '';
   if (acc.provider === 'openai') {
-    return `本地真实计数：路由经此账号走 Codex 额度池转发请求的次数（周额度窗口）${resetText}；上游未提供公开额度接口，无法显示剩余额度`;
+    return `本地真实计数：路由经此账号走 Codex 额度池转发请求的次数（周额度窗口）；上游未提供公开额度接口，无法显示剩余百分比`;
   }
-  return `本地统计：此订阅无路由转发路径（走 auth.json 登录态），暂无使用计数；上游未提供公开额度接口${resetText}`;
+  return `本地统计：此订阅无路由转发路径（走 auth.json 登录态），暂无使用计数；上游未提供公开额度接口`;
 }
 
 function formatQuotaReset(ts) {
   if (!ts) return '';
   return new Date(Number(ts)).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false });
-}
-
-// el-progress 的 color 会落到内联 style，CSS 变量在内联样式中同样生效
-function quotaColor(acc) {
-  const percent = quotaPercent(acc);
-  if (percent >= 90) return 'var(--danger-text)';
-  if (percent >= 60) return 'var(--warning-text)';
-  return 'var(--success-text)';
 }
 
 // 用账号凭据真实测试指定模型（sub2api 式：选模型 → 真实请求上游生成最小响应）
