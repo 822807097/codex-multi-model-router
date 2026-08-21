@@ -257,6 +257,61 @@
     </el-card>
     </AsyncContainer>
 
+    <!-- Codex 桌面端接入：一键恢复官方直连 / 一键接入路由 + 模型动态加载 -->
+    <el-card shadow="never" class="setting-card">
+      <template #header>
+        <div class="flex items-center justify-between flex-wrap gap-2">
+          <div class="flex items-center gap-2">
+            <span class="text-lg">🖥️</span>
+            <span class="font-bold text-primary text-sm">Codex 桌面端接入</span>
+            <el-tag size="small" :type="desktopState.mode === 'router' ? 'warning' : 'success'" effect="plain">
+              {{ desktopState.mode === 'router' ? '已接入路由' : '官方直连' }}
+            </el-tag>
+          </div>
+          <el-button size="small" :loading="desktopLoading" @click="loadDesktopState">刷新状态</el-button>
+        </div>
+      </template>
+      <div class="text-xs text-secondary leading-relaxed mb-3">
+        <b>恢复官方直连</b>：把 Codex 配置还原为纯官方（config.toml 去掉路由、models.json 只留官方 gpt 模型，改前自动备份），用于验证「直连官方是否正常」；
+        <b>一键接入路由</b>：把 Codex 指回本路由（<code>{{ desktopState.routerBaseUrl }}</code>），并将下方勾选的模型写入桌面端目录（不勾选任何额外模型 = 只加载官方模型走路由转发）。两种操作改完都需<b>完全退出并重启 Codex 桌面端</b>。
+      </div>
+      <div class="flex flex-wrap gap-4 items-end">
+        <div class="flex flex-col gap-1 min-w-[280px]">
+          <span class="text-xs text-secondary">加载到 Codex 的模型（多选，{{ desktopState.models.length }} 个可选）</span>
+          <el-select
+            v-model="desktopSelectedModels"
+            multiple
+            filterable
+            collapse-tags
+            style="width: 460px"
+            placeholder="选择要加载的模型"
+          >
+            <el-option
+              v-for="m in desktopState.models"
+              :key="m.slug"
+              :value="m.slug"
+              :label="`${m.displayName}${m.official ? '' : ''} (${m.slug})`"
+            >
+              <span class="font-mono text-xs">{{ m.slug }}</span>
+              <el-tag v-if="m.official" size="small" type="success" effect="plain" class="ml-1">官方</el-tag>
+            </el-option>
+          </el-select>
+        </div>
+        <div class="flex flex-col gap-1">
+          <span class="text-xs text-secondary">默认启动模型</span>
+          <el-select v-model="desktopDefaultModel" filterable style="width: 200px" placeholder="默认模型">
+            <el-option v-for="s in desktopSelectedModels" :key="s" :value="s" :label="s" />
+          </el-select>
+        </div>
+        <el-button type="primary" :loading="desktopSaving" @click="applyDesktopRouter">
+          <el-icon class="mr-1"><Connection /></el-icon>一键接入路由
+        </el-button>
+        <el-button type="danger" plain :loading="desktopRestoring" @click="restoreDesktopOfficial">
+          恢复官方直连
+        </el-button>
+      </div>
+    </el-card>
+
     <!-- 通道编辑弹窗（自定义厂商动态管理） -->
     <TargetEditorDialog
       v-model="showTargetEditor"
@@ -270,7 +325,7 @@
 
 <script setup>
 import { ref, reactive, onMounted } from 'vue';
-import { getSystemConfig, saveSystemConfig, testVisionRelay, getCursorGatewayStatus, listCursorGatewayAccounts, addCursorGatewayAccount, removeCursorGatewayAccount } from '../../api/system.js';
+import { getSystemConfig, saveSystemConfig, testVisionRelay, getCursorGatewayStatus, listCursorGatewayAccounts, addCursorGatewayAccount, removeCursorGatewayAccount, getCodexDesktopState, restoreCodexDesktopOfficial, applyCodexDesktopRouter } from '../../api/system.js';
 import { listChannelKeys } from '../../api/channelKeys.js';
 import { getModelRouting, commitModelOperations, testTargetConnection } from '../../api/models.js';
 import { ElMessage, ElMessageBox } from 'element-plus';
@@ -608,7 +663,78 @@ async function loadConfig() {
 onMounted(() => {
   loadConfig();
   loadCursorGw();
+  loadDesktopState();
 });
+
+// ---- Codex 桌面端接入（一键官方直连 / 一键接入路由 + 模型动态加载） ----
+const desktopLoading = ref(false);
+const desktopSaving = ref(false);
+const desktopRestoring = ref(false);
+const desktopState = reactive({ mode: '', defaultModel: '', models: [], routerBaseUrl: 'http://127.0.0.1:15730/v1' });
+const desktopSelectedModels = ref([]);
+const desktopDefaultModel = ref('');
+
+async function loadDesktopState() {
+  desktopLoading.value = true;
+  try {
+    const res = await getCodexDesktopState({ skipGlobalError: true });
+    desktopState.mode = res.mode || '';
+    desktopState.defaultModel = res.defaultModel || '';
+    desktopState.models = res.models || [];
+    desktopState.routerBaseUrl = res.routerBaseUrl || desktopState.routerBaseUrl;
+    const current = desktopState.models.map((m) => m.slug);
+    desktopSelectedModels.value = current;
+    desktopDefaultModel.value = current.includes(res.defaultModel)
+      ? res.defaultModel
+      : (current.includes('gpt-5.6-sol') ? 'gpt-5.6-sol' : (current[0] || ''));
+  } catch { /* 错误提示由请求拦截器统一处理 */ } finally {
+    desktopLoading.value = false;
+  }
+}
+
+async function applyDesktopRouter() {
+  const slugs = desktopSelectedModels.value;
+  if (!slugs.length) {
+    ElMessage.warning('请至少选择一个要加载的模型');
+    return;
+  }
+  try {
+    await ElMessageBox.confirm(
+      `将把 Codex 指回路由（${desktopState.routerBaseUrl}），并加载 ${slugs.length} 个模型（默认 ${desktopDefaultModel.value || slugs[0]}）。现有 config.toml / models.json 会自动备份。确定？`,
+      '接入路由',
+      { confirmButtonText: '接入路由', cancelButtonText: '取消', type: 'warning' },
+    );
+  } catch { return; }
+  desktopSaving.value = true;
+  try {
+    const res = await applyCodexDesktopRouter({
+      slugs,
+      defaultModel: desktopDefaultModel.value || slugs[0],
+    });
+    ElMessage.success(res.message || '已接入路由，请重启 Codex 桌面端生效');
+    await loadDesktopState();
+  } catch { /* 拦截器提示 */ } finally {
+    desktopSaving.value = false;
+  }
+}
+
+async function restoreDesktopOfficial() {
+  try {
+    await ElMessageBox.confirm(
+      '将恢复 Codex 官方直连：config.toml 移除路由、models.json 只保留官方 gpt 模型（自动备份现有文件）。恢复后若官方可用，即证明路由侧配置是问题来源，方便排查。确定？',
+      '恢复官方直连',
+      { confirmButtonText: '恢复官方直连', cancelButtonText: '取消', type: 'warning' },
+    );
+  } catch { return; }
+  desktopRestoring.value = true;
+  try {
+    const res = await restoreCodexDesktopOfficial({ defaultModel: desktopDefaultModel.value || 'gpt-5.6-sol' });
+    ElMessage.success(res.message || '已恢复官方直连，请重启 Codex 桌面端生效');
+    await loadDesktopState();
+  } catch { /* 拦截器提示 */ } finally {
+    desktopRestoring.value = false;
+  }
+}
 </script>
 
 <style scoped>
