@@ -63,3 +63,6 @@ data/
 
 # 私有部署脚本（含本机绝对路径，仅本人使用，不入库）
 /scripts/deploy-*.ps1
+
+# 内部计划/设计文档（upstream 私用，不入库）
+docs/superpowers/
