@@ -447,6 +447,7 @@ const keyPool = createChannelKeyPool({ db: getDatabase(), envKeySource, log });
 const adminHandler = createAdminHandler({
   configPath: CONFIG_PATH,
   catalogPath: CATALOG_PATH,
+  codexHome: CODEX_HOME,
   webRoot: path.join(__dirname, 'web'),
   defaultCodexHome: process.env.CODEX_HOME || path.join(os.homedir(), '.codex'),
   env: process.env,

@@ -77,3 +77,29 @@ export function removeCursorGatewayAccount(id) {
     data: { id },
   });
 }
+
+// ---------- Codex 桌面端接入管理（一键官方直连 / 一键接入路由 + 模型动态加载） ----------
+
+export function getCodexDesktopState(config = {}) {
+  return request({
+    url: '/codex-desktop/state',
+    method: 'get',
+    ...config,
+  });
+}
+
+export function restoreCodexDesktopOfficial(data) {
+  return request({
+    url: '/codex-desktop/restore-official',
+    method: 'post',
+    data,
+  });
+}
+
+export function applyCodexDesktopRouter(data) {
+  return request({
+    url: '/codex-desktop/apply-router',
+    method: 'post',
+    data,
+  });
+}
