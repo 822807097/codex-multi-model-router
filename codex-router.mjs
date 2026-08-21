@@ -71,7 +71,7 @@ import { createCredentialsStore, createCredentialsVault } from './lib/auth/crede
 import { refreshGoogleTokens } from './lib/auth/google-sub-auth.mjs';
 import { refreshOpenAiTokens } from './lib/auth/openai-sub-auth.mjs';
 import { refreshClaudeTokens } from './lib/auth/claude-sub-auth.mjs';
-import { getDatabase, dbListAccounts, dbRecordTokenLog } from './lib/db.mjs';
+import { getDatabase, dbListAccounts, dbSaveAccount, dbRecordTokenLog } from './lib/db.mjs';
 import { createApiKeyStore } from './lib/api-keys.mjs';
 import {
   computeCheckpointNamespace,
@@ -277,7 +277,27 @@ const credentialsStore = createCredentialsStore({
 const credentialsVault = createCredentialsVault({
   vaultPath: path.join(path.dirname(CONFIG_PATH), 'credentials-vault.json'),
 });
-const authManager = createAuthManager();
+const authManager = createAuthManager({
+  // 账号冷却/恢复时间持久化到 SQLite：重启后不复活已用尽账号（额度限制不再反复打断任务）
+  onAccountPersist: (acc) => {
+    try {
+      dbSaveAccount({
+        id: acc.id,
+        provider: acc.provider,
+        email: acc.email,
+        alias: acc.alias,
+        status: acc.status,
+        proxy_enabled: acc.proxy?.enabled === true,
+        proxy_url: acc.proxy?.url || '',
+        quota_used: acc.quota?.used || 0,
+        quota_limit: acc.quota?.limit || 100,
+        resets_at: acc.quota?.resetsAt || 0,
+        metadata: acc.metadata || {},
+        cooldown_until: acc.cooldownUntil || 0,
+      });
+    } catch { /* 持久化失败不影响主流程 */ }
+  },
+});
 // 恢复顺序：先脱敏 accounts.json（历史遗留），再以 SQLite 为准覆盖合并 vault 凭据。
 try {
   for (const acc of credentialsStore.loadAccounts()) authManager.addAccount(acc);
@@ -294,6 +314,7 @@ try {
       alias: row.alias,
       email: row.email || '',
       status: row.status || 'active',
+      cooldownUntil: row.cooldownUntil || 0,
       credentials: vaultAll[row.id] || {},
       proxy: {
         enabled: row.proxyEnabled ?? true,

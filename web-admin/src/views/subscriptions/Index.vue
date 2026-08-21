@@ -60,20 +60,24 @@
             </div>
           </div>
 
-          <!-- 周期额度（本地真实请求计数：上游未提供公开额度接口） -->
+          <!-- 周期额度（本地真实请求计数：上游未提供公开额度接口；官方 2026 起按周计） -->
           <div class="mt-3">
             <div class="flex items-center justify-between text-xs text-secondary mb-1.5">
-              <span>周期使用量（5 小时窗口 · 本地统计）</span>
+              <span>周额度用量（本地统计 · 7 天窗口）</span>
               <span class="font-mono">已用 {{ acc.quota?.used || 0 }} 次</span>
             </div>
             <el-progress
-              :percentage="quotaPercent(acc)"
+              :percentage="acc.status === 'cooldown' ? 100 : quotaPercent(acc)"
               :stroke-width="8"
               :show-text="false"
-              :color="quotaColor(acc)"
+              :color="acc.status === 'cooldown' ? 'var(--danger-text)' : quotaColor(acc)"
             />
             <div class="text-[11px] text-secondary mt-1">
               {{ quotaNote(acc) }}
+              <template v-if="acc.status === 'cooldown' && acc.cooldownUntil > 0">
+                <span class="font-semibold text-danger">额度于 {{ formatQuotaReset(acc.cooldownUntil) }} 恢复</span>
+                <span v-if="acc.metadata?.lastCooldownReason">（{{ acc.metadata.lastCooldownReason }}）</span>
+              </template>
             </div>
           </div>
 
@@ -215,12 +219,17 @@ function quotaPercent(acc) {
 function quotaNote(acc) {
   const resetsAt = Number(acc.quota?.resetsAt);
   const resetText = resetsAt > 0
-    ? `，${new Date(resetsAt).toLocaleString('zh-CN')} 重置`
+    ? `，${formatQuotaReset(resetsAt)} 重置`
     : '';
   if (acc.provider === 'openai') {
-    return `本地真实计数：路由经此账号走 Codex 额度池转发请求的次数${resetText}；上游未提供公开额度接口，无法显示剩余额度`;
+    return `本地真实计数：路由经此账号走 Codex 额度池转发请求的次数（周额度窗口）${resetText}；上游未提供公开额度接口，无法显示剩余额度`;
   }
   return `本地统计：此订阅无路由转发路径（走 auth.json 登录态），暂无使用计数；上游未提供公开额度接口${resetText}`;
+}
+
+function formatQuotaReset(ts) {
+  if (!ts) return '';
+  return new Date(Number(ts)).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false });
 }
 
 // el-progress 的 color 会落到内联 style，CSS 变量在内联样式中同样生效
