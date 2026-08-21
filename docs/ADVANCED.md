@@ -132,9 +132,9 @@ Content-Type: application/json
 ```
 
 - 上游为 OpenAI 平台 `api.openai.com/v1/images/generations`（模型 `gpt-image-2`，**按张计费**，不是订阅 Plus/Pro 额度）。
-- 密钥只从环境变量读取：`OPENAI_IMAGE_API_KEY`（优先）或 `OPENAI_API_KEY`。未配置时接口返回 `401 image_provider_unconfigured` 的可读提示，配置后即出图。响应为标准 `{ object:"list", created, data:[{b64_json|url}] }`。
+- 凭据：**平台 API key 优先**（`OPENAI_IMAGE_API_KEY`，回退 `OPENAI_API_KEY`，只从环境变量读取）；未配置 key 时才尝试 ChatGPT 登录态 token（实测 chatgpt.com 类 token 会被上游 401，故 key 才是图片接口的可靠凭据）。未配置任何凭据时返回 `401 image_provider_unconfigured` 的可读提示。响应为标准 `{ object:"list", created, data:[{b64_json|url}] }`。
 - Codex 桌面端的「画图」走的是另一条路：官方模型通过 `image_generation` 工具由 Codex 宿主用订阅额度执行（已默认启用，不消耗本接口的 API 余额）。
-- 说明：为什么没有「用订阅额度」的公开生图接口——OpenAI 的 Plus/Pro 生图额度只存在于官方应用与 Codex 工具内部，`/v1/images/generations` 只认平台 API 计费；本接口严格对齐该公开契约。
+- 说明：为什么没有「订阅额度」的公开生图接口——OpenAI 的 Plus/Pro 生图额度只存在于官方应用与 Codex 工具内部，`/v1/images/generations` 只认平台 API key 计费；本接口严格对齐该公开契约。
 
 ## 用量看板与令牌追踪
 
