@@ -108,7 +108,8 @@
             </el-tag>
           </div>
           <div class="flex gap-2">
-            <el-button size="small" :loading="cursorGwRestarting" @click="restartCursorGw">重启网关</el-button>
+            <el-button v-if="!cursorGw.running" type="primary" size="small" :loading="cursorGwStarting" @click="startCursorGw">启动网关</el-button>
+            <el-button v-else size="small" :loading="cursorGwRestarting" @click="restartCursorGw">重启网关</el-button>
             <el-button size="small" :loading="cursorGwLoading" @click="loadCursorGw">刷新状态</el-button>
           </div>
         </div>
@@ -118,6 +119,19 @@
         在这里添加/删除 crsr_ key（Cursor 设置 → API KEY），模型自动在 Codex 下拉出现（<code>cursor/…</code>）。
       </div>
       <div v-if="cursorGw.error" class="text-xs text-danger mb-2">{{ cursorGw.error }}</div>
+
+      <!-- 可用模型清单（读路由目录，网关离线也能看） -->
+      <div v-if="cursorModels.length" class="mb-3">
+        <div class="text-xs text-secondary mb-1">网关可用模型（{{ cursorModels.length }} 个，选中账号后按账号支持情况过滤）：</div>
+        <div class="flex flex-wrap gap-1">
+          <el-tag v-for="model in cursorModels" :key="model.slug" size="small" effect="plain" class="font-mono">
+            {{ model.slug }}
+          </el-tag>
+        </div>
+      </div>
+      <div v-else-if="!cursorGwLoading" class="text-xs text-secondary mb-3">
+        暂无 cursor-* 模型目录：接入 Cursor 账号后自动生成，或在「模型管理」手动添加。
+      </div>
 
       <!-- 账号池表格 -->
       <el-table :data="cursorAccounts" size="small" class="custom-table" empty-text="尚未添加 Cursor 账号">
@@ -335,7 +349,7 @@
 
 <script setup>
 import { ref, reactive, computed, onMounted } from 'vue';
-import { getSystemConfig, saveSystemConfig, testVisionRelay, getCursorGatewayStatus, listCursorGatewayAccounts, addCursorGatewayAccount, removeCursorGatewayAccount, restartCursorGateway, restartCodexDesktopApp, getCodexDesktopState, restoreCodexDesktopOfficial, applyCodexDesktopRouter } from '../../api/system.js';
+import { getSystemConfig, saveSystemConfig, testVisionRelay, getCursorGatewayStatus, listCursorGatewayAccounts, addCursorGatewayAccount, removeCursorGatewayAccount, restartCursorGateway, startCursorGateway, listCursorGatewayModels, restartCodexDesktopApp, getCodexDesktopState, restoreCodexDesktopOfficial, applyCodexDesktopRouter } from '../../api/system.js';
 import { listChannelKeys } from '../../api/channelKeys.js';
 import { getModelRouting, commitModelOperations, testTargetConnection } from '../../api/models.js';
 import { ElMessage, ElMessageBox } from 'element-plus';
@@ -521,10 +535,33 @@ const configLoaded = ref(false);
 const cursorGw = ref({ running: false, port: 6718, error: '' });
 const cursorGwLoading = ref(false);
 const cursorGwRestarting = ref(false);
+const cursorGwStarting = ref(false);
+const cursorModels = ref([]);
 const cursorAccounts = ref([]);
 const cursorNewKey = ref('');
 const cursorNewLabel = ref('');
 const cursorAdding = ref(false);
+
+// 网关可用模型清单（读路由目录，网关离线也能看）
+async function loadCursorModels() {
+  try {
+    const res = await listCursorGatewayModels({ skipGlobalError: true });
+    cursorModels.value = Array.isArray(res?.models) ? res.models : [];
+  } catch {
+    cursorModels.value = [];
+  }
+}
+
+async function startCursorGw() {
+  cursorGwStarting.value = true;
+  try {
+    const res = await startCursorGateway();
+    ElMessage.success(res.message || '网关启动中，约 5 秒后就绪');
+    setTimeout(() => loadCursorGw(), 6000);
+  } catch { /* 拦截器提示 */ } finally {
+    cursorGwStarting.value = false;
+  }
+}
 
 async function restartCursorGw() {
   try {
@@ -709,6 +746,7 @@ async function loadConfig() {
 onMounted(() => {
   loadConfig();
   loadCursorGw();
+  loadCursorModels();
   loadDesktopState();
 });
 

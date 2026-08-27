@@ -60,6 +60,24 @@ export function restartCursorGateway() {
   });
 }
 
+// 启动网关（未运行时使用；与重启同一拉起逻辑，不动账号池）
+export function startCursorGateway() {
+  return request({
+    url: '/cursor-gateway/start',
+    method: 'post',
+    timeout: 30_000,
+  });
+}
+
+// 网关可服务的模型清单（读取路由目录的 cursor-* 模型，不依赖网关在线）
+export function listCursorGatewayModels(config = {}) {
+  return request({
+    url: '/cursor-gateway/models',
+    method: 'get',
+    ...config,
+  });
+}
+
 export function restartCodexDesktopApp() {
   return request({
     url: '/codex-desktop/restart-app',
