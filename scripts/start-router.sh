@@ -9,10 +9,16 @@ set -euo pipefail
 export CODEX_HOME="${CODEX_HOME:-$HOME/.codex}"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-ROUTER="$SCRIPT_DIR/../codex-router.mjs"
-CONFIG_PATH="${ROUTER_CONFIG_PATH:-$SCRIPT_DIR/../config.json}"
+# 脚本既可能在 router/ 子目录（../codex-router.mjs）也可能与主程序同目录
+if [ -f "$SCRIPT_DIR/../codex-router.mjs" ]; then
+    ROUTER_PARENT="$SCRIPT_DIR/.."
+else
+    ROUTER_PARENT="$SCRIPT_DIR"
+fi
+ROUTER="$ROUTER_PARENT/codex-router.mjs"
+CONFIG_PATH="${ROUTER_CONFIG_PATH:-$ROUTER_PARENT/config.json}"
 # 核心请求与上下文维护分别写入 JSONL；两类归档都只保留最近 72 小时。
-export ROUTER_LOG="${ROUTER_LOG:-$SCRIPT_DIR/router.log}"
+export ROUTER_LOG="${ROUTER_LOG:-$ROUTER_PARENT/router.log}"
 
 # 从实际配置提取 targets 与视觉中继的 envKey，避免脚本和配置的变量名长期漂移。
 CONFIG_KEY_NAMES="$(node -e '

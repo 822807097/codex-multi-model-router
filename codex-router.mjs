@@ -35,6 +35,7 @@
 //   V2RAY_PORT          本地代理混合端口（默认 10808，仅 viaProxy 的通道使用）
 //   各通道 key 见下方 TARGETS 的 envKey 字段
 // ============================================================================
+import fs from 'node:fs';
 import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
@@ -50,7 +51,7 @@ import {
   formatConfigIssues,
   prepareRouterConfig,
 } from './lib/router-config.mjs';
-import { updateModelCatalogFile } from './lib/model-catalog.mjs';
+import { readModelCatalogFile, applyModelContextToCatalog } from './lib/model-catalog.mjs';
 import { createVisionRelay } from './lib/vision-relay.mjs';
 import { createResponsePipeline } from './lib/response-pipeline.mjs';
 import { createOpenAiAuthManager } from './lib/openai-auth.mjs';
@@ -66,12 +67,12 @@ import { createDiagnosticLog } from './lib/diagnostic-log.mjs';
 import { createModelQuotaCooldownStore } from './lib/model-quota-cooldown.mjs';
 import { createTokenTracker } from './lib/token-tracker.mjs';
 import { createAuthManager } from './lib/auth/auth-manager.mjs';
-import { generateOpenAIImages, normalizeImageRequest, resolveOpenAIImageKey, resolveChatGptImageToken, imagesErrorBody } from './lib/imagebridge.mjs';
+import { generateOpenAIImages, generateSubscriptionImages, imageError, normalizeImageRequest, resolveOpenAIImageKey, imagesErrorBody } from './lib/imagebridge.mjs';
 import { createCredentialsStore, createCredentialsVault } from './lib/auth/credentials-store.mjs';
 import { refreshGoogleTokens } from './lib/auth/google-sub-auth.mjs';
 import { refreshOpenAiTokens } from './lib/auth/openai-sub-auth.mjs';
 import { refreshClaudeTokens } from './lib/auth/claude-sub-auth.mjs';
-import { getDatabase, dbListAccounts, dbSaveAccount, dbRecordTokenLog } from './lib/db.mjs';
+import { getDatabase, dbListAccounts, dbSaveAccount, dbRecordTokenLog, dbPruneTokenLogs } from './lib/db.mjs';
 import { createApiKeyStore } from './lib/api-keys.mjs';
 import {
   computeCheckpointNamespace,
@@ -145,6 +146,7 @@ const {
   goalCheckpointPersistence: GOAL_CHECKPOINT_PERSISTENCE,
   oauth: ROUTER_OAUTH,
   visionRelay: VISION_RELAY,
+  imageBridge: IMAGE_BRIDGE,
 } = preparedConfig.runtime;
 const CLIENT_ID = ROUTER_OAUTH.clientId;
 const REFRESH_SKEW_SECONDS = ROUTER_OAUTH.refreshSkewSeconds;
@@ -213,38 +215,30 @@ process.on('unhandledRejection', (error) => handleFatalProcessError('unhandledRe
 
 // ---------- 模型上下文窗口配置 ----------
 // config.json 的 modelContext 字段：路由启动时把上下文窗口/压缩阈值写回 models.json，
-// 让桌面端据此做滑动窗口/压缩，避免第三方模型每轮全量重发历史（卡思考根因）
-function applyModelContext() {
-  const mc = cfg.modelContext;
-  if (!mc || mc.enabled === false) return;
-  try {
-    const result = updateModelCatalogFile(CATALOG_PATH, mc);
-    if (result.changed) {
-      log('modelContext: 已写回 models.json');
-    }
-  } catch (e) { log('modelContext: 应用失败', e.message); }
-}
-
-function readCheckedCatalog() {
-  const catalog = readRevisionedJson(CATALOG_PATH, { maxBytes: MAX_CATALOG_BYTES }).value;
-  const inspection = inspectModelCatalog(catalog);
-  if (inspection.errors.length > 0) throw new Error('catalog invalid');
-  return catalog;
-}
-
-// 写回前先封住非常规文件和非法结构；写回后再读取一次，后者才是本进程的活动 generation。
-try {
-  readCheckedCatalog();
-} catch {
-  process.stderr.write('[catalog] 模型目录启动预检失败（catalog_invalid）\n');
-  process.exit(1);
-}
-applyModelContext();
+// 让桌面端据此做滑动窗口/压缩，避免第三方模型每轮全量重发历史（卡思考根因）。
+// 目录整个启动过程只读一次：内存中应用变更、有变更才写盘，快照复用同一对象。
 let activeCatalog;
 try {
-  activeCatalog = readCheckedCatalog();
-} catch {
-  process.stderr.write('[catalog] 模型目录启动预检失败（catalog_invalid）\n');
+  const catalog = readModelCatalogFile(CATALOG_PATH, { maxBytes: MAX_CATALOG_BYTES });
+  const inspection = inspectModelCatalog(catalog);
+  if (inspection.errors.length > 0) throw new Error('catalog invalid');
+  const mc = cfg.modelContext;
+  if (mc && mc.enabled !== false) {
+    const result = applyModelContextToCatalog(catalog, mc);
+    if (result.changed) {
+      const tmp = `${CATALOG_PATH}.tmp`;
+      fs.writeFileSync(tmp, JSON.stringify(result.catalog, null, 2));
+      fs.renameSync(tmp, CATALOG_PATH);
+      log('modelContext: 已写回 models.json');
+      activeCatalog = result.catalog;
+    } else {
+      activeCatalog = catalog;
+    }
+  } else {
+    activeCatalog = catalog;
+  }
+} catch (error) {
+  process.stderr.write(`[catalog] 模型目录启动预检失败（catalog_invalid）：${error.message}\n`);
   process.exit(1);
 }
 
@@ -262,11 +256,18 @@ const { relayNonTextParts } = createVisionRelay({
 // ---------- Token 用量追踪器（总量与模型明细监控） ----------
 // 每条真实使用记录同时写入 SQLite token_logs，Dashboard 统计从此表读取（真实调用数据）
 const tokenTracker = createTokenTracker({
-  persistPath: path.join(path.dirname(CONFIG_PATH), 'token-usage.json'),
+  storagePath: path.join(path.dirname(CONFIG_PATH), 'token-usage.json'),
   onRecord: (record) => {
-    try { dbRecordTokenLog(record); } catch { /* 统计旁路不得影响请求 */ }
+    try { dbRecordTokenLog(record); } catch { /* 统计旁路不得影响路由请求 */ }
   },
 });
+// token_logs 只增不缩：启动时清理超过保留期的记录，防止 router.db 无限膨胀
+//（Dashboard 统计窗口远小于 90 天，不影响任何展示）。
+try {
+  dbPruneTokenLogs(90 * 24 * 60 * 60 * 1000);
+} catch (error) {
+  log('token_logs retention sweep failed:', error.message);
+}
 
 // ---------- Sub2API 订阅账号管理器 ----------
 // SQLite accounts 表是账号元数据的权威来源；OAuth 凭据存独立 vault 文件。
@@ -387,6 +388,7 @@ const {
   pipeNativeResponse,
   pipeChatResponse,
   pipeChatCompletionsResponse,
+  pipeResponsesToChatResponse,
 } = createResponsePipeline({ heartbeatMs: HEARTBEAT_MS, log, tokenTracker });
 
 // ---------- ChatGPT 登录态：读 auth.json，临期自动 refresh 并原子写回 ----------
@@ -495,9 +497,11 @@ try {
     authManager,
     // 用量统计兜底：官方通道 usage 帧缺失时按请求体量估算记入 token_logs，
     // 让「周额度烧在哪」可度量（估算口径 ~4 字节/token × 0.75 JSON 开销折扣）
-    onRequestFinished: (_diag, { bodyBytes, target, model } = {}) => {
+    onRequestFinished: (diag, { bodyBytes, target, model } = {}) => {
       try {
         if (target !== 'openai' || !(Number(bodyBytes) > 0)) return;
+        // 管道已记录真实 usage 帧时不再叠加估算，避免官方通道用量双计
+        if (diag?.usageRecorded) return;
         const estimatedInput = Math.round((Number(bodyBytes) / 4) * 0.75);
         if (!(estimatedInput > 0)) return;
         tokenTracker.recordUsage({
@@ -515,6 +519,7 @@ try {
     pipeNativeResponse,
     pipeChatResponse,
     pipeChatCompletionsResponse,
+    pipeResponsesToChatResponse,
     adminHandler,
     log,
     flog,
@@ -527,16 +532,45 @@ try {
 }
 server = http.createServer((clientReq, clientRes) => {
   const pathname = (clientReq.url || '/').split('?')[0];
-  // 外部图像生成桥接（OpenAI 兼容，独立于主路由管线）
+  // 外部图像生成桥接（OpenAI 兼容，独立于主路由管线）。
+  // 图片端点在主处理器之前分发，必须执行与 /v1/* 相同的 API key 门控：
+  // 存在未吊销 key 时强制鉴权，否则任何本地进程都能烧订阅生图额度。
   if (clientReq.method === 'POST' && (pathname === '/v1/images/generations' || pathname === '/images/generations')) {
-    handleImagesGenerations(clientReq, clientRes);
+    if (!imageRequestAuthorized(clientReq, clientRes)) return;
+    handleImageRequest(clientReq, clientRes, 'generate');
+    return;
+  }
+  if (clientReq.method === 'POST' && (pathname === '/v1/images/edits' || pathname === '/images/edits')) {
+    if (!imageRequestAuthorized(clientReq, clientRes)) return;
+    handleImageRequest(clientReq, clientRes, 'edit');
     return;
   }
   routerHandler(clientReq, clientRes);
 });
 
-// 读取小体积 JSON 请求体（图片请求体很小，2MB 上限足够）。
-function readSmallJsonBody(req, res, limitBytes = 2 * 1024 * 1024) {
+// 与 routerHandler 同一套 API key 门控（多工具客户端：Bearer 或 x-api-key）。
+function imageRequestAuthorized(req, res) {
+  if (!apiKeyStore || typeof apiKeyStore.hasKeys !== 'function' || !apiKeyStore.hasKeys()) return true;
+  const authHeader = String(req.headers.authorization || '');
+  const xApiKey = String(req.headers['x-api-key'] || '');
+  let providedKey = '';
+  if (authHeader.startsWith('Bearer ')) providedKey = authHeader.slice(7).trim();
+  else if (xApiKey) providedKey = xApiKey.trim();
+  if (apiKeyStore.verifyKey(providedKey)) return true;
+  if (!res.headersSent) {
+    res.writeHead(401, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({
+      error: {
+        code: 'invalid_api_key',
+        message: '未提供有效的 API Key。请在路由管理面板创建 Key 并配置到客户端（Authorization: Bearer <key> 或 x-api-key: <key>）',
+      },
+    }));
+  }
+  return false;
+}
+
+// 读取小体积 JSON 请求体（图片请求体可能含 base64 编辑图，8MB 上限足够）。
+function readSmallJsonBody(req, res, limitBytes = 8 * 1024 * 1024) {
   return new Promise((resolve) => {
     const chunks = [];
     let size = 0;
@@ -572,39 +606,117 @@ function readSmallJsonBody(req, res, limitBytes = 2 * 1024 * 1024) {
   });
 }
 
-// 对外暴露 OpenAI 兼容图像接口；未配置 API key 时给出可读错误。
-async function handleImagesGenerations(req, res) {
+// ---------- ChatGPT 订阅账号生图（对齐 sub2api：Responses + image_generation 工具） ----------
+// 订阅 token 打平台 /v1/images/generations 会被上游 401；订阅账号额度只能经
+// /v1/responses 使用（Codex CLI 同款官方通道）。因此认证优先序与文本通道一致：
+// 订阅账号池 → auth.json 登录态（含额度计数）→ 平台 API key 兜底。
+const OPENAI_TARGET = TARGETS.find((target) => target.name === 'openai') || null;
+
+async function resolveSubscriptionImageToken() {
+  // 订阅账号优先（多账号轮换、额度耗尽自动切换、token 自动刷新）。
+  // 注意：图片模型不在各套餐的 Codex 模型清单里，按模型过滤会选不中任何账号，
+  // 生图是订阅套餐能力而非清单模型，因此只按 provider 轮换账号。
+  if (authManager && typeof authManager.acquireAccount === 'function') {
+    try {
+      const account = authManager.acquireAccount({ provider: 'openai' });
+      if (account) {
+        const creds = await authManager.getValidCredentials(account.id);
+        if (creds?.accessToken) return creds.accessToken;
+      }
+    } catch {
+      // 账号刷新失败：回退桌面端登录态，避免生图被卡死
+    }
+  }
+  try {
+    const auth = await getOpenAiAuth(OPENAI_TARGET);
+    return auth?.token || '';
+  } catch {
+    return '';
+  }
+}
+
+function recordImageUsage(payload) {
+  try {
+    const estimatedInput = Math.round(((typeof payload.prompt === 'string' ? payload.prompt.length : 0) / 4) * 0.75);
+    tokenTracker.recordUsage({
+      model: typeof payload.model === 'string' && payload.model ? payload.model : 'gpt-image-2',
+      target: 'openai',
+      inputTokens: estimatedInput > 0 ? estimatedInput : 1,
+      outputTokens: 0,
+    });
+  } catch { /* 统计旁路不得影响请求 */ }
+}
+
+// 客户端中断后 res 已销毁：任何写响应的操作都必须跳过，否则
+// ERR_STREAM_DESTROYED 会升级成 uncaughtException 触发整进程重启。
+function respondImageError(res, status, error) {
+  if (res.destroyed || res.writableEnded) return;
+  res.writeHead(status, { 'content-type': 'application/json' });
+  res.end(JSON.stringify(imagesErrorBody(error)));
+}
+
+// 对外暴露 OpenAI 兼容图像接口；订阅账号优先，未配置时给出可读错误。
+async function handleImageRequest(req, res, action) {
+  // 客户端取消时中止上游生图（订阅额度按张计费，没人接收的图不能继续烧）。
+  const imageAbort = new AbortController();
+  req.once('aborted', () => imageAbort.abort());
+  req.once('error', () => imageAbort.abort());
+  res.once('close', () => {
+    if (!res.writableEnded) imageAbort.abort();
+  });
   const parsed = await readSmallJsonBody(req, res);
   if (parsed.error) {
-    res.writeHead(parsed.error.status || 400, { 'content-type': 'application/json' });
-    res.end(JSON.stringify(imagesErrorBody(parsed.error)));
+    respondImageError(res, parsed.error.status || 400, parsed.error);
     return;
   }
   let payload;
   try {
-    payload = normalizeImageRequest(parsed.value);
+    payload = normalizeImageRequest(parsed.value, { action });
   } catch (error) {
-    res.writeHead(error.status || 400, { 'content-type': 'application/json' });
-    res.end(JSON.stringify(imagesErrorBody(error)));
+    respondImageError(res, error.status || 400, error);
     return;
   }
   try {
-    // OpenAI 图片接口（api.openai.com/v1/images/generations）只认平台 API key；
-    // ChatGPT 桌面登录 token（chatgpt.com 类）会被上游 401，因此平台 key 优先，
-    // oauth token 仅作未配置 key 时的最后尝试（部分 OpenAI 账号体系接受）。
+    // 订阅通道（ChatGPT 账号额度生图）：/v1/responses + image_generation
+    if (IMAGE_BRIDGE.enabled !== false) {
+      const token = await resolveSubscriptionImageToken();
+      if (token) {
+        const result = await generateSubscriptionImages({
+          token,
+          payload,
+          config: IMAGE_BRIDGE,
+          proxy: V2RAY_PROXY,
+          viaProxy: IMAGE_BRIDGE.viaProxy === false ? false : true,
+          signal: imageAbort.signal,
+        });
+        recordImageUsage(payload);
+        if (res.destroyed || res.writableEnded) return;
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ object: 'list', created: result.created, data: result.data }));
+        return;
+      }
+    }
+    // 平台密钥兜底（OPENAI_IMAGE_API_KEY / OPENAI_API_KEY，官方 /v1/images/generations）
     const keyToken = resolveOpenAIImageKey();
-    const oauthToken = keyToken ? '' : await resolveChatGptImageToken(openAiAuth.get);
+    if (!keyToken) {
+      throw imageError(401, 'invalid_request_error', 'image_provider_unconfigured',
+        '未配置 ChatGPT 订阅账号登录态（auth.json / 订阅账号）或 OpenAI 图片 API 密钥（OPENAI_IMAGE_API_KEY / OPENAI_API_KEY）');
+    }
     const result = await generateOpenAIImages({
-      authToken: keyToken || oauthToken,
+      authToken: keyToken,
       payload,
       proxy: V2RAY_PROXY,
+      signal: imageAbort.signal,
     });
+    if (res.destroyed || res.writableEnded) return;
     res.writeHead(200, { 'content-type': 'application/json' });
     res.end(JSON.stringify({ object: 'list', created: result.created, data: result.data }));
   } catch (error) {
-    const status = error.status || 502;
-    res.writeHead(status, { 'content-type': 'application/json' });
-    res.end(JSON.stringify(imagesErrorBody(error)));
+    if (imageAbort.signal.aborted || res.destroyed) {
+      res.destroy();
+      return;
+    }
+    respondImageError(res, error.status || 502, error);
   }
 }
 
@@ -614,6 +726,7 @@ server.listen(PORT, '127.0.0.1', () => {
   log(`  proxy: ${V2RAY_PROXY.host}:${V2RAY_PROXY.port}`);
   log(`  targets: ${TARGETS.map((t) => t.name).join(', ')}`);
   log(`  vision relay: ${VISION_RELAY.model} @ ${VISION_RELAY.host}`);
+  log(`  image bridge: ${IMAGE_BRIDGE.enabled === false ? 'platform-key only' : `subscription @ ${IMAGE_BRIDGE.host}${IMAGE_BRIDGE.prefix}/responses (${IMAGE_BRIDGE.conversationModel})`}`);
   log(`  checkpoint persistence: ${checkpointPersistence.status().mode}`);
 });
 

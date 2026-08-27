@@ -110,6 +110,30 @@
       "vision": true,
       "envKey": "aliyun_video_key",
       "wireApi": "chat"
+    },
+    {
+      "_comment": "智谱 GLM Coding Plan 订阅通道（周额度）：密钥设环境变量 ZHIPU_CODING_KEY 后重启路由生效；国内直连",
+      "match": "^glm-",
+      "name": "zhipu-coding",
+      "platform": "zhipu",
+      "host": "open.bigmodel.cn",
+      "prefix": "/api/coding/paas/v4",
+      "viaProxy": false,
+      "vision": false,
+      "envKey": "ZHIPU_CODING_KEY",
+      "wireApi": "chat"
+    },
+    {
+      "_comment": "智谱开放平台按量 API 兜底通道：Coding Plan 密钥缺失或冷却时自动切换到这里；密钥设环境变量 ZHIPU_API_KEY",
+      "match": "^glm-",
+      "name": "zhipu-api",
+      "platform": "zhipu",
+      "host": "open.bigmodel.cn",
+      "prefix": "/api/paas/v4",
+      "viaProxy": false,
+      "vision": false,
+      "envKey": "ZHIPU_API_KEY",
+      "wireApi": "chat"
     }
   ],
   "supportsResponses": {
@@ -117,6 +141,9 @@
     "slugs": [
       "deepseek-v4-flash",
       "qwen3.8-max",
+      "glm-5.3",
+      "glm-5.2",
+      "glm-5.1",
       "gpt-5.6-sol",
       "gpt-5.6-terra",
       "gpt-5.6-luna",
@@ -154,10 +181,19 @@
       "safetyRatio": 0.9,
       "protocolReserveTokens": 1024,
       "imageTokens": 2048
+    },
+    {
+      "_comment": "智谱 GLM 全系按 128K 窗口预算（预设推荐参数，防超限）",
+      "match": "^glm-",
+      "contextWindow": 131072,
+      "maxOutputTokens": 8192,
+      "safetyRatio": 0.9,
+      "protocolReserveTokens": 1024,
+      "imageTokens": 2048
     }
   ],
   "modelContext": {
-    "_comment": "路由启动时写回 models.json，让桌面端做滑动窗口/压缩，避免第三方模型每轮全量重发历史",
+    "_comment": "路由启动时写回 models.json，让桌面端做滑动窗口/压缩，避免每轮全量重发历史。slugs 命中的模型用全局 contextWindow/autoCompactTokenLimit；overrides 按精确 slug 字段级覆盖（缺省字段回落全局值，不在 slugs 中也生效）。官方模型只收紧压缩阈值（原生 240k→128k，窗口保持目录原生 272k 不虚标），把官方通道每轮全量重发的输入封顶砍半；glm-5.3 目录暂无此 slug，接入后即刻生效",
     "enabled": true,
     "contextWindow": 1000000,
     "autoCompactTokenLimit": 400000,
@@ -165,6 +201,17 @@
       "deepseek-v4-flash",
       "deepseek-v4-pro",
       "qwen3.8-max"
+    ],
+    "overrides": [
+      { "slug": "gpt-5.6-sol", "autoCompactTokenLimit": 128000 },
+      { "slug": "gpt-5.6-terra", "autoCompactTokenLimit": 128000 },
+      { "slug": "gpt-5.6-luna", "autoCompactTokenLimit": 128000 },
+      { "slug": "gpt-5.5", "autoCompactTokenLimit": 128000 },
+      { "slug": "gpt-5.4", "autoCompactTokenLimit": 128000 },
+      { "slug": "gpt-5.4-mini", "autoCompactTokenLimit": 128000 },
+      { "slug": "gpt-5.2", "autoCompactTokenLimit": 128000 },
+      { "slug": "codex-auto-review", "autoCompactTokenLimit": 128000 },
+      { "slug": "glm-5.3", "autoCompactTokenLimit": 100000 }
     ]
   },
   "visionRelay": {
@@ -180,5 +227,14 @@
     "cacheMaxBytes": 1048576,
     "prompt": "Describe this image concisely (2-4 sentences) for a coding assistant that cannot see it. Focus on text/UI elements/code/error messages if present.",
     "maxTokens": 300
+  },
+  "imageBridge": {
+    "_comment": "ChatGPT 订阅账号生图桥接：把 /v1/images/generations 与 /v1/images/edits 翻译成 Responses+image_generation 工具（订阅 token 的官方通道，对齐 sub2api）。host/prefix 为上游（默认 api.openai.com/v1），conversationModel 是承载生图工具的主对话模型；viaProxy=null 时继承全局代理策略。禁用时仅保留平台 API key 直连通道（OPENAI_IMAGE_API_KEY / OPENAI_API_KEY）",
+    "enabled": true,
+    "host": "api.openai.com",
+    "prefix": "/v1",
+    "conversationModel": "gpt-5.4-mini",
+    "viaProxy": null,
+    "timeouts": {}
   }
 }

@@ -43,6 +43,7 @@ Codex 桌面端/任意客户端 ──▶ 127.0.0.1:15730（本项目）
 | 网页管理面板 | 浏览器打开即可增删改模型、测速、一键接入厂商、管理密钥池与订阅账号 |
 | 图文双通道 | 支持 `/v1/responses`（Codex）、`/v1/chat/completions`（通用），原生流式 |
 | 视觉中继「借眼看图」 | 纯文本模型收到图片时，自动让视觉模型描写后再交给文本模型；支持多端点、额度耗尽自动切换 |
+| ChatGPT 订阅生图 | `/v1/images/generations` 与 `/v1/images/edits` 翻译成官方 Responses + image_generation 通道，用 ChatGPT 订阅账号额度出图（`api.openai.com` 上游，平台 key 兜底） |
 | 多账号订阅额度池 | Claude / Gemini / ChatGPT / Cursor 会员账号可以绑多个，额度耗尽自动换下一个 |
 | 通道密钥池 | 同一个厂商可以挂多把 API Key，优先级轮换 + 额度冷却持久化 |
 | 代理逐通道配置 | 每通道可直连 / 走全局代理 / 走自定义节点（支持粘贴 ss / trojan / vless / socks5 / http 链接） |
