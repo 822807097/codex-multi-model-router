@@ -491,6 +491,8 @@ try {
     proxy: V2RAY_PROXY,
     timeouts: ROUTER_TIMEOUTS,
     getOpenAiAuth,
+    // 桌面端登录态身份（只读 account_id）：官方通道兜底前的同账号冷却守卫用。
+    getOpenAiIdentity: () => openAiAuth.identity(),
     getKey: getEnvKey,
     refreshEnvKey: (name) => envKeySource.refreshNow(name),
     keyPool,
