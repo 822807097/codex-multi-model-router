@@ -99,11 +99,11 @@
                 </div>
               </template>
               <div class="text-[11px] text-secondary mt-1">
-                Codex 官方实时数据（与 Codex CLI 内置额度条同源）；行名按窗口实际时长自动标注
+                Codex 官方实时额度（与 Codex CLI 内置额度条同源）。超过 80% 建议换账号或等重置
               </div>
             </template>
             <div v-else-if="acc.provider === 'openai'" class="text-[11px] text-secondary">
-              {{ quotaData[acc.id]?.error || '点「刷新」拉取该账号的真实额度（需要该账号先产生一次请求）' }}
+              {{ quotaData[acc.id]?.error || '点「刷新」探测该账号的实时额度：路由会自动发一条最小请求，约几秒出结果' }}
             </div>
 
             <!-- 谷歌 / 其他：本地周计数 -->
@@ -315,9 +315,10 @@ async function loadQuota(acc) {
 function quotaRowLabel(row) {
   if (!row) return '额度';
   const minutes = Number(row.windowMinutes) || 0;
-  if (minutes >= 1000) return '周额度';
-  if (minutes > 0) return `${minutes} 分钟窗口`;
-  return '额度';
+  if (minutes === 300) return '5 小时额度';
+  if (minutes === 10080 || minutes >= 10000) return '周额度';
+  if (minutes >= 60) return `${Math.round(minutes / 60)} 小时窗口`;
+  return `${minutes} 分钟窗口`;
 }
 function quotaBarColor(percent) {
   if (percent == null) return '#909399';

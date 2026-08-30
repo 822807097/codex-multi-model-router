@@ -164,3 +164,12 @@ Content-Type: application/json
 - 调试日志：运行目录下 `router.log`（结构化 JSON）、`router-console.out.log`（进程控制台）。崩溃/启动失败先看 console 日志。
 - 优雅重启：面板顶栏；或 `scripts/restart-router.ps1`（Windows）/ `scripts/restart-router.sh`。重启会等旧进程排空在跑任务后再接管新进程。
 - 管理 API 只接受本机回环 Host + 精确同源；CSP 允许同源脚本与样式，禁止第三方脚本注入。
+
+## 反馈与交流
+
+遇到问题或想交流用法：
+
+- **微信**：`b6356120`（添加请备注「路由器」，会拉交流群）
+- **GitHub Issues**：见仓库 Issues 页
+
+提问题时附上：模型名、报错原文、面板截图，定位更快。
