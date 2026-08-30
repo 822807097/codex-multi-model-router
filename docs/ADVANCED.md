@@ -80,8 +80,22 @@
 
 - **Claude / Gemini / ChatGPT**：按平台「一键授权」（OAuth，浏览器自动打开登录）或手动填 Refresh Token 导入。Token 自动续期并持久化到本地。
 - 每个账号显示套餐、配额进度、可用模型；可**拉取上游可用模型**并逐个真机测速。
+- **ChatGPT 账号额度面板**：5 小时 / 周窗口实时进度条 + 重置时间，数据随官方通道响应头自动捕获（与 Codex CLI 内置额度条同源）；行名按窗口实际时长标注，无数据的窗口不显示。
+- **额度消耗顺序**：账号卡数字框，1 = 最先消耗；留空自动按套餐（Pro 优先）。多账号故障转移按 `优先级 → 套餐 → 轮换` 选号。
+- **Codex 账号一键切换**：ChatGPT 账号卡「切换 Codex 到此账号」。执行顺序：完全退出桌面端（轮询确认）→ 备份原 auth.json → 写入该账号凭据 → 自动重启桌面端（约 10 秒）。双向互切；进行中重复点击返回「切换进行中」提示。
 - 多个账号同平台时，额度耗尽自动轮换；支持各自独立代理。
-- **Cursor Pro**：见下一节。
+
+## 谷歌订阅通道（Google AI Pro）
+
+用 Google AI Pro 会员额度直接跑 gemini / claude 全系模型：
+
+- **一键接入**：绑定 Google 账号后，订阅页账号卡「一键接入路由通道」→ 拉取订阅模型清单（gemini / claude / gpt-oss 系 25+ 个）→ 每模型建专属通道并写入桌面端目录。重复点击幂等（已存在的跳过）。
+- **协议桥接**：`/v1/chat/completions` 与 `/v1/responses` 双协议自动转换到 Antigravity generateContent；流式 / 非流式、工具调用、多模态图片全部支持。
+- **思考档位变体**：`-tiered` 后缀的模型是思考档位载体，接入时自动合成 `-high` / `-medium` / `-low` 三个友好名（上游认载体名，档位由 thinkingLevel 参数控制）。
+- **工具 Schema 净化**：智能体客户端的工具定义是完整 JSON Schema（含 `$schema` / `propertyNames` / `additionalProperties` 等 Gemini 不支持的字段），路由按允许清单递归净化；`$ref` 从 `$defs` 解析，`type` 数组转 `type + nullable`。
+- **输出预算钳制**：`max_tokens` / `max_completion_tokens` 统一钳到 32768——谷歌按「输入 + 输出预留」做分钟配额预检，128k 预留会秒回 429。
+- **账号池故障转移**：429（账号×模型 60 秒冷却）/ 403 无许可（30 分钟）/ 401（60 分钟）/ 凭据失效 → 自动换池内下一个账号；Claude 系思考模型自动带 VALIDATED 工具模式与 interleaved-thinking beta 头。
+- **额度说明**：谷歌无公开配额接口（按分钟/按模型限额）；面板显示本地 7 天请求计数，触发限流时错误信息带恢复指引。
 
 ## Cursor 订阅额度（内置网关）
 
