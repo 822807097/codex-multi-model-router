@@ -235,6 +235,18 @@ body {
 .custom-dialog-pro .el-dialog__body {
   padding: 1.5rem;
 }
+/* 长表单弹窗（如编辑模型）内容超过视口时：弹窗贴近视口顶部、表体内部滚动，
+   标题与底部按钮始终可见（默认整窗居中会导致头部被顶出屏幕外无法关闭） */
+.custom-dialog-pro .el-dialog {
+  margin-top: 4vh !important;
+  margin-bottom: 4vh !important;
+  display: flex;
+  flex-direction: column;
+  max-height: 92vh;
+}
+.custom-dialog-pro .el-dialog__body {
+  overflow-y: auto;
+}
 .custom-dialog-pro .el-dialog__footer {
   border-top: 1px solid var(--border-muted);
   padding: 1rem 1.5rem;
