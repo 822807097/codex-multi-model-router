@@ -279,6 +279,7 @@ const credentialsVault = createCredentialsVault({
   vaultPath: path.join(path.dirname(CONFIG_PATH), 'credentials-vault.json'),
 });
 const authManager = createAuthManager({
+  log: (event) => flog(event),
   // 账号冷却/恢复时间持久化到 SQLite：重启后不复活已用尽账号（额度限制不再反复打断任务）
   onAccountPersist: (acc) => {
     try {

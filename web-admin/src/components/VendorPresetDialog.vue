@@ -137,6 +137,20 @@
           </el-button>
         </div>
       </div>
+
+      <!-- 接入失败就地显示具体原因（不只靠全局 toast），env_ref 场景附操作指引 -->
+      <el-alert v-if="activateError" type="error" show-icon :closable="false" class="mt-3">
+        <template #title>接入失败：{{ activateError.message || '请求未完成，请重试' }}</template>
+        <template #default>
+          <template v-if="activateError.code === 'env_ref_missing'">
+            你选了「环境变量」模式：请先在系统里设置该环境变量（Windows 可用 setx 或系统设置），
+            或者改用直接粘贴 Key 的方式接入，二者效果相同。
+          </template>
+          <template v-else-if="activateError.code === 'revision_conflict'">
+            配置刚被其他页面修改过：关闭本窗口重新打开即可。
+          </template>
+        </template>
+      </el-alert>
     </template>
   </el-dialog>
 </template>
@@ -159,6 +173,7 @@ const keyRows = ref([]);
 const addCatalog = ref(true);
 const fetchModels = ref(false);
 const activating = ref(false);
+const activateError = ref(null);
 
 const groupedPresets = computed(() => {
   const categories = ['cn_official', 'official', 'aggregator'];
@@ -205,6 +220,7 @@ async function handleActivate() {
     return;
   }
   activating.value = true;
+  activateError.value = null;
   try {
     const res = await activateVendorPreset({
       vendorId: selectedPreset.value.id,
@@ -222,7 +238,13 @@ async function handleActivate() {
     ElMessage.success(`接入完成：${summary}；重启路由后生效`);
     emit('activated', res.target);
     emit('update:modelValue', false);
-  } catch { /* 错误提示由请求拦截器统一处理 */ } finally {
+  } catch (err) {
+    // 就地显示具体失败原因（后端 error payload），不再只弹全局 toast
+    activateError.value = {
+      code: err?.response?.data?.error?.code || '',
+      message: err?.response?.data?.error?.message || err?.message || '',
+    };
+  } finally {
     activating.value = false;
   }
 }
@@ -232,6 +254,7 @@ function resetState() {
   keyRows.value = [{ kind: 'plaintext', key: '', label: '', priority: 0 }];
   addCatalog.value = true;
   fetchModels.value = false;
+  activateError.value = null;
 }
 </script>
 

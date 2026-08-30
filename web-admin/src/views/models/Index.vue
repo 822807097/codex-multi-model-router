@@ -3,7 +3,7 @@
     <div class="flex items-center justify-between flex-wrap gap-3">
       <div>
         <div class="text-xl font-bold text-primary tracking-wide">Codex 自定义模型与路由规则</div>
-        <div class="text-xs text-secondary mt-1">模型列表 1:1 映射 Codex 桌面端下拉菜单，支持分组展示、编辑与真实连通性测速</div>
+        <div class="text-xs text-secondary mt-1">模型列表 1:1 映射 Codex 桌面端下拉菜单，支持自由分组（可自建/改名/移动）、编辑、删除与真实连通性测速</div>
       </div>
       <div class="flex items-center gap-2 flex-wrap">
         <el-select
@@ -150,16 +150,14 @@
                 <el-icon class="mr-1"><Lightning /></el-icon>
                 测试连接
               </el-button>
-              <!-- 编辑/删除：仅对真实存在于 catalog 的模型可用 -->
-              <template v-if="m.live">
-                <el-button size="small" plain @click="openEdit(m)">
-                  <el-icon class="mr-1"><Edit /></el-icon>
-                  编辑
-                </el-button>
-                <el-button size="small" type="danger" plain @click="handleDeleteModel(m)">
-                  删除
-                </el-button>
-              </template>
+              <!-- 编辑/删除：目录里的每个模型都可自由编辑与删除 -->
+              <el-button size="small" plain @click="openEdit(m)">
+                <el-icon class="mr-1"><Edit /></el-icon>
+                编辑
+              </el-button>
+              <el-button size="small" type="danger" plain @click="handleDeleteModel(m)">
+                删除
+              </el-button>
             </div>
           </div>
         </div>
@@ -178,11 +176,10 @@
           <el-input v-model="form.displayName" placeholder="例如: DeepSeek-V4-Flash" />
         </el-form-item>
         <el-form-item label="所属分组 (Group)">
-          <el-select v-model="form.group" placeholder="选择或输入分组">
-            <el-option label="官方基础模型 (Frontier)" value="官方基础模型 (Frontier)" />
-            <el-option label="国内直连 / 重度代码主力" value="国内直连 / 重度代码主力" />
-            <el-option label="长文本与开源前沿 (OpenCode & MAAS)" value="长文本与开源前沿 (OpenCode & MAAS)" />
+          <el-select v-model="form.group" placeholder="选择分组，或直接输入新名字自建" filterable allow-create default-first-option>
+            <el-option v-for="name in groupNames" :key="name" :label="name" :value="name" />
           </el-select>
+          <div class="text-xs text-secondary mt-1">输入不存在的名字即创建新分组，自定义完全自由</div>
         </el-form-item>
         <el-form-item label="路由目标 (Target)">
           <el-input v-model="form.target" placeholder="例如: deepseek-chat, bailian, openai..." />
@@ -313,10 +310,16 @@
       <el-form :model="editForm" label-position="top">
         <el-form-item label="模型标识 (Slug)">
           <el-input v-model="editForm.slug" placeholder="模型唯一标识" />
-          <div class="text-xs text-secondary mt-1">修改 Slug 相当于重命名：预置分组不再覆盖它，会归入「其他已接入模型」</div>
+          <div class="text-xs text-secondary mt-1">修改 Slug 相当于重命名；分组归属会跟着保留</div>
         </el-form-item>
         <el-form-item label="显示名称 (Display Name)">
           <el-input v-model="editForm.display_name" placeholder="Codex 下拉菜单中显示的名称" />
+        </el-form-item>
+        <el-form-item label="所属分组 (Group)">
+          <el-select v-model="editForm.group" placeholder="选择分组，或输入新名字自建" filterable allow-create default-first-option clearable>
+            <el-option v-for="name in groupNames" :key="name" :label="name" :value="name" />
+          </el-select>
+          <div class="text-xs text-secondary mt-1">改分组只影响本页展示；清空则回到按预置规则自动分组</div>
         </el-form-item>
         <el-form-item label="默认思考级别 (Reasoning Effort)">
           <el-select v-model="editForm.default_reasoning_level" placeholder="选择默认思考级别" class="w-full">
@@ -469,6 +472,7 @@ const editForm = ref({
   slug: '',
   display_name: '',
   description: '',
+  group: '',
   default_reasoning_level: '',
   context_window: null,
   supportsImage: false,
@@ -513,52 +517,79 @@ function effortLabel(level) {
   return EFFORT_LABELS[level] || level;
 }
 
-// 预置分组仅提供展示基调（分组与圆点色）；条目信息加载后会被后端 catalog 实况覆盖，
-// 未匹配的模型归入「其他已接入模型」。分组内容与 catalog 保持同步（2026-08）。
-const modelGroups = ref([
+// 预置分组只提供「slug → 默认分组名/圆点色」的展示基调；卡片列表 100% 由后端
+// catalog 实况驱动（见 loadModels / modelGroups computed）：不在 catalog 的模型不显示，
+// 删除后即从页面消失。分组对用户完全开放——编辑/添加时可输入新分组名自建分组，
+// 自定义归属存 localStorage（分组只是本页展示方式，不写入桌面端目录）。
+const DEFAULT_GROUPS = [
   {
     name: '官方基础模型 (OpenAI Frontier)',
     dotClass: 'bg-chart-3',
-    models: [
-      { slug: 'gpt-5.6-sol', displayName: 'GPT-5.6-Sol', target: 'openai', context: '272k', default_level: 'low' },
-      { slug: 'gpt-5.6-terra', displayName: 'GPT-5.6-Terra', target: 'openai', context: '272k', default_level: 'low' },
-      { slug: 'gpt-5.6-luna', displayName: 'GPT-5.6-Luna', target: 'openai', context: '272k', default_level: 'low' },
-      { slug: 'gpt-5.5', displayName: 'GPT-5.5', target: 'openai', context: '272k', default_level: 'low' },
-      { slug: 'gpt-5.4', displayName: 'GPT-5.4', target: 'openai', context: '272k', default_level: 'low' },
-      { slug: 'gpt-5.4-mini', displayName: 'GPT-5.4-Mini', target: 'openai', context: '128k', default_level: 'low' },
-      { slug: 'gpt-5.2', displayName: 'GPT-5.2', target: 'openai', context: '272k', default_level: 'low' },
-      { slug: 'codex-auto-review', displayName: 'Codex Auto Review', target: 'openai', context: '272k', default_level: 'low' },
-    ],
+    slugs: ['gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna', 'gpt-5.5', 'gpt-5.4', 'gpt-5.4-mini', 'gpt-5.2', 'codex-auto-review'],
   },
   {
-    name: '国内直连 / 重度代码主力 (免代理·省流量)',
+    name: '国内直连 / 重度代码主力',
     dotClass: 'bg-chart-1',
-    models: [
-      { slug: 'deepseek-v4-flash', displayName: 'DeepSeek-V4-Flash', target: 'deepseek-responses', context: '128k', default_level: 'high' },
-      { slug: 'deepseek-v4-pro', displayName: 'DeepSeek-V4-Pro', target: 'deepseek-chat', context: '128k', default_level: 'high' },
-      { slug: 'qwen3.8-max', displayName: 'Qwen3.8-Max', target: 'bailian', context: '1M', default_level: 'high' },
-      { slug: 'qwen3.7-max', displayName: 'Qwen3.7-Max', target: 'bailian', context: '262k', default_level: 'high' },
-      { slug: 'qwen3.7-plus', displayName: 'Qwen3.7-Plus', target: 'bailian', context: '1M', default_level: 'high' },
-      { slug: 'qwen3.6-plus', displayName: 'Qwen3.6-Plus', target: 'bailian', context: '1M', default_level: 'high' },
-    ],
+    slugs: ['deepseek-v4-flash', 'deepseek-v4-pro', 'qwen3.8-max', 'qwen3.7-max', 'qwen3.7-plus', 'qwen3.6-plus'],
   },
   {
     name: '长文本与开源前沿 (OpenCode & MAAS)',
     dotClass: 'bg-chart-5',
-    models: [
-      { slug: 'grok-4.5', displayName: 'Grok 4.5', target: 'opencode-go-responses', context: '128k', default_level: 'high' },
-      { slug: 'glm-5.1', displayName: 'GLM-5.1', target: 'opencode-go-chat', context: '128k', default_level: 'high' },
-      { slug: 'glm-5.2', displayName: 'GLM-5.2', target: 'opencode-go-chat', context: '128k', default_level: 'high' },
-      { slug: 'kimi-k3', displayName: 'Kimi K3', target: 'opencode-go-chat', context: '200k', default_level: 'high' },
-      { slug: 'kimi-k2.6', displayName: 'Kimi K2.6', target: 'opencode-go-chat', context: '200k', default_level: 'high' },
-      { slug: 'kimi-k2.7-code', displayName: 'Kimi K2.7 Code', target: 'opencode-go-chat', context: '200k', default_level: 'high' },
-      { slug: 'mimo-v2.5', displayName: 'MiMo-V2.5', target: 'opencode-go-chat', context: '128k', default_level: 'high' },
-      { slug: 'mimo-v2.5-pro', displayName: 'MiMo-V2.5-Pro', target: 'opencode-go-chat', context: '128k', default_level: 'high' },
-      { slug: 'hy3', displayName: 'Hy3', target: 'opencode-go-chat', context: '128k', default_level: 'high' },
-      { slug: 'minimax-m3', displayName: 'MiniMax M3', target: 'opencode-go-chat', context: '1M', default_level: 'medium' },
-    ],
+    slugs: ['grok-4.5', 'glm-5.1', 'glm-5.2', 'kimi-k3', 'kimi-k2.6', 'kimi-k2.7-code', 'mimo-v2.5', 'mimo-v2.5-pro', 'hy3', 'minimax-m3'],
   },
-]);
+];
+const OTHER_GROUP_NAME = '其他已接入模型';
+const OTHER_GROUP_DOT = 'bg-chart-6';
+// 自定义分组循环取色的调色板（与预置组区分）
+const CUSTOM_GROUP_DOTS = ['bg-chart-2', 'bg-chart-4', 'bg-chart-5', 'bg-chart-3', 'bg-chart-1'];
+
+const GROUP_MAP_STORAGE_KEY = 'router-model-group-map';
+function loadGroupMap() {
+  try {
+    const raw = JSON.parse(localStorage.getItem(GROUP_MAP_STORAGE_KEY) || '{}');
+    return raw && typeof raw === 'object' && !Array.isArray(raw) ? raw : {};
+  } catch { return {}; }
+}
+const customGroupMap = ref(loadGroupMap());
+function persistGroupMap() {
+  try { localStorage.setItem(GROUP_MAP_STORAGE_KEY, JSON.stringify(customGroupMap.value)); } catch { /* 存储不可用时静默降级为会话内生效 */ }
+}
+function setCustomGroup(slug, groupName) {
+  if (groupName && groupName.trim()) customGroupMap.value[slug] = groupName.trim();
+  else delete customGroupMap.value[slug];
+  persistGroupMap();
+}
+const defaultGroupBySlug = new Map(DEFAULT_GROUPS.flatMap((g) => g.slugs.map((slug) => [slug, g.name])));
+const defaultDotByName = new Map(DEFAULT_GROUPS.map((g) => [g.name, g.dotClass]));
+function groupOf(slug) {
+  return customGroupMap.value[slug] || defaultGroupBySlug.get(slug) || OTHER_GROUP_NAME;
+}
+function dotClassOf(groupName) {
+  if (defaultDotByName.has(groupName)) return defaultDotByName.get(groupName);
+  if (groupName === OTHER_GROUP_NAME) return OTHER_GROUP_DOT;
+  const customNames = [...new Set(Object.values(customGroupMap.value))];
+  const idx = customNames.indexOf(groupName);
+  return CUSTOM_GROUP_DOTS[(idx >= 0 ? idx : 0) % CUSTOM_GROUP_DOTS.length];
+}
+
+// catalog 实况卡片数据（loadModels 填充）；分组视图由 computed 派生
+const allModels = ref([]);
+const modelGroups = computed(() => {
+  const byName = new Map();
+  for (const m of allModels.value) {
+    const name = groupOf(m.slug);
+    if (!byName.has(name)) byName.set(name, { name, dotClass: dotClassOf(name), models: [] });
+    byName.get(name).models.push(m);
+  }
+  // 预置组按声明顺序，自定义组按名称排最后出现，其余归「其他」
+  const customNames = [...new Set(Object.values(customGroupMap.value))]
+    .filter((name) => !defaultDotByName.has(name) && name !== OTHER_GROUP_NAME).sort();
+  const order = [...DEFAULT_GROUPS.map((g) => g.name), ...customNames, OTHER_GROUP_NAME];
+  const rank = new Map(order.map((name, index) => [name, index]));
+  return [...byName.values()].sort((a, b) => (rank.get(a.name) ?? 98) - (rank.get(b.name) ?? 98));
+});
+// 分组下拉的候选：现有全部分组名
+const groupNames = computed(() => modelGroups.value.map((g) => g.name));
 
 function formatContextWindow(tokens) {
   if (!tokens || tokens <= 0) return '128k';
@@ -567,7 +598,8 @@ function formatContextWindow(tokens) {
   return String(tokens);
 }
 
-// 用后端模型路由状态刷新卡片：预置条目按 slug 覆盖，未知模型归入“其他已接入模型”。
+// 用后端 catalog 实况刷新卡片：页面展示什么 = 目录里真实存在什么（1:1），
+// 删除的模型立即消失；分组归属由 groupOf（自定义 map → 预置基调 → 其他）决定。
 async function loadModels() {
   loading.value = true;
   loadError.value = '';
@@ -578,61 +610,35 @@ async function loadModels() {
     catalogSlugs.value = new Set(
       res.models.map((entry) => entry?.slug).filter((slug) => typeof slug === 'string' && slug),
     );
-    const knownSlugs = new Set();
-    for (const group of modelGroups.value) {
-      for (const model of group.models) {
-        knownSlugs.add(model.slug);
-        const live = res.models.find((entry) => entry.slug === model.slug);
-        if (!live) {
-          model.live = false;
-          continue;
-        }
-        model.live = true;
-        model.displayName = live.displayName || model.displayName;
-        model.description = live.description || '';
-        model.supportedLevels = Array.isArray(live.supportedReasoningLevels) ? live.supportedReasoningLevels : [];
-        model.inputModalities = Array.isArray(live.inputModalities) ? live.inputModalities : ['text'];
-        model.contextWindow = Number(live.contextWindow) > 0 ? Number(live.contextWindow) : null;
+    allModels.value = res.models
+      .filter((entry) => typeof entry?.slug === 'string' && entry.slug)
+      .map((entry) => ({
+        slug: entry.slug,
+        displayName: entry.displayName || entry.slug,
+        description: entry.description || '',
+        supportedLevels: Array.isArray(entry.supportedReasoningLevels) ? entry.supportedReasoningLevels : [],
+        inputModalities: Array.isArray(entry.inputModalities) ? entry.inputModalities : ['text'],
+        contextWindow: Number(entry.contextWindow) > 0 ? Number(entry.contextWindow) : null,
         // 工具能力实况回填（编辑面板复用，避免重存时把已声明的插件能力清空）
-        model.supportedTools = Array.isArray(live.supportedTools) ? live.supportedTools : [];
-        model.webSearchToolType = typeof live.webSearchToolType === 'string' ? live.webSearchToolType : '';
-        model.supportsSearchTool = live.supportsSearchTool === true;
-        model.includeSkills = live.includeSkills === true;
-        if (live.target) {
-          model.target = live.target.name;
-          model.envSet = live.target.envSet;
-        }
-        if (live.contextWindow) model.context = formatContextWindow(live.contextWindow);
-        if (live.reasoningEffort) model.default_level = live.reasoningEffort;
+        supportedTools: Array.isArray(entry.supportedTools) ? entry.supportedTools : [],
+        webSearchToolType: typeof entry.webSearchToolType === 'string' ? entry.webSearchToolType : '',
+        supportsSearchTool: entry.supportsSearchTool === true,
+        includeSkills: entry.includeSkills === true,
+        target: entry.target?.name || '未匹配通道',
+        envSet: entry.target ? entry.target.envSet !== false : undefined,
+        context: formatContextWindow(Number(entry.contextWindow) > 0 ? Number(entry.contextWindow) : null),
+        default_level: entry.reasoningEffort || '',
+        live: true,
+      }));
+    // 清理已删除模型的自定义分组残留，避免 localStorage 无限增长
+    let mapChanged = false;
+    for (const slug of Object.keys(customGroupMap.value)) {
+      if (!catalogSlugs.value.has(slug)) {
+        delete customGroupMap.value[slug];
+        mapChanged = true;
       }
     }
-    const unknown = res.models.filter((entry) => !knownSlugs.has(entry.slug));
-    // 重载时先摘除旧的“其他”分组，避免重复追加
-    const extraIndex = modelGroups.value.findIndex((g) => g.name.startsWith('其他已接入模型'));
-    if (extraIndex >= 0) modelGroups.value.splice(extraIndex, 1);
-    if (unknown.length > 0) {
-      modelGroups.value.push({
-        name: '其他已接入模型 (models.json)',
-        dotClass: 'bg-chart-6',
-        models: unknown.map((entry) => ({
-          slug: entry.slug,
-          displayName: entry.displayName,
-          description: entry.description || '',
-          supportedLevels: Array.isArray(entry.supportedReasoningLevels) ? entry.supportedReasoningLevels : [],
-          inputModalities: Array.isArray(entry.inputModalities) ? entry.inputModalities : ['text'],
-          contextWindow: Number(entry.contextWindow) > 0 ? Number(entry.contextWindow) : null,
-          supportedTools: Array.isArray(entry.supportedTools) ? entry.supportedTools : [],
-          webSearchToolType: typeof entry.webSearchToolType === 'string' ? entry.webSearchToolType : '',
-          supportsSearchTool: entry.supportsSearchTool === true,
-          includeSkills: entry.includeSkills === true,
-          target: entry.target?.name || '未匹配通道',
-          envSet: entry.target ? entry.target.envSet : undefined,
-          context: formatContextWindow(entry.contextWindow),
-          default_level: entry.reasoningEffort || '',
-          live: true,
-        })),
-      });
-    }
+    if (mapChanged) persistGroupMap();
   } catch (err) {
     loadError.value = err.response?.data?.error?.message || err.message || '请求失败';
   } finally {
@@ -693,6 +699,8 @@ function openEdit(m) {
     slug: m.slug,
     display_name: m.displayName || m.slug,
     description: m.description || '',
+    // 回显当前生效分组（自定义优先，其次预置基调）；清空保存=回到自动分组
+    group: groupOf(m.slug),
     default_reasoning_level: options.includes(rawLevel) ? rawLevel : '',
     context_window: m.contextWindow || null,
     supportsImage: Array.isArray(m.inputModalities) ? m.inputModalities.includes('image') : false,
@@ -747,6 +755,8 @@ async function handleSaveEdit() {
   editSaving.value = true;
   try {
     await updateModel(editingSlug.value, patch);
+    // 分组归属本地生效（slug 重命名时跟着搬过去；清空=回到预置自动分组）
+    setCustomGroup(slug, editForm.value.group);
     ElMessage.success('模型已更新；重启路由与 Codex 后完全生效');
     showEditModal.value = false;
     await loadModels();
@@ -755,10 +765,15 @@ async function handleSaveEdit() {
   }
 }
 
+// 官方模型删除的额外警示：历史会话引用它们，删掉可能让旧对话打不开
+const OFFICIAL_SLUGS = new Set(DEFAULT_GROUPS[0].slugs);
 async function handleDeleteModel(m) {
+  const officialNote = OFFICIAL_SLUGS.has(m.slug)
+    ? '\n注意：这是官方基础模型，历史会话可能正在引用它，删除后旧对话在 Codex 里可能异常；确定仍要删除可继续。'
+    : '';
   try {
     await ElMessageBox.confirm(
-      `确定删除模型「${m.displayName || m.slug}」(${m.slug}) 吗？将从 models.json 中移除，该操作不可恢复。`,
+      `确定删除模型「${m.displayName || m.slug}」(${m.slug}) 吗？将从 models.json 中移除，该操作不可恢复。${officialNote}`,
       '删除模型',
       { confirmButtonText: '删除', cancelButtonText: '取消', type: 'warning' },
     );
@@ -766,6 +781,8 @@ async function handleDeleteModel(m) {
   try {
     await deleteModel(m.slug);
     delete latencies.value[m.slug];
+    delete customGroupMap.value[m.slug];
+    persistGroupMap();
     ElMessage.success('模型已删除；重启路由与 Codex 后完全生效');
     await loadModels();
   } catch { /* 错误提示由请求拦截器统一处理 */ }
@@ -781,6 +798,7 @@ async function handleAddModel() {
       slug: form.value.slug,
       display_name: form.value.displayName || form.value.slug,
     });
+    setCustomGroup(form.value.slug, form.value.group);
     if (saved?.clientRestartRequired) {
       ElMessage.success('模型已写入 models.json；重启路由与 Codex 后生效');
     } else {
