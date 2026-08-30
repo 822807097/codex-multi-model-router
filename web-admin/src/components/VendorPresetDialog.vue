@@ -84,6 +84,31 @@
             +{{ selectedPreset.models.length - 6 }} 个
           </span>
         </el-descriptions-item>
+        <el-descriptions-item label="官方页面" :span="isMobile ? 1 : 2">
+          <div class="flex items-center gap-2 flex-wrap">
+            <el-link
+              v-if="selectedPreset.billingUrl"
+              type="primary"
+              :href="selectedPreset.billingUrl"
+              target="_blank"
+              rel="noopener noreferrer"
+            >💰 充值 / 续费（新窗口打开）</el-link>
+            <el-link
+              v-if="selectedPreset.apiKeyUrl"
+              type="primary"
+              :href="selectedPreset.apiKeyUrl"
+              target="_blank"
+              rel="noopener noreferrer"
+            >🔑 获取 API Key</el-link>
+            <el-link
+              v-if="selectedPreset.websiteUrl"
+              :href="selectedPreset.websiteUrl"
+              target="_blank"
+              rel="noopener noreferrer"
+            >🌐 官网</el-link>
+          </div>
+          <div class="text-[11px] text-secondary mt-1">额度用完点「充值 / 续费」直达官方充值页；充值后回本面板刷新即可继续使用</div>
+        </el-descriptions-item>
       </el-descriptions>
 
       <el-alert

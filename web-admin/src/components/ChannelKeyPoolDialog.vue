@@ -34,6 +34,25 @@
         同一个平台开多个账号？把每把密钥都加进来：额度用尽自动切换下一把，不影响使用。
         优先级数字小的先用（0 最优先）；同优先级轮流使用
       </div>
+      <!-- 额度不足一键直达官方充值 / 取 Key 页（按通道匹配厂商预设） -->
+      <div v-if="vendorLinks" class="mt-2 flex items-center gap-3 flex-wrap">
+        <el-link
+          v-if="vendorLinks.billingUrl"
+          type="primary"
+          :href="vendorLinks.billingUrl"
+          target="_blank"
+          rel="noopener noreferrer"
+          class="text-xs"
+        >💰 充值 / 续费（打开 {{ vendorLinks.vendorName }} 官方充值页）</el-link>
+        <el-link
+          v-if="vendorLinks.apiKeyUrl"
+          type="primary"
+          :href="vendorLinks.apiKeyUrl"
+          target="_blank"
+          rel="noopener noreferrer"
+          class="text-xs"
+        >🔑 获取 API Key</el-link>
+      </div>
     </div>
 
     <template v-if="selectedTarget">
@@ -195,6 +214,7 @@ import {
   testChannelKey,
 } from '../api/channelKeys.js';
 import { getSystemConfig } from '../api/system.js';
+import { getVendorPresets } from '../api/channelKeys.js';
 import { useBreakpoint } from '../composables/useBreakpoint.js';
 
 const props = defineProps({
@@ -208,6 +228,22 @@ const { isMobile } = useBreakpoint();
 const fixedTarget = computed(() => props.targetName || '');
 const selectedTarget = ref('');
 const poolTargets = ref([]);
+// 厂商官方链接（充值 / 取 Key）：按选中通道的 host 匹配厂商预设
+const vendorPresetList = ref([]);
+async function loadVendorLinks() {
+  try {
+    const res = await getVendorPresets({ skipGlobalError: true });
+    vendorPresetList.value = Array.isArray(res?.presets) ? res.presets : [];
+  } catch { /* 链接展示非关键 */ }
+}
+const vendorLinks = computed(() => {
+  const t = poolTargets.value.find((x) => x.name === selectedTarget.value);
+  if (!t || !vendorPresetList.value.length) return null;
+  // host 双向包含匹配（通道 host 可能带网关前缀域名差异）
+  const preset = vendorPresetList.value.find((p) => p.host && t.host && (t.host.includes(p.host) || p.host.includes(t.host)));
+  if (!preset) return null;
+  return { vendorName: preset.name, billingUrl: preset.billingUrl || '', apiKeyUrl: preset.apiKeyUrl || '' };
+});
 const targetsLoading = ref(false);
 const entries = ref([]);
 const loading = ref(false);
@@ -241,6 +277,7 @@ function formatLastUsed(ts) {
 }
 
 async function onOpen() {
+  loadVendorLinks();
   selectedTarget.value = fixedTarget.value;
   if (!fixedTarget.value) await loadTargets();
   if (selectedTarget.value) await loadEntries();

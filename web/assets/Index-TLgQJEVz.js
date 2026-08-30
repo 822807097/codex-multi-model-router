@@ -1,4 +1,4 @@
-import{s as eL,o as rL,w as aL,_ as nL,a as iL,b as Jr,c as un,d as Nt,e as Ol,f as le,g as ee,n as oL,r as ko,h as Qr,i as Hh,F as Wh,j as Uh,k as cm,t as jr,l as Yh,m as pm}from"./index-40IyD04I.js";import{A as sL}from"./AsyncContainer-OoK-oyd2.js";function lL(r=30,e={}){return eL({url:"/dashboard",method:"get",params:{days:r},...e})}/*! *****************************************************************************
+import{s as eL,o as rL,w as aL,_ as nL,a as iL,b as Jr,c as un,d as Nt,e as Ol,f as le,g as ee,n as oL,r as ko,h as Qr,i as Hh,F as Wh,j as Uh,k as cm,t as jr,l as Yh,m as pm}from"./index-UpR8vIpn.js";import{A as sL}from"./AsyncContainer-VX5ZvDhE.js";function lL(r=30,e={}){return eL({url:"/dashboard",method:"get",params:{days:r},...e})}/*! *****************************************************************************
 Copyright (c) Microsoft Corporation.
 
 Permission to use, copy, modify, and/or distribute this software for any
