@@ -1,0 +1,1 @@
+import{x as t}from"./index-DdSMemaU.js";function o(e={}){return t({url:"/keys",method:"get",...e})}function s(e){return t({url:"/keys/create",method:"post",data:e})}function n(e){return t({url:"/keys/revoke",method:"post",data:{id:e}})}function u(e){return t({url:"/keys/sync-codex",method:"post",data:{apiKey:e}})}export{s as c,o as l,n as r,u as s};

@@ -36,6 +36,51 @@
         <code>GET /v1/models</code>（模型列表）· <code>POST /v1/images/generations</code>（生图）·
         鉴权：<code>Authorization: Bearer sk-router-...</code>（未创建密钥时开放直连）
       </div>
+      <!-- 一分钟接入示例（curl / Python / Node.js，AT 式快速集成） -->
+      <div class="mt-3">
+        <el-collapse>
+          <el-collapse-item name="snippets">
+            <template #title>
+              <span class="text-xs font-semibold text-primary">📱 一分钟接入示例（curl / Python / Node.js，点开复制即用）</span>
+            </template>
+            <el-tabs v-model="snippetTab">
+              <el-tab-pane label="curl" name="curl">
+                <div class="snippet-box">
+                  <code class="block font-mono text-xs whitespace-pre-wrap break-all select-all">{{ curlSnippet }}</code>
+                  <div class="text-right mt-1">
+                    <el-button size="small" text type="primary" @click="copySnippet(curlSnippet)">
+                      <el-icon class="mr-0.5"><CopyDocument /></el-icon>复制
+                    </el-button>
+                  </div>
+                </div>
+              </el-tab-pane>
+              <el-tab-pane label="Python (OpenAI SDK)" name="python">
+                <div class="snippet-box">
+                  <code class="block font-mono text-xs whitespace-pre-wrap break-all select-all">{{ pythonSnippet }}</code>
+                  <div class="text-right mt-1">
+                    <el-button size="small" text type="primary" @click="copySnippet(pythonSnippet)">
+                      <el-icon class="mr-0.5"><CopyDocument /></el-icon>复制
+                    </el-button>
+                  </div>
+                </div>
+              </el-tab-pane>
+              <el-tab-pane label="Node.js (OpenAI SDK)" name="node">
+                <div class="snippet-box">
+                  <code class="block font-mono text-xs whitespace-pre-wrap break-all select-all">{{ nodeSnippet }}</code>
+                  <div class="text-right mt-1">
+                    <el-button size="small" text type="primary" @click="copySnippet(nodeSnippet)">
+                      <el-icon class="mr-0.5"><CopyDocument /></el-icon>复制
+                    </el-button>
+                  </div>
+                </div>
+              </el-tab-pane>
+            </el-tabs>
+            <div class="text-[11px] text-secondary mt-1.5">
+              把示例里的 <code>sk-router-你的密钥</code> 换成上面任意一把真实密钥；<code>model</code> 换成「分组自定义模型」页里的任意模型名。
+            </div>
+          </el-collapse-item>
+        </el-collapse>
+      </div>
     </div>
 
     <!-- 异步内容区 -->
@@ -350,6 +395,55 @@ function showUsageGuide(row) {
   activeGuideRow.value = row;
   showGuideModal.value = true;
 }
+
+const curlSnippet = `curl http://127.0.0.1:15730/v1/chat/completions \\
+  -H "Content-Type: application/json" \\
+  -H "Authorization: Bearer sk-router-你的密钥" \\
+  -d '{"model":"gpt-5.5","messages":[{"role":"user","content":"你好"}]}'`;
+
+const pythonSnippet = `from openai import OpenAI
+
+client = OpenAI(
+    base_url="http://127.0.0.1:15730/v1",
+    api_key="sk-router-你的密钥",
+)
+
+resp = client.chat.completions.create(
+    model="gpt-5.5",
+    messages=[{"role": "user", "content": "你好"}],
+)
+print(resp.choices[0].message.content)`;
+
+const nodeSnippet = `import OpenAI from "openai";
+
+const client = new OpenAI({
+    baseURL: "http://127.0.0.1:15730/v1",
+    apiKey: "sk-router-你的密钥",
+});
+
+const resp = await client.chat.completions.create({
+    model: "gpt-5.5",
+    messages: [{ role: "user", content: "你好" }],
+});
+console.log(resp.choices[0].message.content);`;
+
+async function copySnippet(text) {
+  try {
+    await navigator.clipboard.writeText(text);
+    ElMessage.success('示例已复制到剪贴板');
+  } catch {
+    try {
+      const ta = document.createElement('textarea');
+      ta.value = text;
+      document.body.appendChild(ta);
+      ta.select();
+      document.execCommand('copy');
+      document.body.removeChild(ta);
+      ElMessage.success('示例已复制到剪贴板');
+    } catch { ElMessage.warning('复制失败，请手动选择复制'); }
+  }
+}
+const snippetTab = ref('curl');
 
 function copyKey(text) {
   if (!text) return;

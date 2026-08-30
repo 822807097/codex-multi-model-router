@@ -1,5 +1,28 @@
 <template>
   <div class="space-y-6">
+    <!-- 新手引导 · 三步接入（全部完成后或手动关闭即隐藏） -->
+    <el-card v-if="onboardingVisible" shadow="never" class="onboarding-card">
+      <div class="flex items-center justify-between flex-wrap gap-2 mb-3">
+        <div class="font-semibold text-primary text-sm">🚀 新手引导 · 三步接入</div>
+        <el-button size="small" text @click="dismissOnboarding">不再显示</el-button>
+      </div>
+      <div class="grid grid-cols-1 md:grid-cols-3 gap-3">
+        <div v-for="step in onboardSteps" :key="step.title" class="onboard-step">
+          <div class="flex items-center gap-2 mb-1">
+            <span :class="step.done ? 'text-success' : 'text-secondary'" class="font-semibold text-sm">
+              {{ step.done ? '✓' : '○' }} {{ step.title }}
+            </span>
+          </div>
+          <div class="text-xs text-secondary mb-2 leading-relaxed">{{ step.desc }}</div>
+          <el-button v-if="!step.done" size="small" type="primary" plain @click="router.push(step.route)">{{ step.btn }}</el-button>
+          <span v-else class="text-xs text-success">已完成</span>
+        </div>
+      </div>
+      <div class="text-xs text-secondary mt-3 leading-relaxed">
+        客户端接入：base_url 填 <code class="font-mono">http://127.0.0.1:15730/v1</code>，API Key 用第②步创建的
+        <code class="font-mono">{{ onboarding.keyMasked || 'sk-router-…' }}</code>。curl / Python / Node 示例见下方「接入示例」。
+      </div>
+    </el-card>
     <!-- 头部时间范围切换 -->
     <div class="flex items-center justify-between flex-wrap gap-3">
       <div class="text-xl font-bold text-primary tracking-wide">
@@ -128,10 +151,48 @@
 
 <script setup>
 import { ref, onMounted, computed, nextTick } from 'vue';
+import { useRouter } from 'vue-router';
 import { getDashboardStats } from '../../api/dashboard.js';
+import { listKeys } from '../../api/keys.js';
+import { listAccounts } from '../../api/accounts.js';
+import { getModels } from '../../api/models.js';
 import AsyncContainer from '../../components/AsyncContainer.vue';
 import { useECharts, cssVar, chartColorByIndex } from '../../composables/useECharts.js';
 
+// ---- 新手引导 · 三步接入（cc-switch 式 onboarding）----
+const onboarding = ref({ models: 0, hasKey: false, keyMasked: '', accounts: 0 });
+const onboardingDismissed = ref(false);
+const onboardingVisible = computed(() => !onboardingDismissed.value && (
+  onboarding.value.models === 0 || !onboarding.value.hasKey || onboarding.value.accounts === 0));
+const onboardSteps = computed(() => {
+  const o = onboarding.value;
+  return [
+    { done: o.models > 0, title: '① 添加模型', desc: '从厂商预设一键接入，或手动添加任意 OpenAI 兼容模型', route: '/models', btn: '去添加' },
+    { done: o.hasKey, title: '② 创建 API 密钥', desc: '给你的客户端签发 sk-router- 密钥（Codex / Trae / 任意工具通用）', route: '/keys', btn: '去创建' },
+    { done: o.accounts > 0, title: '③ 绑定订阅账号（可选）', desc: 'ChatGPT / 谷歌 AI 会员一键授权，用订阅额度跑订阅模型', route: '/subscriptions', btn: '去绑定' },
+  ];
+});
+function dismissOnboarding() {
+  onboardingDismissed.value = true;
+  try { localStorage.setItem('onboarding-dismissed', '1'); } catch { /* 无痕模式忽略 */ }
+}
+async function loadOnboarding() {
+  try {
+    const [models, keys, accounts] = await Promise.all([
+      getModels({ skipGlobalError: true }),
+      listKeys({ skipGlobalError: true }),
+      listAccounts({ skipGlobalError: true }).catch(() => ({ accounts: [] })),
+    ]);
+    onboarding.value = {
+      models: Array.isArray(models?.data) ? models.data.length : (models?.models?.length || 0),
+      hasKey: Boolean(keys?.authEnforced) || (Array.isArray(keys?.keys) && keys.keys.length > 0),
+      keyMasked: (Array.isArray(keys?.keys) && keys.keys[0]) ? `${keys.keys[0].prefix || 'sk-router-'}…${keys.keys[0].suffix || ''}` : '',
+      accounts: Array.isArray(accounts?.accounts) ? accounts.accounts.length : 0,
+    };
+  } catch { /* 引导卡片非关键，失败静默 */ }
+}
+
+const router = useRouter();
 const days = ref(30);
 const loading = ref(false);
 const loadError = ref('');
@@ -238,10 +299,22 @@ function renderStackedChart() {
 
 onMounted(() => {
   loadStats();
+  // 新手引导：读 localStorage 折叠状态 + 三步完成度
+  try { onboardingDismissed.value = localStorage.getItem('onboarding-dismissed') === '1'; } catch { /* 无痕模式忽略 */ }
+  loadOnboarding();
 });
 </script>
 
 <style scoped>
+.onboarding-card {
+  border-color: var(--el-color-primary-light-5);
+  background: linear-gradient(135deg, rgba(64,158,255,0.04), transparent 60%);
+}
+.onboard-step {
+  border: 1px solid var(--border-muted);
+  border-radius: 10px;
+  padding: 0.75rem 0.875rem;
+}
 /* 卡片底色/边框/表格配色已由 main.css 中的 EP 变量统一接管（引用 tokens.css），此处只保留布局差异 */
 .stat-card {
   border-radius: 12px;
