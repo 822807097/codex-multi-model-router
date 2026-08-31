@@ -1,6 +1,10 @@
 # Codex Multi-Model Router
 
+> **English**: A local-first multi-model router & gateway — use GPT, DeepSeek, Kimi, GLM, Gemini, Claude and ChatGPT-subscription models in one menu, for OpenAI Codex desktop / Claude Code / any OpenAI-compatible client. Runs 100% on your own machine, no cloud account required.
+
 一个运行在你自己电脑上的**本地多模型路由代理**：让 OpenAI Codex 桌面端（以及其他任意 OpenAI 兼容客户端）能在一个菜单里同时使用**官方 ChatGPT 额度、DeepSeek / Qwen / GLM / Kimi / Grok 等国内外模型、Claude / Gemini / ChatGPT 订阅账号额度、以及 Cursor 订阅额度**，并且可以随时切换。
+
+**关键词**：Codex 多模型路由 · Claude Code Router · Gemini CLI · 订阅额度池 · OpenAI 兼容代理 · 本地网关 · 模型切换器 · API 网关 · 免切换
 
 > 对小白最友好的一句话：**装好 Node.js → 启动 → 打开网页管理面板 → 点几下把模型和密钥加进去 → 客户端填一个地址就能用。**
 
