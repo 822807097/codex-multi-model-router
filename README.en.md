@@ -2,7 +2,7 @@
 
 # Codex Multi-Model Router
 
-**Local-First Multi-Model Router & Gateway · 本地多模型路由代理**
+**Local-First Multi-Model Router & Gateway**
 
 ![License](https://img.shields.io/badge/license-MIT-green) ![Node](https://img.shields.io/badge/Node.js-18%2B-blue) ![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey)
 
@@ -10,13 +10,11 @@
 
 </div>
 
-**简体中文** — 一个运行在你自己电脑上的本地多模型路由代理：让 OpenAI Codex 桌面端（以及任意 OpenAI 兼容客户端）在一个菜单里同时使用官方 ChatGPT 额度、DeepSeek / Qwen / GLM / Kimi / Grok 等国内外模型、Claude / Gemini / ChatGPT / Cursor 订阅账号额度，随时切换。详见 [README.md](./README.md)。
-
 A **local-first multi-model router & gateway**: use official ChatGPT quota, DeepSeek / Qwen / GLM / Kimi / Grok, and your Claude / Gemini / ChatGPT / Cursor subscription accounts in one model menu, for the OpenAI Codex desktop app, Claude Code, or any OpenAI-compatible client. Runs 100% on your own machine; no cloud account required.
 
 > **Beginner one-liner**: Install Node.js → run it → open the web admin panel → click to add models & keys → point your client at one address. Done.
 
-**Keywords**：Codex Router · Multi-Model Router · Claude Code Router · Gemini CLI · Subscription Quota Pool · OpenAI-Compatible Proxy · Local Gateway · Model Switcher · API Gateway · Codex 多模型路由 · 订阅额度池 · 本地网关
+**Keywords**: Codex Router · Multi-Model Router · Claude Code Router · Gemini CLI · Subscription Quota Pool · OpenAI-Compatible Proxy · Local Gateway · Model Switcher · API Gateway
 
 ---
 
@@ -231,7 +229,5 @@ When reporting, include: which model you used, the exact error text, and a scree
 <div align="center">
 
 **MIT License** · This project is a local gateway aggregator only and is not affiliated with OpenAI / Anthropic / Google / Cursor. Please comply with each platform's terms of service — use at your own risk.
-
-本项目仅做本地网关聚合，与 OpenAI / Anthropic / Google / Cursor 等公司无任何关联；请遵守各平台的服务条款，风险自担。
 
 </div>
