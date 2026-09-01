@@ -1,16 +1,246 @@
+<div align="center">
+
 # Codex Multi-Model Router
 
-> **English**: A local-first multi-model router & gateway — use GPT, DeepSeek, Kimi, GLM, Gemini, Claude and ChatGPT-subscription models in one menu, for OpenAI Codex desktop / Claude Code / any OpenAI-compatible client. Runs 100% on your own machine, no cloud account required.
+**本地多模型路由代理 · Local-First Multi-Model Router & Gateway**
 
-一个运行在你自己电脑上的**本地多模型路由代理**：让 OpenAI Codex 桌面端（以及其他任意 OpenAI 兼容客户端）能在一个菜单里同时使用**官方 ChatGPT 额度、DeepSeek / Qwen / GLM / Kimi / Grok 等国内外模型、Claude / Gemini / ChatGPT 订阅账号额度、以及 Cursor 订阅额度**，并且可以随时切换。
+![License](https://img.shields.io/badge/license-MIT-green) ![Node](https://img.shields.io/badge/Node.js-18%2B-blue) ![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey)
 
-**关键词**：Codex 多模型路由 · Claude Code Router · Gemini CLI · 订阅额度池 · OpenAI 兼容代理 · 本地网关 · 模型切换器 · API 网关 · 免切换
+**[English](#english) | [简体中文](#简体中文)**
 
-> 对小白最友好的一句话：**装好 Node.js → 启动 → 打开网页管理面板 → 点几下把模型和密钥加进去 → 客户端填一个地址就能用。**
+</div>
+
+**English** — A local-first multi-model router & gateway: use official ChatGPT quota, DeepSeek / Qwen / GLM / Kimi / Grok, and your Claude / Gemini / ChatGPT / Cursor subscription accounts in one model menu, for the OpenAI Codex desktop app, Claude Code, or any OpenAI-compatible client. Runs 100% on your own machine; no cloud account required.
+
+**简体中文** — 一个运行在你自己电脑上的**本地多模型路由代理**：让 OpenAI Codex 桌面端（以及任意 OpenAI 兼容客户端）在一个菜单里同时使用**官方 ChatGPT 额度、DeepSeek / Qwen / GLM / Kimi / Grok 等国内外模型、Claude / Gemini / ChatGPT 订阅账号额度、以及 Cursor 订阅额度**，并且可以随时切换。
+
+> **小白一句话**：装好 Node.js → 启动 → 打开网页管理面板 → 点几下把模型和密钥加进去 → 客户端填一个地址就能用。
+>
+> **Beginner one-liner**: Install Node.js → run it → open the web admin panel → click to add models & keys → point your client at one address. Done.
+
+**关键词 Keywords**：Codex 多模型路由 · Claude Code Router · Gemini CLI · 订阅额度池 · OpenAI 兼容代理 · 本地网关 · 模型切换器 · API 网关 · 免切换 · Codex Router · Subscription Quota Pool · OpenAI-Compatible Proxy · Local Gateway · Model Switcher
 
 ---
 
-## 目录
+## English
+
+> [English](#english) | [简体中文](#简体中文)
+
+**目录 Contents**
+
+- [1. What it is / what it can do](#1-what-it-is--what-it-can-do)
+- [2. Preparation (3 minutes)](#2-preparation-3-minutes)
+- [3. Start & open the admin panel](#3-start--open-the-admin-panel)
+- [4. Beginner: add your first model](#4-beginner-add-your-first-model)
+- [5. Connect your clients (Codex / Trae / Qoder / OpenCode)](#5-connect-your-clients-codex--trae--qoder--opencode)
+- [6. Feature map](#6-feature-map)
+- [7. FAQ](#7-faq)
+- [8. Security](#8-security)
+- [9. Project layout & development](#9-project-layout--development)
+- [10. Feedback & community](#10-feedback--community)
+
+A **local multi-model routing proxy** running on your own computer. It lets the OpenAI Codex desktop app (and any OpenAI-compatible client) use, in a single model menu: **official ChatGPT quota, domestic & international models (DeepSeek / Qwen / GLM / Kimi / Grok …), Claude / Gemini / ChatGPT subscription accounts, and Cursor subscription quota** — switchable at any time.
+
+### 1. What it is / what it can do
+
+The Codex desktop app allows "only one model provider at a time". This project puts a router in the middle:
+
+```
+Codex desktop / any client ──▶ 127.0.0.1:15730 (this project)
+   ├─ Official channel (gpt-*/codex-*) ────▶ chatgpt.com (reuses desktop login)
+   ├─ DeepSeek / Qwen / GLM / Kimi ───────▶ vendor OpenAI-compatible APIs
+   ├─ Claude / Gemini / ChatGPT subs ─────▶ your membership quota (multi-account rotation)
+   ├─ Cursor Pro subscription ────────────▶ built-in gateway, multi-account pool
+   └─ …… any OpenAI-compatible endpoint
+```
+
+Point your client's `base_url` at `http://127.0.0.1:15730/v1`; the router forwards each request to the right upstream based on the `model` field.
+
+**Core capabilities:**
+
+| Capability | What it means |
+| --- | --- |
+| Multi-model, one menu | Official GPT and third-party models share one selector; switch anytime without touching configs |
+| Web admin panel | Add/edit/remove models, test connectivity, one-click vendor onboarding, manage key pools & subscription accounts — all in your browser |
+| Text & image dual channel | `/v1/responses` (Codex) and `/v1/chat/completions` (universal), native streaming |
+| **Google subscription channel** | One-click Google AI Pro onboarding: the full gemini / claude family (25+ models) on your subscription quota; account-pool failover, thinking-tier variants, automatic tool-schema sanitization |
+| **One-click Codex account switch** | Switch the Codex desktop app to any bound ChatGPT account from the panel (auto-backup, auto-restart, bidirectional) |
+| **Live subscription quota panel** | ChatGPT accounts show 5-hour / weekly quota progress bars with reset times (same data source as the Codex CLI quota bar) |
+| Vision relay ("borrowed eyes") | When a text-only model receives an image, a vision model describes it first; multi-endpoint with automatic failover |
+| ChatGPT subscription image generation | `/v1/images/generations` & `/v1/images/edits` translated into official Responses + image_generation calls, billed to your ChatGPT subscription (platform key as fallback) |
+| Multi-account subscription pool | Bind multiple Claude / Gemini / ChatGPT / Cursor accounts; automatic failover when quota runs dry; per-account drain order |
+| Channel key pools | Multiple API keys per vendor with priority rotation and persisted 429 cooldown |
+| Free-form model groups | Model cards can be freely edited / deleted / regrouped |
+| Per-channel proxy | Each channel can go direct / via global proxy / via a custom node (paste ss / trojan / vless / socks5 / http links) |
+| Cross-model continuation | Context trimming auto-generates a "goal checkpoint" so switching models never drops the task |
+| Usage dashboard | Daily token trends, activity heatmap, per-model breakdown |
+| Optional API key auth | Issue `sk-router-*` keys to control who may access |
+
+Screenshots:
+
+![Official & custom models in one menu](docs/demo-model-switching.png)
+![Same task continuing across models](docs/demo-cross-model-continuation.png)
+
+### 2. Preparation (3 minutes)
+
+1. Install **Node.js 18 or newer** ([nodejs.org](https://nodejs.org), next-next-next is fine).
+2. Prepare **your own** vendor API keys (DeepSeek open platform, Alibaba Bailian, SiliconFlow, OpenRouter, …). This project ships **no built-in keys**.
+3. Download and extract this project's source to any directory, e.g. `D:\codex-multi-model-router`.
+
+No npm install needed (pure Node.js — `npm start` just runs).
+
+### 3. Start & open the admin panel
+
+Windows:
+
+```powershell
+cd D:\codex-multi-model-router
+.\scripts\start-router.ps1
+```
+
+macOS / Linux:
+
+```bash
+cd ~/codex-multi-model-router
+./scripts/start-router.sh
+```
+
+When the log prints `codex-router listening on 127.0.0.1:15730`, open the admin panel in your browser:
+
+```
+http://127.0.0.1:15730/admin
+```
+
+> The panel binds to localhost (127.0.0.1) only and works under same-origin + anti-cross-site policies; it is never exposed to your LAN.
+
+### 4. Beginner: add your first model
+
+There are many ways to add models in the panel; the easiest is "one-click vendor onboarding":
+
+1. Open the **model groups** page.
+2. Click **one-click vendor onboarding** (top right) — a built-in list of common vendors (DeepSeek, Qwen, GLM, OpenRouter, …), grouped by region.
+3. Pick a vendor, paste the API key(s) you applied for on that platform (multiple keys welcome — automatic failover), then click **onboard**.
+4. The router automatically: creates the channel → puts the keys into the channel key pool → writes the vendor's default models into the catalog.
+
+The models now appear in your client's model menu.
+
+If you'd rather add an arbitrary OpenAI-compatible model manually:
+
+- In **system & routing config → enabled target channels**, click "add channel": fill in the channel name, match regex (e.g. `^deepseek-`), host (e.g. `api.deepseek.com`), path prefix (usually `/v1`), and the key's env-var name.
+- On the model-groups page, click "add custom model" and map the model slug to that channel.
+
+> **Where do keys go?** This project insists "keys never live in config files". Put keys into **environment variables** (Windows: `setx VAR_NAME your_key`, e.g. `setx DEEPSEEK_API_KEY sk-xxx`) and reference only the variable name in the channel. Alternatively, paste plaintext keys into the panel's channel key pool — they are stored in the router's own local database, never written into `config.json`.
+
+### 5. Connect your clients (Codex / Trae / Qoder / OpenCode)
+
+Universal (any OpenAI-compatible client):
+
+| Setting | Value |
+| --- | --- |
+| Base URL | `http://127.0.0.1:15730/v1` |
+| API Key | a `sk-router-...` created on the panel's API-key page (create none = open access) |
+| Chat endpoint | `POST /v1/chat/completions` (universal) |
+| Codex endpoint | `POST /v1/responses` (Codex) |
+| Model list | `GET /v1/models` |
+
+Codex desktop app — the primary use case: let the app see every model and still open reliably. The catalog is managed dynamically by the panel's model-groups page and written into the `models.json` the desktop app reads:
+
+- Make sure the catalog file the desktop app reads is the one this router writes (`$CODEX_HOME\models.json` by default on this machine).
+- Set the desktop app's `base_url = http://127.0.0.1:15730/v1`; models appear in the bottom-right selector automatically.
+- When switching across Chat / Responses, the router re-attaches full history plus a goal checkpoint, so task context survives.
+
+> The desktop app parses `models.json` strictly. This project **auto-fills every desktop-required field** (including `supported_in_api`, `priority`, `base_instructions`, …) when writing models, so the catalog always parses and the app keeps opening.
+
+Trae / Qoder / OpenCode etc.: they all support "OpenAI-compatible" config — just set the Base URL above. The API-key page also shows ready-made setup snippets for each key you create.
+
+### 6. Feature map
+
+Full details in [docs/ADVANCED.md](docs/ADVANCED.md). Quick map of "what can it do for me":
+
+- **Membership subscription auth** (admin panel)
+  - Claude / Gemini / ChatGPT member accounts: one-click OAuth or manual token, multi-account rotation, auto token refresh.
+  - **Google AI Pro**: on the subscriptions page, the Google account card's "connect to router" pulls your subscription model list (full gemini / claude family) into the router; thinking tiers (`-high` / `-medium` / `-low`) auto-synthesize variants; agent tool definitions carrying Gemini-unsupported fields (`$schema` / `propertyNames` …) are auto-sanitized — no more 400s.
+  - **Quota panel**: every ChatGPT account shows live 5-hour / weekly quota bars (captured from official response headers, same source as the Codex CLI quota bar); click "refresh" to update. Google accounts show a local 7-day request counter.
+  - **Drain order**: each account card has a "drain order" number — lower numbers get drained first (empty = auto by plan tier, Pro first).
+  - **One-click Codex switch**: on a ChatGPT account card, "switch Codex to this account" → signs out the current login (backed up) → writes that account's credentials → restarts the desktop app; bidirectional, usable ~10 seconds later.
+  - Cursor Pro subscription: a built-in gateway converts subscription quota into an OpenAI-compatible API; add/remove `crsr_` keys to the account pool right in the panel.
+- **Channel key pools**: multiple keys per channel, priority rotation + persisted 429 cooldown; falls back to the env var once the whole pool cools down.
+- **Free-form model groups**: cards are freely editable / deletable; type a new group name to create a group (browser-local, never written into the desktop catalog); "one-click vendor onboarding" can pull the real model list to pick from.
+- **Graceful restart**: the panel header's "graceful restart" swaps in new code without killing in-flight tasks.
+- **Usage stats**: daily token trends, activity heatmap, per-model breakdown.
+- **Full Codex plugin adaptation**: Codex tool declarations (shell, file editing, MCP, web search, …) are converted into each upstream's generic tool format.
+
+### 7. FAQ
+
+**Q: The client can't reach 15730?**
+Make sure the router is running (log shows `listening`) and you used `http://127.0.0.1:15730/v1` — not `https`, not a public IP. If the panel opens but the client can't connect, it's almost always a wrong address/port.
+
+**Q: A model keeps reporting "quota exceeded / 429"?**
+The channel key may be exhausted, or a subscription account ran dry. Check cooldown status on the key-pool page, or account status on the subscriptions page; quota recovers automatically — no config change needed. For ChatGPT accounts, read the 5-hour / weekly bars on the account card.
+
+**Q: Google models report 429 "per-minute quota limit"?**
+Google rate-limits per "account × model" minute window (agent clients resend full context every turn, so it burns fast). The router auto-rolls to another account; if every account is inside the window, it recovers in about a minute — the error text says so. Failures lasting hours mean daily/weekly quota is used up: wait for reset or switch models (e.g. `claude-sonnet-4-6` / `gemini-2.5-flash` family). Agent clients often send `max_tokens=128000`; the router clamps it to a safe value so the pre-check won't 429.
+
+**Q: A ChatGPT account on the subscriptions page shows "no quota data yet"?**
+Quota arrives with official-channel response headers; there is no standalone query endpoint. Make one request with that account on an official model, then click "refresh".
+
+**Q: "Unknown model / model not found"?**
+The requested model name isn't in the catalog. Check it exists on the model-groups page and that its channel's match regex hits.
+
+**Q: Added a model / changed config but nothing seems to change?**
+You edited the disk config; the in-memory router needs a restart. Use the header's "graceful restart", or run `.\scripts\restart-router.ps1` / `bash scripts/restart-router.sh`.
+
+**Q: Desktop app won't open / config_load error?**
+Check the desktop log first: `unknown variant` / `missing field` = a `models.json` field problem; `usage limit` = a quota problem. This project auto-fills all required fields, so the former shouldn't happen; if it ever does, re-save any model on the model-groups page to trigger the auto-fix.
+
+**Q: Proxy unreachable / need a global proxy?**
+See [docs/ADVANCED.md "network & proxy"](docs/ADVANCED.md). Per-channel proxies are supported; custom proxies accept pasted airport node links (ss / trojan / vless / socks5 / http).
+
+### 8. Security
+
+- **Credentials are read only from environment variables or the local key service**: no usable key literals in source, docs, sample configs, or tests.
+- Router API keys are stored hashed (`sk-router-` prefix + SHA-256); revocation is instant. Plaintext keys in channel pools live only in the local SQLite database, never written into `config.json`.
+- The admin panel binds to the loopback address only, with Host/Origin/anti-cross-site checks (CSP, same-origin).
+- `data/` (runtime database: accounts, keys, login states) is `.gitignore`d and never committed.
+
+### 9. Project layout & development
+
+```
+codex-router.mjs          # entry point: assembles modules and listens on 15730
+config.json               # sample config (no keys); real keys via env vars
+models.json               # model catalog written by the admin panel (not committed)
+lib/                      # core modules (routing, admin API, auth, key pools, subscriptions, vision relay…)
+web-admin/                # admin panel frontend source (Vue 3 + Element Plus)
+web/                      # built frontend assets (used at runtime)
+scripts/                  # start / stop / restart / test scripts
+test/                     # unit & integration tests (node:test)
+```
+
+Development / testing:
+
+```bash
+npm test                        # run all unit tests (node --test test/*.test.mjs)
+cd web-admin && npm run build   # rebuild the admin panel frontend
+```
+
+Built-in mechanisms include multi-channel provider affinity per model, request budgets & timeouts, response history, cross-model goal checkpoints, channel-/account-level quota cooldowns, token tracking & usage stats; the model-catalog writer auto-completes desktop-required fields so configs never get corrupted.
+
+### 10. Feedback & community
+
+If this project helps you, please give it a Star. Feedback is welcome:
+
+- **WeChat**: `b6356120` (mention "router" when adding; I'll invite you to the user group)
+- **GitHub Issues**: [open an issue](https://github.com/822807097/codex-multi-model-router/issues)
+
+When reporting, include: which model you used, the exact error text, and a screenshot of the relevant panel page — it makes things much faster.
+
+---
+
+## 简体中文
+
+> [English](#english) | [简体中文](#简体中文)
+
+**目录**
 
 - [一、它是什么 / 能做什么](#一它是什么--能做什么)
 - [二、准备工作（3 分钟）](#二准备工作3-分钟)
@@ -21,11 +251,9 @@
 - [七、常见问题（遇到问题先看这里）](#七常见问题遇到问题先看这里)
 - [八、安全说明](#八安全说明)
 - [九、目录与开发](#九目录与开发)
-- [十、反馈与交流（微信群）](#十反馈与交流)
+- [十、反馈与交流](#十反馈与交流)
 
----
-
-## 一、它是什么 / 能做什么
+### 一、它是什么 / 能做什么
 
 你的 Codex 桌面端「同一时间只能配置一个模型供应商」。本项目在中间加一个「路由器」：
 
@@ -65,9 +293,7 @@ Codex 桌面端/任意客户端 ──▶ 127.0.0.1:15730（本项目）
 ![官方与自定义模型同菜单共存](docs/demo-model-switching.png)
 ![同一任务跨模型继续回答](docs/demo-cross-model-continuation.png)
 
----
-
-## 二、准备工作（3 分钟）
+### 二、准备工作（3 分钟）
 
 1. 安装 **Node.js 18 或更高版本**（[nodejs.org](https://nodejs.org)，一路下一步即可）。
 2. 准备你**自己的**模型服务商 API Key（例如 DeepSeek 开放平台、阿里云百炼、硅基流动、OpenRouter 等）。本项目**自身不含任何内置密钥**。
@@ -75,18 +301,16 @@ Codex 桌面端/任意客户端 ──▶ 127.0.0.1:15730（本项目）
 
 不需要安装任何 npm 依赖（纯 Node.js 实现，`npm start` 直接跑）。
 
----
+### 三、启动与打开管理面板
 
-## 三、启动与打开管理面板
-
-### Windows
+#### Windows
 
 ```powershell
 cd D:\codex-multi-model-router
 .\scripts\start-router.ps1
 ```
 
-### macOS / Linux
+#### macOS / Linux
 
 ```bash
 cd ~/codex-multi-model-router
@@ -103,9 +327,7 @@ http://127.0.0.1:15730/admin
 
 > 管理面板只监听本机（127.0.0.1），并且在同源 + 防跨站策略保护下工作，不会暴露到局域网。
 
----
-
-## 四、小白入门：加第一个模型
+### 四、小白入门：加第一个模型
 
 在管理面板里加模型的路径非常多，最省事的是「一键接入厂商」：
 
@@ -123,11 +345,9 @@ http://127.0.0.1:15730/admin
 
 > **密钥怎么填：** 本项目坚持「密钥不进配置文件」。请把密钥放进**环境变量**（Windows 命令行执行 `setx 变量名 你的密钥`，例如 `setx DEEPSEEK_API_KEY sk-xxx`），然后在通道里只填**变量名**。管理面板里的「通道密钥池」也可以直接填明文 Key，它存在路由自己的本地数据库里，不会写进 `config.json`。
 
----
+### 五、让客户端连上来（Codex / Trae / Qoder / OpenCode）
 
-## 五、让客户端连上来（Codex / Trae / Qoder / OpenCode）
-
-### 通用方式（任意 OpenAI 兼容客户端）
+#### 通用方式（任意 OpenAI 兼容客户端）
 
 | 配置项 | 值 |
 | --- | --- |
@@ -137,7 +357,7 @@ http://127.0.0.1:15730/admin
 | Codex 接口 | `POST /v1/responses`（Codex 专用） |
 | 模型列表 | `GET /v1/models` |
 
-### Codex 桌面端
+#### Codex 桌面端
 
 整个项目的主要使用场景——让桌面端能选到所有模型、且能正常打开。模型目录由管理面板「分组自定义模型」页动态管理，写进桌面端读取的 `models.json`：
 
@@ -147,13 +367,11 @@ http://127.0.0.1:15730/admin
 
 > 桌面端对 `models.json` 有严格的字段完整性要求。本项目在写入新模型时会**自动补全所有桌面端必填字段**（含 `supported_in_api`、`priority`、`base_instructions` 等），保证目录永远可被桌面端解析，不会因为漏字段导致应用打不开。
 
-### Trae / Qoder / OpenCode 等
+#### Trae / Qoder / OpenCode 等
 
 它们大都支持「OpenAI 兼容」配置，把 Base URL 填成上面的地址即可。也可以到「API 密钥管理」页看你创建的 Key 对应的接入指引，里面有现成配置模板。
 
----
-
-## 六、常用功能一览
+### 六、常用功能一览
 
 详细说明见 [docs/ADVANCED.md](docs/ADVANCED.md)，这里先给你「这东西能干嘛」的地图：
 
@@ -170,9 +388,7 @@ http://127.0.0.1:15730/admin
 - **用量统计**：按天 Token 趋势、活跃热力图、模型消耗 Breakdown。
 - **Codex 插件全适配**：自动把 Codex 的工具声明（shell、文件编辑、MCP、联网搜索等）转换成各上游通用工具格式。
 
----
-
-## 七、常见问题（遇到问题先看这里）
+### 七、常见问题（遇到问题先看这里）
 
 **Q：客户端提示连不上 15730？**
 先确认路由进程在跑（日志有 `listening`），再确认填的是 `http://127.0.0.1:15730/v1` 而不是 `https` 或外网 IP。管理面板能打开但客户端连不上，多半是端口/地址填错。
@@ -198,16 +414,14 @@ http://127.0.0.1:15730/admin
 **Q：代理连不上 / 需要全局代理？**
 见 [docs/ADVANCED.md「网络与代理」](docs/ADVANCED.md)。逐通道可配代理，自定义代理支持直接粘贴机场节点链接（ss / trojan / vless / socks5 / http）。
 
----
-
-## 八、安全说明
+### 八、安全说明
 
 - **凭据只从环境变量或本地密钥服务读取**：源码、文档、示例配置和测试里都不含任何可用密钥字面量。
 - API Key 以哈希形式存储（`sk-router-` 前缀 + SHA-256），吊销即时生效；通道密钥池里的明文 Key 只存本地 SQLite，不写入 `config.json`。
 - 管理面板仅绑定本机回环地址，并做 Host/Origin/跨站（CSP、同源）校验。
 - `data/`（运行时数据库：账号、密钥、登录态）已加入 `.gitignore`，提交/开源时不会带出。
 
-## 九、目录与开发
+### 九、目录与开发
 
 ```
 codex-router.mjs          # 程序入口：组装各模块并启动 15730 监听
@@ -229,7 +443,7 @@ cd web-admin && npm run build   # 重新构建管理面板前端
 
 已内置同一模型多通道 provider 亲和、请求预算与超时、响应历史、跨模型目标检查点、通道级/账号级额度冷却、令牌追踪与用量统计等机制；会在写入模型目录时自动保证桌面端必填字段完整，避免配置被写坏。
 
-## 十、反馈与交流
+### 十、反馈与交流
 
 用得好请点个 Star；遇到问题欢迎反馈：
 
@@ -240,4 +454,10 @@ cd web-admin && npm run build   # 重新构建管理面板前端
 
 ---
 
-MIT License。本项目仅做本地网关聚合，与 OpenAI / Anthropic / Google / Cursor 等公司无任何关联；请遵守各平台的服务条款，风险自担。
+<div align="center">
+
+**MIT License** · 本项目仅做本地网关聚合，与 OpenAI / Anthropic / Google / Cursor 等公司无任何关联；请遵守各平台的服务条款，风险自担。
+
+This project is a local gateway aggregator only and is not affiliated with OpenAI / Anthropic / Google / Cursor. Please comply with each platform's terms of service — use at your own risk.
+
+</div>
