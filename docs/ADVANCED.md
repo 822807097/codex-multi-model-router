@@ -162,7 +162,6 @@ Content-Type: application/json
 
 ## 开发与调试
 
-- 全量单测：`npm test`（约 600+ 用例，覆盖路由、鉴权、密钥池、订阅、视觉中继、管理 API 等）。
 - 调试日志：运行目录下 `router.log`（结构化 JSON）、`router-console.out.log`（进程控制台）。崩溃/启动失败先看 console 日志。
 - 优雅重启：面板顶栏；或 `scripts/restart-router.ps1`（Windows）/ `scripts/restart-router.sh`。重启会等旧进程排空在跑任务后再接管新进程。
 - 管理 API 只接受本机回环 Host + 精确同源；CSP 允许同源脚本与样式，禁止第三方脚本注入。

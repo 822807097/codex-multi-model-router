@@ -68,6 +68,16 @@ Point your client's `base_url` at `http://127.0.0.1:15730/v1`; the router forwar
 
 Screenshots:
 
+**Admin panel (web UI — open `http://127.0.0.1:15730/admin` in your browser)**
+
+| Usage dashboard | Model groups |
+| --- | --- |
+| ![Usage dashboard](docs/admin-usage.png) | ![Model groups](docs/admin-model-groups.png) |
+| ![Subscriptions](docs/admin-subscriptions.png) | ![API keys](docs/admin-api-keys.png) |
+| ![System & routing](docs/admin-system.png) | ![Routing channels](docs/admin-channels.png) |
+
+**Codex desktop integration**
+
 ![Official & custom models in one menu](docs/demo-model-switching.png)
 ![Same task continuing across models](docs/demo-cross-model-continuation.png)
 
@@ -202,14 +212,12 @@ models.json               # model catalog written by the admin panel (not commit
 lib/                      # core modules (routing, admin API, auth, key pools, subscriptions, vision relay…)
 web-admin/                # admin panel frontend source (Vue 3 + Element Plus)
 web/                      # built frontend assets (used at runtime)
-scripts/                  # start / stop / restart / test scripts
-test/                     # unit & integration tests (node:test)
+scripts/                  # start / stop / restart / restore-official scripts
 ```
 
-Development / testing:
+Development:
 
 ```bash
-npm test                        # run all unit tests (node --test test/*.test.mjs)
 cd web-admin && npm run build   # rebuild the admin panel frontend
 ```
 

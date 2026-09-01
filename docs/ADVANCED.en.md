@@ -162,7 +162,6 @@ After you create an `sk-router-*` key on the "API key management" page, the rout
 
 ## Development & debugging
 
-- Full unit tests: `npm test` (600+ cases covering routing, auth, key pools, subscriptions, vision relay, admin API, etc.).
 - Debug logs: `router.log` (structured JSON) and `router-console.out.log` (process console) in the working directory. For crashes / startup failures, check the console log first.
 - Graceful restart: panel header button; or `scripts/restart-router.ps1` (Windows) / `scripts/restart-router.sh`. A restart waits for the old process to drain in-flight tasks before the new process takes over.
 - The admin API accepts loopback Host + exact same-origin only; CSP allows same-origin scripts/styles and blocks third-party script injection.

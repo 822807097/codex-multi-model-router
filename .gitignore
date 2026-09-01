@@ -69,3 +69,6 @@ data/
 # 内部计划/设计文档（upstream 私用，不入库）
 docs/superpowers/
 docs/plan-*.md
+
+# 测试套件（内部开发回归用，开源发布不含；本地保留）
+/test/

@@ -70,6 +70,16 @@ Codex 桌面端/任意客户端 ──▶ 127.0.0.1:15730（本项目）
 
 界面预览：
 
+**管理面板（Web UI，浏览器打开 `http://127.0.0.1:15730/admin`）**
+
+| 使用统计 | 分组自定义模型 |
+| --- | --- |
+| ![使用统计](docs/admin-usage.png) | ![分组自定义模型](docs/admin-model-groups.png) |
+| ![平台订阅管理](docs/admin-subscriptions.png) | ![API 密钥管理](docs/admin-api-keys.png) |
+| ![系统与路由配置](docs/admin-system.png) | ![路由通道列表](docs/admin-channels.png) |
+
+**Codex 桌面端联动**
+
 ![官方与自定义模型同菜单共存](docs/demo-model-switching.png)
 ![同一任务跨模型继续回答](docs/demo-cross-model-continuation.png)
 
@@ -210,14 +220,12 @@ models.json               # （由管理面板写入的模型目录，不入库�
 lib/                      # 核心模块（路由、管理 API、鉴权、密钥池、订阅、视觉中继……）
 web-admin/                # 管理面板前端源码（Vue 3 + Element Plus）
 web/                      # 前端构建产物（面板运行时使用）
-scripts/                  # 启动 / 停止 / 重启 / 测试脚本
-test/                     # 单元与集成测试（node:test）
+scripts/                  # 启动 / 停止 / 重启 / 恢复官方直连等脚本
 ```
 
-开发 / 测试：
+开发：
 
 ```bash
-npm test                 # 运行全部单元测试（node --test test/*.test.mjs）
 cd web-admin && npm run build   # 重新构建管理面板前端
 ```
 
