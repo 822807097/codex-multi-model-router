@@ -145,7 +145,7 @@ Trae / Qoder / OpenCode etc.: they all support "OpenAI-compatible" config — ju
 
 ## 6. Feature map
 
-Full details in [docs/ADVANCED.md](docs/ADVANCED.md). Quick map of "what can it do for me":
+Full details in [docs/ADVANCED.en.md](docs/ADVANCED.en.md). Quick map of "what can it do for me":
 
 - **Membership subscription auth** (admin panel)
   - Claude / Gemini / ChatGPT member accounts: one-click OAuth or manual token, multi-account rotation, auto token refresh.
@@ -184,7 +184,7 @@ You edited the disk config; the in-memory router needs a restart. Use the header
 Check the desktop log first: `unknown variant` / `missing field` = a `models.json` field problem; `usage limit` = a quota problem. This project auto-fills all required fields, so the former shouldn't happen; if it ever does, re-save any model on the model-groups page to trigger the auto-fix.
 
 **Q: Proxy unreachable / need a global proxy?**
-See [docs/ADVANCED.md "network & proxy"](docs/ADVANCED.md). Per-channel proxies are supported; custom proxies accept pasted airport node links (ss / trojan / vless / socks5 / http).
+See [docs/ADVANCED.en.md "network & proxy"](docs/ADVANCED.en.md). Per-channel proxies are supported; custom proxies accept pasted airport node links (ss / trojan / vless / socks5 / http).
 
 ## 8. Security
 
