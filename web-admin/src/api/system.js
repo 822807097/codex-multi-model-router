@@ -85,6 +85,13 @@ export function restartCodexDesktopApp() {
   });
 }
 
+export function syncCodexSessionProviders() {
+  return request({
+    url: '/codex-desktop/sync-session-providers',
+    method: 'post',
+  });
+}
+
 export function listCursorGatewayAccounts(config = {}) {
   return request({
     url: '/cursor-gateway/accounts',

@@ -305,6 +305,9 @@
         <el-button plain :loading="desktopRestarting" @click="restartDesktopApp">
           重启 ChatGPT 桌面端（应用改动后必做）
         </el-button>
+        <el-button plain :loading="desktopSyncing" @click="handleSyncSessionProviders">
+          <el-icon class="mr-1"><Refresh /></el-icon>修复历史会话（provider 同步）
+        </el-button>
         <span class="text-xs text-secondary">
           选择器已加载 {{ loadedCount }} 个路由模型（官方全量常驻） · 默认 {{ desktopState.defaultModel || '—' }}
         </span>
@@ -368,7 +371,7 @@
 
 <script setup>
 import { ref, reactive, computed, onMounted } from 'vue';
-import { getSystemConfig, saveSystemConfig, testVisionRelay, getCursorGatewayStatus, listCursorGatewayAccounts, addCursorGatewayAccount, removeCursorGatewayAccount, restartCursorGateway, startCursorGateway, listCursorGatewayModels, restartCodexDesktopApp, getCodexDesktopState, restoreCodexDesktopOfficial, applyCodexDesktopRouter } from '../../api/system.js';
+import { getSystemConfig, saveSystemConfig, testVisionRelay, getCursorGatewayStatus, listCursorGatewayAccounts, addCursorGatewayAccount, removeCursorGatewayAccount, restartCursorGateway, startCursorGateway, listCursorGatewayModels, restartCodexDesktopApp, syncCodexSessionProviders, getCodexDesktopState, restoreCodexDesktopOfficial, applyCodexDesktopRouter } from '../../api/system.js';
 import { listChannelKeys } from '../../api/channelKeys.js';
 import { getModelRouting, commitModelOperations, testTargetConnection } from '../../api/models.js';
 import { ElMessage, ElMessageBox } from 'element-plus';
@@ -695,6 +698,25 @@ async function restartDesktopApp() {
   }
 }
 
+async function handleSyncSessionProviders() {
+  try {
+    await ElMessageBox.confirm(
+      '把历史会话的 provider 统一迁到路由（修复「继续接续任务」时报 401：旧会话仍指向官方 openai 通道，API-key/路由接入后会直连 api.openai.com）。'
+      + '\n\n历史对话内容不会丢失——只改会话的 provider 标记。执行后建议重启桌面端。现在执行？',
+      '修复历史会话（provider 同步）',
+      { confirmButtonText: '同步', cancelButtonText: '取消', type: 'warning' },
+    );
+  } catch { return; }
+  desktopSyncing.value = true;
+  try {
+    const res = await syncCodexSessionProviders();
+    ElMessage.success(res.message || '历史会话已同步');
+    await loadConfig();
+  } catch { /* 拦截器提示 */ } finally {
+    desktopSyncing.value = false;
+  }
+}
+
 async function loadCursorGw() {
   cursorGwLoading.value = true;
   try {
@@ -852,6 +874,7 @@ const desktopLoading = ref(false);
 const desktopSaving = ref(false);
 const desktopRestoring = ref(false);
 const desktopRestarting = ref(false);
+const desktopSyncing = ref(false);
 const desktopState = reactive({ mode: '', defaultModel: '', models: [], routerBaseUrl: 'http://127.0.0.1:15730/v1' });
 const desktopSelectedModels = ref([]);
 const desktopDefaultModel = ref('');
