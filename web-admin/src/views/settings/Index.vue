@@ -546,8 +546,11 @@ async function handleDeleteTarget(row) {
     );
   } catch { return; }
   try {
-    const operations = [{ kind: 'target.delete', targetRef: row.targetRef }];
+    // 顺序：先删依赖该通道的模型，再删通道本身（后端不再要求「精确专属 match」，
+    // 宽松匹配的多模型通道也可直接删除；失路由模型由本操作连带清理）
+    const operations = [];
     for (const slug of orphanModels) operations.push({ kind: 'model.delete', slug });
+    operations.push({ kind: 'target.delete', targetRef: row.targetRef });
     await commitModelOperations(operations);
     ElMessage.success(orphanModels.length
       ? `通道已删除，连带删除 ${orphanModels.length} 个仅此路由的模型；重启路由后生效`
