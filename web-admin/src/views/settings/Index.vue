@@ -301,26 +301,33 @@
           重启 ChatGPT 桌面端（应用改动后必做）
         </el-button>
         <span class="text-xs text-secondary">
-          当前加载 {{ desktopLoadedCount }} 个模型 · 默认 {{ desktopState.defaultModel || '—' }}
+          选择器已加载 {{ loadedCount }} 个路由模型（官方全量常驻） · 默认 {{ desktopState.defaultModel || '—' }}
         </span>
       </div>
     </el-card>
 
     <!-- 接入路由：模型选择弹窗（可单选/多选/全选） -->
     <el-dialog v-model="desktopDialogOpen" title="接入路由：选择要加载到 Codex 的模型" width="640px" class="custom-dialog-pro" append-to-body>
-      <div class="text-xs text-secondary mb-2">勾选要写入 Codex 桌面端目录的模型（单选、多选、全选均可）：</div>
+      <div class="text-xs text-secondary mb-2">只勾选你用得到的模型——没勾的不会出现在 Codex 选择器里（官方模型始终保留）：</div>
       <div class="flex items-center gap-3 mb-2">
-        <el-checkbox v-model="desktopSelectAll" :indeterminate="desktopIndeterminate">全选</el-checkbox>
+        <el-input
+          v-model="desktopSearch"
+          size="small"
+          clearable
+          placeholder="搜索模型名…"
+          style="width: 180px"
+        />
         <el-button size="small" text type="primary" @click="desktopSelectedModels = []">清空</el-button>
-        <span class="text-xs text-secondary">已选 {{ desktopSelectedModels.length }} / {{ desktopState.models.length }}</span>
+        <span class="text-xs text-secondary">已选 {{ desktopSelectedModels.length }} / {{ desktopState.models.length }}（当前已加载 {{ loadedCount }}）</span>
       </div>
       <el-checkbox-group
         v-model="desktopSelectedModels"
         class="grid grid-cols-2 gap-1 max-h-72 overflow-y-auto border border-muted rounded-lg p-2"
       >
-        <el-checkbox v-for="m in desktopState.models" :key="m.slug" :value="m.slug">
+        <el-checkbox v-for="m in filteredDesktopModels" :key="m.slug" :value="m.slug">
           <span class="font-mono text-xs">{{ m.slug }}</span>
           <el-tag v-if="m.official" size="small" type="success" effect="plain" class="ml-1">官方</el-tag>
+          <el-tag v-if="m.loaded && !m.official" size="small" type="primary" effect="plain" class="ml-1">已加载</el-tag>
         </el-checkbox>
       </el-checkbox-group>
       <el-form label-position="top" class="mt-3">
@@ -759,17 +766,17 @@ const desktopState = reactive({ mode: '', defaultModel: '', models: [], routerBa
 const desktopSelectedModels = ref([]);
 const desktopDefaultModel = ref('');
 const desktopDialogOpen = ref(false);
-const desktopLoadedCount = computed(() => desktopSelectedModels.value.length);
-const desktopSelectAll = computed({
-  get: () => desktopState.models.length > 0 && desktopSelectedModels.value.length === desktopState.models.length,
-  set: (val) => {
-    desktopSelectedModels.value = val ? desktopState.models.map((m) => m.slug) : [];
-  },
+const desktopSearch = ref('');
+// 已加载 = models.desktop.json 里实际存在的模型（官方全量常驻，不计入）
+const loadedCount = computed(
+  () => desktopState.models.filter((m) => m.loaded && !m.official).length,
+);
+// 搜索过滤（slug 子串，不区分大小写）
+const filteredDesktopModels = computed(() => {
+  const q = desktopSearch.value.trim().toLowerCase();
+  if (!q) return desktopState.models;
+  return desktopState.models.filter((m) => m.slug.toLowerCase().includes(q));
 });
-const desktopIndeterminate = computed(() => (
-  desktopSelectedModels.value.length > 0
-  && desktopSelectedModels.value.length < desktopState.models.length
-));
 
 function openDesktopRouterDialog() {
   if (desktopState.models.length === 0) {
@@ -793,11 +800,13 @@ async function loadDesktopState() {
     desktopState.defaultModel = res.defaultModel || '';
     desktopState.models = res.models || [];
     desktopState.routerBaseUrl = res.routerBaseUrl || desktopState.routerBaseUrl;
-    const current = desktopState.models.map((m) => m.slug);
-    desktopSelectedModels.value = current;
-    desktopDefaultModel.value = current.includes(res.defaultModel)
+    // 默认勾选 = 当前已加载集（官方 + models.desktop.json 里的路由模型），
+    // 不再默认全选——勾选即所得，未勾选的一键接入新模型不会涌入选择器。
+    const loadedSlugs = desktopState.models.filter((m) => m.loaded).map((m) => m.slug);
+    desktopSelectedModels.value = loadedSlugs;
+    desktopDefaultModel.value = loadedSlugs.includes(res.defaultModel)
       ? res.defaultModel
-      : (current.includes('gpt-5.6-sol') ? 'gpt-5.6-sol' : (current[0] || ''));
+      : (loadedSlugs.includes('gpt-5.6-sol') ? 'gpt-5.6-sol' : (loadedSlugs[0] || ''));
   } catch { /* 错误提示由请求拦截器统一处理 */ } finally {
     desktopLoading.value = false;
   }
@@ -814,7 +823,7 @@ async function applyDesktopRouter() {
   }
   try {
     await ElMessageBox.confirm(
-      `将把 Codex 指回路由（${desktopState.routerBaseUrl}），加载 ${slugs.length} 个模型（默认 ${desktopDefaultModel.value}）。现有 config.toml / models.json 会自动备份。确定？`,
+      `将把 Codex 指回路由（${desktopState.routerBaseUrl}），选择器加载勾选的 ${slugs.length} 个模型 + 官方全量（默认 ${desktopDefaultModel.value}）。现有 config.toml / models.json 会自动备份。确定？`,
       '接入路由',
       { confirmButtonText: '接入路由', cancelButtonText: '取消', type: 'warning' },
     );
