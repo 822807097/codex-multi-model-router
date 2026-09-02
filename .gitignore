@@ -75,3 +75,4 @@ docs/plan-*.md
 
 # 测试套件（内部开发回归用，开源发布不含；本地保留）
 /test/
+/tmp-debug-body-*.json
