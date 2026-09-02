@@ -1,6 +1,6 @@
 {
   "name": "codex-multi-model-router",
-  "version": "1.2.1",
+  "version": "1.3.0",
   "description": "Codex 桌面端本地多模型路由代理，支持官方 GPT、DeepSeek、Qwen 共存 + 视觉中继",
   "type": "module",
   "main": "codex-router.mjs",

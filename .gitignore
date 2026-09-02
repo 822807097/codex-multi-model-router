@@ -46,6 +46,9 @@ data/
 .workbuddy/
 
 # 临时调试脚本与截图（本机排障产物，不入库）
+/capture_codex.ps1
+/enum_codex_windows.ps1
+/interact_codex.ps1
 /capture.ps1
 /check_admin.ps1
 /dump_*.ps1

@@ -30,6 +30,10 @@
     "maxBytes": 16777216,
     "ttlMs": 86400000
   },
+  "googleChannel": {
+    "_comment": "谷歌订阅通道上下文自动精简：chat 请求 messages 序列化字节超过 contextSlimMaxBytes 时，丢弃最旧的完整旧轮次（system 前缀与最近上下文保留、tool 调用对不拆散），防止智能体每轮全量重发长会话撞上游分钟配额桶造成持续 429；设 0 关闭",
+    "contextSlimMaxBytes": 1048576
+  },
   "goalCheckpoint": {
     "_comment": "仅在 Chat 裁剪旧轮次时生成九栏目目标检查点；task/exact/response 外部键均保存为带类型域 SHA-256，response 索引另有独立 TTL/LRU 上限",
     "enabled": true,

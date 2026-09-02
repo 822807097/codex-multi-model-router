@@ -17,6 +17,22 @@
       @retry="loadAllAccounts"
     >
     <div class="space-y-4">
+    <!-- 登录过期警示：后端在凭据被上游吊销(401)时标记 auth_expired，需用户重新授权 -->
+    <el-alert
+      v-if="expiredAccounts.length > 0"
+      type="error"
+      :closable="false"
+      show-icon
+    >
+      <template #title>
+        {{ expiredAccounts.length }} 个账号登录已过期，对应订阅模型暂不可用，请重新授权
+      </template>
+      <div v-for="acc in expiredAccounts" :key="acc.id" class="text-xs mt-1 leading-relaxed">
+        <span class="font-semibold">{{ acc.alias }}</span>
+        <span v-if="acc.email" class="ml-1">({{ acc.email }})</span>
+        <span v-if="acc.metadata?.lastAuthError" class="ml-2 opacity-75">{{ acc.metadata.lastAuthError }}</span>
+      </div>
+    </el-alert>
     <el-card
       v-for="platform in platforms"
       :key="platform.provider"
@@ -66,6 +82,12 @@
                 <span class="truncate">{{ acc.proxy?.enabled ? `代理: ${acc.proxy.url || '未填写'}` : '直连' }}</span>
               </el-tag>
             </div>
+          </div>
+
+          <!-- 登录过期：展示被标记的时间与上游原因，引导重新授权 -->
+          <div v-if="acc.status === 'auth_expired'" class="text-xs text-danger mt-2">
+            {{ acc.metadata?.lastAuthError || '凭据被上游拒绝 (401)' }}
+            <span v-if="acc.metadata?.lastAuthErrorAt"> · 标记于 {{ formatQuotaReset(acc.metadata.lastAuthErrorAt) }}</span>
           </div>
 
           <!-- 额度：ChatGPT=上游真实 5h/周窗口；谷歌=本地周计数+限流说明 -->
@@ -235,7 +257,7 @@
 </template>
 
 <script setup>
-import { ref, reactive, onMounted } from 'vue';
+import { ref, reactive, computed, onMounted } from 'vue';
 import { listAccounts, deleteAccount, fetchAccountModels, testAccountModel, setupGoogleChannel, setAccountPriority, switchCodexAccount, getCodexAuthIdentity, getAccountQuota } from '../../api/accounts.js';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import OAuthDialog from './components/OAuthDialog.vue';
@@ -292,10 +314,15 @@ function getAccounts(provider) {
 }
 
 function statusMeta(acc) {
+  // auth_expired：凭据被上游吊销（401），不会自动恢复，需重新授权（后端 markAuthExpired 标记）
+  if (acc.status === 'auth_expired' || acc.status === 'expired') return { type: 'danger', label: '登录过期' };
   if (acc.status === 'cooldown') return { type: 'warning', label: 'Cooldown 429' };
-  if (acc.status === 'expired') return { type: 'danger', label: 'Expired' };
   return { type: 'success', label: 'Active' };
 }
+
+const expiredAccounts = computed(() =>
+  accounts.value.filter((a) => a.status === 'auth_expired' || a.status === 'expired'),
+);
 
 // ---- 账号真实额度（ChatGPT=上游 rate_limits；谷歌=本地计数） ----
 const quotaData = reactive({});
