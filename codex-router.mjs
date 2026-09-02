@@ -308,8 +308,11 @@ try {
   // loadAll 已归一为「accountId -> 凭据」纯 map（含历史损坏文件兼容修复）
   const vaultAll = credentialsVault.loadAll();
   for (const row of dbListAccounts()) {
-    let metadata = {};
-    try { metadata = row.metadata ? JSON.parse(row.metadata) : {}; } catch { /* 容错 */ }
+    // dbListAccounts 已在 sanitizeAccountRow 内完成 metadata 解析与双重编码容错，
+    // 这里直接用对象——再 JSON.parse 会把对象容错成 {}（2026-09-01 账号元数据全丢事故）。
+    const metadata = (row.metadata && typeof row.metadata === 'object' && !Array.isArray(row.metadata))
+      ? row.metadata
+      : {};
     authManager.addAccount({
       id: row.id,
       provider: row.provider,
@@ -458,6 +461,7 @@ const adminHandler = createAdminHandler({
   targets: TARGETS,
   warnings: preparedConfig.warnings,
   startedAt: ROUTER_STARTED_AT,
+  log: (event) => flog(event),
   checkpointStore: goalCheckpoints,
   persistence: checkpointPersistence,
   tokenTracker,
