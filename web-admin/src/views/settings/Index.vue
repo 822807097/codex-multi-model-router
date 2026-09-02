@@ -341,6 +341,13 @@
             <el-option v-for="s in desktopSelectedModels" :key="s" :value="s" :label="s" />
           </el-select>
         </el-form-item>
+        <el-form-item>
+          <el-checkbox v-model="desktopApiKeyAuth">API-key 接入（官方额度耗尽也能用自定义模型）</el-checkbox>
+          <div class="text-xs text-secondary mt-1">
+            接入时自动生成一把桌面端专用 API Key 写入配置，桌面端识别为 LocalRouter、不再关联官方额度；
+            适合官方账号周/分钟额度常耗尽的场景。不勾选则复用官方登录态（额度耗尽可能被桌面端锁成 Luna）。
+          </div>
+        </el-form-item>
       </el-form>
       <template #footer>
         <el-button @click="desktopDialogOpen = false">取消</el-button>
@@ -848,6 +855,7 @@ const desktopRestarting = ref(false);
 const desktopState = reactive({ mode: '', defaultModel: '', models: [], routerBaseUrl: 'http://127.0.0.1:15730/v1' });
 const desktopSelectedModels = ref([]);
 const desktopDefaultModel = ref('');
+const desktopApiKeyAuth = ref(false);
 const desktopDialogOpen = ref(false);
 const desktopSearch = ref('');
 // 已加载 = models.desktop.json 里实际存在的模型（官方全量常驻，不计入）
@@ -916,6 +924,7 @@ async function applyDesktopRouter() {
     const res = await applyCodexDesktopRouter({
       slugs,
       defaultModel: desktopDefaultModel.value,
+      apiKeyAuth: desktopApiKeyAuth.value,
     });
     ElMessage.success(res.message || '已接入路由');
     desktopDialogOpen.value = false;
