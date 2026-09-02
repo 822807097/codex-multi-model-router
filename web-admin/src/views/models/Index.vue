@@ -50,7 +50,11 @@
         <el-button size="small" plain :loading="prefixPlatformSaving" @click="handlePrefixPlatform('remove')">
           移除前缀
         </el-button>
-        <el-button type="primary" size="small" @click="showAddModal = true">
+        <el-button size="small" plain @click="showGroupManage = true">
+          <el-icon class="mr-1"><Files /></el-icon>
+          分组管理
+        </el-button>
+        <el-button type="primary" size="small" @click="openAddModal">
           <el-icon class="mr-1"><Plus /></el-icon>
           添加自定义模型
         </el-button>
@@ -166,29 +170,77 @@
     </div>
     </AsyncContainer>
 
-    <!-- 添加模型弹窗 -->
-    <el-dialog v-model="showAddModal" title="添加模型到 Codex" :width="isMobile ? '92%' : '480px'" class="custom-dialog-pro">
+    <!-- 添加模型弹窗：选现有通道，或直接内联新建通道（API 地址 + 多 Key 自动轮换） -->
+    <el-dialog v-model="showAddModal" title="添加模型到 Codex" :width="isMobile ? '92%' : '560px'" class="custom-dialog-pro">
       <el-form :model="form" label-position="top">
         <el-form-item label="模型标识 (Slug)">
-          <el-input v-model="form.slug" placeholder="例如: deepseek-v4-flash, qwen3.8-max" />
+          <el-input v-model="form.slug" placeholder="例如: deepseek-v4-flash, qwen3.8-max" @input="syncNewChannelName" />
         </el-form-item>
         <el-form-item label="显示名称 (Display Name)">
-          <el-input v-model="form.displayName" placeholder="例如: DeepSeek-V4-Flash" />
+          <el-input v-model="form.displayName" placeholder="留空则与 Slug 相同" />
         </el-form-item>
         <el-form-item label="所属分组 (Group)">
           <el-select v-model="form.group" placeholder="选择分组，或直接输入新名字自建" filterable allow-create default-first-option>
             <el-option v-for="name in groupNames" :key="name" :label="name" :value="name" />
           </el-select>
-          <div class="text-xs text-secondary mt-1">输入不存在的名字即创建新分组，自定义完全自由</div>
+          <div class="text-xs text-secondary mt-1">输入不存在的名字回车即创建新分组（分组只影响本页展示，可在「分组管理」里重命名/删除）</div>
         </el-form-item>
         <el-form-item label="路由目标 (Target)">
-          <el-input v-model="form.target" placeholder="例如: deepseek-chat, bailian, openai..." />
+          <el-select v-model="form.targetMode" filterable>
+            <el-option label="➕ 新建通道（填 API 地址和密钥）" value="__create_new__" />
+            <el-option v-for="t in addTargetChoices" :key="t.name" :label="`${t.name}${t.host ? ` (${t.host})` : ''}`" :value="t.name" />
+          </el-select>
+          <div class="text-xs text-secondary mt-1">不用再单独去系统配置建通道——这里一步到位；已有通道也可直接选</div>
         </el-form-item>
+        <template v-if="form.targetMode === '__create_new__'">
+          <el-form-item label="通道名称">
+            <el-input v-model="newChannel.name" placeholder="默认与模型标识相同" class="font-mono" />
+          </el-form-item>
+          <el-form-item label="API 地址 (Host)" required>
+            <el-input v-model="newChannel.host" placeholder="例如: api.deepseek.com, api.moonshot.cn" class="font-mono" />
+          </el-form-item>
+          <el-form-item label="路径前缀">
+            <el-input v-model="newChannel.prefix" placeholder="/v1（绝大多数厂商）" class="font-mono" />
+          </el-form-item>
+          <el-form-item label="接口格式">
+            <el-select v-model="newChannel.wireApi">
+              <el-option label="chat（OpenAI 通用格式，绝大多数厂商支持）" value="chat" />
+              <el-option label="responses（Codex 官方格式）" value="responses" />
+            </el-select>
+          </el-form-item>
+          <el-form-item label="API 密钥（每行一个，自动无感轮换）">
+            <el-input
+              v-model="newChannel.keysText"
+              type="textarea"
+              :rows="3"
+              class="font-mono"
+              placeholder="每行一个，两种写法可混填：
+sk-xxxxxxxx（直接粘贴 Key，自动进密钥池）
+DEEPSEEK_API_KEY（环境变量名，路由运行时读取）"
+            />
+            <div class="text-xs text-secondary mt-1">开多个账号就有多把 Key：某一把没额度自动无感切换下一把；只填环境变量名则不落盘、更安全</div>
+          </el-form-item>
+        </template>
+        <div v-else-if="form.targetMode" class="text-xs text-secondary mb-2">
+          保存时若通道「{{ form.targetMode }}」的匹配规则不包含此模型名，会自动追加 ^模型标识$ 使路由生效
+        </div>
       </el-form>
       <template #footer>
         <el-button @click="showAddModal = false">取消</el-button>
         <el-button type="primary" @click="handleAddModel">保存模型</el-button>
       </template>
+    </el-dialog>
+
+    <!-- 分组管理：重命名/删除自定义分组（预置分组按规则自动生成，不在此列） -->
+    <el-dialog v-model="showGroupManage" title="分组管理" :width="isMobile ? '92%' : '480px'" class="custom-dialog-pro">
+      <div class="text-xs text-secondary mb-3">自定义分组来自你给模型设置的「所属分组」。重命名会同步更新所有归属模型；删除后模型回到自动分组（模型本身不受影响）。</div>
+      <div v-for="g in manageableGroups" :key="g.name" class="flex items-center gap-2 mb-2">
+        <el-input v-model="g.editName" size="small" class="font-mono" maxlength="64" />
+        <span class="text-xs text-secondary whitespace-nowrap">{{ g.count }} 个模型</span>
+        <el-button size="small" type="primary" plain :disabled="!g.editName.trim() || g.editName.trim() === g.name" @click="renameGroup(g)">重命名</el-button>
+        <el-button size="small" type="danger" plain @click="deleteGroup(g)">删除</el-button>
+      </div>
+      <el-empty v-if="manageableGroups.length === 0" description="还没有自定义分组——添加/编辑模型时输入新分组名即可创建" :image-size="60" />
     </el-dialog>
 
     <!-- 自动拉取模型弹窗：选通道 → 拉取上游模型列表 → 勾选批量写入 -->
@@ -399,14 +451,15 @@ import { ref, computed, onMounted, onUnmounted } from 'vue';
 import {
   testModelLatency,
   getModels,
-  createModel,
+  getModelRouting,
+  commitModelOperations,
   createModels,
   fetchTargetModels,
   updateModel,
   deleteModel,
 } from '../../api/models.js';
 import { getSystemConfig } from '../../api/system.js';
-import { getCodexDefaultModel, setCodexDefaultModel } from '../../api/channelKeys.js';
+import { getCodexDefaultModel, setCodexDefaultModel, createChannelKey } from '../../api/channelKeys.js';
 import { prefixModelPlatform } from '../../api/models.js';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import AsyncContainer from '../../components/AsyncContainer.vue';
@@ -429,7 +482,46 @@ const codexDefaultModel = ref('');
 const showAddModal = ref(false);
 const testingSlug = ref(null);
 const latencies = ref({});
-const form = ref({ slug: '', displayName: '', group: '国内直连 / 重度代码主力', target: 'deepseek-chat' });
+const form = ref({ slug: '', displayName: '', group: '国内直连 / 重度代码主力', targetMode: '__create_new__' });
+// 内联新建通道（添加模型一步到位，不用单独去系统配置建通道）
+const newChannel = ref({ name: '', host: '', prefix: '/v1', wireApi: 'chat', keysText: '' });
+const addTargetChoices = ref([]); // 现有通道下拉（来自 /model-routing，含 targetRef 供匹配扩展）
+const showGroupManage = ref(false);
+
+function syncNewChannelName() {
+  // 通道名称默认跟随模型标识（用户改过就不覆盖）
+  if (!newChannel.value.nameTouched) newChannel.value.name = form.value.slug?.trim() || '';
+}
+
+function openAddModal() {
+  form.value = { slug: '', displayName: '', group: form.value.group, targetMode: '__create_new__' };
+  newChannel.value = { name: '', host: '', prefix: '/v1', wireApi: 'chat', keysText: '', nameTouched: false };
+  showAddModal.value = true;
+  if (addTargetChoices.value.length === 0) {
+    getModelRouting({ skipGlobalError: true }).then((res) => {
+      const list = Array.isArray(res?.targets) ? res.targets : [];
+      addTargetChoices.value = list
+        .filter((t) => t?.name && t.useOpenAiAuth !== true)
+        .map((t) => ({ name: t.name, host: t.host || '', match: typeof t.match === 'string' ? t.match : '', targetRef: t.targetRef || null }));
+    }).catch(() => { /* 下拉留空也能走新建通道 */ });
+  }
+}
+
+function parseKeyLines(text) {
+  return String(text || '')
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .map((line) => ({ line, kind: /^[A-Za-z_][A-Za-z0-9_]{0,63}$/.test(line) ? 'env_ref' : 'plaintext' }));
+}
+
+function escapeRegex(value) {
+  return String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function matchCovers(match, slug) {
+  try { return new RegExp(match).test(slug); } catch { return false; }
+}
 
 // ---- 自动拉取模型状态 ----
 const showFetchModal = ref(false);
@@ -558,6 +650,42 @@ function setCustomGroup(slug, groupName) {
   if (groupName && groupName.trim()) customGroupMap.value[slug] = groupName.trim();
   else delete customGroupMap.value[slug];
   persistGroupMap();
+}
+
+// ---- 分组管理：重命名/删除自定义分组（预置分组按规则生成，不在此管理范围） ----
+const manageableGroups = computed(() => {
+  const counts = new Map();
+  for (const m of allModels.value) {
+    const g = customGroupMap.value[m.slug];
+    if (g) counts.set(g, (counts.get(g) || 0) + 1);
+  }
+  return [...counts.entries()].map(([name, count]) => ({ name, count, editName: name }));
+});
+
+function renameGroup(group) {
+  const nextName = group.editName.trim();
+  if (!nextName || nextName === group.name) return;
+  for (const m of allModels.value) {
+    if (customGroupMap.value[m.slug] === group.name) customGroupMap.value[m.slug] = nextName;
+  }
+  persistGroupMap();
+  group.name = nextName;
+  group.editName = nextName;
+  ElMessage.success(`分组已重命名为「${nextName}」`);
+}
+
+function deleteGroup(group) {
+  ElMessageBox.confirm(
+    `删除分组「${group.name}」？其中 ${group.count} 个模型将回到自动分组（模型本身不受影响）。`,
+    '删除分组',
+    { confirmButtonText: '删除', cancelButtonText: '取消', type: 'warning' },
+  ).then(() => {
+    for (const m of allModels.value) {
+      if (customGroupMap.value[m.slug] === group.name) delete customGroupMap.value[m.slug];
+    }
+    persistGroupMap();
+    ElMessage.success('分组已删除');
+  }).catch(() => { /* 用户取消 */ });
 }
 const defaultGroupBySlug = new Map(DEFAULT_GROUPS.flatMap((g) => g.slugs.map((slug) => [slug, g.name])));
 const defaultDotByName = new Map(DEFAULT_GROUPS.map((g) => [g.name, g.dotClass]));
@@ -789,21 +917,80 @@ async function handleDeleteModel(m) {
 }
 
 async function handleAddModel() {
-  if (!form.value.slug) {
+  const slug = form.value.slug?.trim();
+  if (!slug) {
     ElMessage.warning('请填写模型 Slug');
     return;
   }
-  try {
-    const saved = await createModel({
-      slug: form.value.slug,
-      display_name: form.value.displayName || form.value.slug,
-    });
-    setCustomGroup(form.value.slug, form.value.group);
-    if (saved?.clientRestartRequired) {
-      ElMessage.success('模型已写入 models.json；重启路由与 Codex 后生效');
-    } else {
-      ElMessage.success('模型添加成功并已同步！');
+  const operations = [];
+  let keyTargetName = '';
+  // 模型先入目录，通道再绑定——assertDedicatedTarget 要求精确 match 命中已存在的模型
+  operations.push({
+    kind: 'model.create',
+    model: { slug, display_name: form.value.displayName?.trim() || slug },
+  });
+  if (form.value.targetMode === '__create_new__') {
+    const ch = newChannel.value;
+    const chName = (ch.name || '').trim() || slug;
+    if (!ch.host?.trim()) {
+      ElMessage.warning('请填写 API 地址（Host）');
+      return;
     }
+    keyTargetName = chName;
+    operations.push({
+      kind: 'target.create',
+      target: {
+        name: chName,
+        // 匹配规则绑定到本模型 slug：这就是「模型 ↔ 通道」的真实绑定方式
+        match: `^${escapeRegex(slug)}$`,
+        host: ch.host.trim(),
+        prefix: (ch.prefix || '').trim() || '/v1',
+        protocol: 'https',
+        wireApi: ch.wireApi || 'chat',
+      },
+    });
+  } else if (form.value.targetMode) {
+    const chosen = addTargetChoices.value.find((t) => t.name === form.value.targetMode);
+    if (chosen && chosen.match && !matchCovers(chosen.match, slug)) {
+      try {
+        await ElMessageBox.confirm(
+          `通道「${chosen.name}」的匹配规则（${chosen.match}）不包含模型名 ${slug}。将自动追加 ^${slug}$ 使路由生效，是否继续？`,
+          '扩展通道匹配规则',
+          { confirmButtonText: '追加并保存', cancelButtonText: '取消', type: 'warning' },
+        );
+      } catch { return; }
+      if (chosen.targetRef) {
+        operations.push({
+          kind: 'target.update',
+          targetRef: chosen.targetRef,
+          patch: { match: `${chosen.match}|^${escapeRegex(slug)}$` },
+        });
+      }
+    }
+  }
+  try {
+    await commitModelOperations(operations);
+    // 明文/环境变量密钥逐把进通道密钥池（priority=行序，先填的先用）
+    const keys = form.value.targetMode === '__create_new__' ? parseKeyLines(newChannel.value.keysText) : [];
+    let keyOk = 0;
+    for (let i = 0; i < keys.length; i += 1) {
+      try {
+        await createChannelKey({
+          target: keyTargetName,
+          kind: keys[i].kind,
+          label: `初始密钥 ${i + 1}`,
+          key: keys[i].line,
+          priority: i,
+          skipVerify: true,
+        });
+        keyOk += 1;
+      } catch { /* 单把失败不阻断整体，用户可在密钥池里补 */ }
+    }
+    setCustomGroup(slug, form.value.group);
+    const parts = ['模型已添加'];
+    if (form.value.targetMode === '__create_new__') parts.push('新通道已创建');
+    if (keyOk > 0) parts.push(`${keyOk} 把密钥已入池轮换`);
+    ElMessage.success(`${parts.join('，')}；重启路由与 Codex 后完全生效`);
     showAddModal.value = false;
     await loadModels();
   } catch { /* 错误提示由请求拦截器统一处理 */ }
