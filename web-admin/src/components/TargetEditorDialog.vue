@@ -10,8 +10,8 @@
     <el-form :model="form" label-position="top" class="target-form">
       <div class="grid grid-cols-1 md:grid-cols-2 gap-x-4">
         <el-form-item label="通道名称" required>
-          <el-input v-model="form.name" :disabled="editing" placeholder="例如：我的 DeepSeek" class="font-mono" />
-          <div class="text-xs text-secondary mt-1">给自己起的名字，方便辨认（显示在通道列表里）</div>
+          <el-input v-model="form.name" placeholder="例如：我的 DeepSeek" class="font-mono" />
+          <div class="text-xs text-secondary mt-1">给自己起的名字，方便辨认（显示在通道列表里）；改名会同步迁移该通道的密钥池密钥</div>
         </el-form-item>
         <el-form-item label="匹配哪些模型" required>
           <el-input v-model="form.match" placeholder="例如：^deepseek- 或 ^glm-" class="font-mono" />
