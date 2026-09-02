@@ -190,6 +190,9 @@ The requested model name isn't in the catalog. Check it exists on the model-grou
 **Q: Added a model / changed config but nothing seems to change?**
 You edited the disk config; the in-memory router needs a restart. Use the header's "graceful restart", or run `.\scripts\restart-router.ps1` / `bash scripts/restart-router.sh`.
 
+**Q: After the official weekly/per-minute quota is exhausted, the desktop only shows Luna and routed custom models become unselectable?**
+This is ChatGPT desktop's official behavior: when the official account quota runs out, the desktop locks the model picker to a downgrade tier. In the "connect to router" dialog, check **"API-key mode (keep using custom models when official quota is exhausted)"** and re-apply: the router auto-generates a dedicated desktop key into the config, the desktop identifies "LocalRouter" and stops reading official quota — custom models (deepseek / gemini / claude …) stay selectable and continue your tasks even at zero official quota. Unchecked = reuse the official login (default; simpler when quota is plentiful).
+
 **Q: Desktop app won't open / config_load error?**
 Check the desktop log first: `unknown variant` / `missing field` = a `models.json` field problem; `usage limit` = a quota problem. This project auto-fills all required fields, so the former shouldn't happen; if it ever does, re-save any model on the model-groups page to trigger the auto-fix.
 
