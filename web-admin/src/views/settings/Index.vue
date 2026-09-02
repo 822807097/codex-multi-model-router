@@ -208,9 +208,14 @@
       <template #header>
         <div class="flex items-center justify-between">
           <div class="font-bold text-primary text-sm">已启用的路由目标通道 (Targets)</div>
-          <el-button size="small" type="primary" plain @click="openTargetEditor(null)">
-            <el-icon class="mr-1"><Plus /></el-icon>添加通道
-          </el-button>
+          <div class="flex items-center gap-2">
+            <el-button size="small" plain :loading="cleanupSaving" @click="handleCleanupUnusedGoogle">
+              <el-icon class="mr-1"><Delete /></el-icon>清理未使用的谷歌通道
+            </el-button>
+            <el-button size="small" type="primary" plain @click="openTargetEditor(null)">
+              <el-icon class="mr-1"><Plus /></el-icon>添加通道
+            </el-button>
+          </div>
         </div>
       </template>
       <div class="overflow-x-auto">
@@ -380,6 +385,7 @@ const targets = ref([
 const showTargetEditor = ref(false);
 const editingTarget = ref(null);
 const testingTarget = ref('');
+const cleanupSaving = ref(false);
 const testResult = reactive({ target: '', text: '', ok: false });
 const configRevision = ref('');
 const catalogRevision = ref('');
@@ -500,18 +506,95 @@ async function handleTestTarget(row) {
 }
 
 async function handleDeleteTarget(row) {
+  // 拓扑预检：哪些模型仅由该通道路由——连同它们一起删，否则被
+  // model_route_missing 硬错误拦下（防「从模型脚下抽走通道」的保护对
+  // 连带删除场景不适用，2026-09-02 用户谷歌垃圾通道批量清理实锤）。
+  let orphanModels = [];
+  try {
+    const routing = await getModelRouting({ skipGlobalError: true });
+    const targets = Array.isArray(routing?.targets) ? routing.targets : [];
+    const ref = row.targetRef || targets.find((t) => t.name === row.name)?.targetRef;
+    const otherRefs = ref
+      ? new Set(targets.filter((t) => t.targetRef !== ref).map((t) => t.targetRef))
+      : null;
+    if (ref && otherRefs) {
+      orphanModels = (Array.isArray(routing?.bindings) ? routing.bindings : [])
+        .filter((b) => Array.isArray(b.targetRefs)
+          && b.targetRefs.includes(ref)
+          && b.targetRefs.every((r) => !otherRefs.has(r)))
+        .map((b) => b.slug);
+    }
+  } catch { /* 预检失败不阻断，走单删让后端报错兜底 */ }
+  const affected = orphanModels.length
+    ? `\n\n注意：${orphanModels.length} 个模型仅由该通道路由，将一并删除：${orphanModels.slice(0, 6).join('、')}${orphanModels.length > 6 ? ` 等 ${orphanModels.length} 个` : ''}`
+    : '';
   try {
     await ElMessageBox.confirm(
-      `确定删除通道「${row.name}」吗？删除后路由不再向该通道转发请求（需重启生效）。`,
+      `确定删除通道「${row.name}」吗？删除后路由不再向该通道转发请求（需重启生效）。${affected}`,
       '删除通道',
       { confirmButtonText: '删除', cancelButtonText: '取消', type: 'warning' },
     );
   } catch { return; }
   try {
-    await commitModelOperations([{ kind: 'target.delete', targetRef: row.targetRef }]);
-    ElMessage.success('通道已删除；重启路由后生效');
+    const operations = [{ kind: 'target.delete', targetRef: row.targetRef }];
+    for (const slug of orphanModels) operations.push({ kind: 'model.delete', slug });
+    await commitModelOperations(operations);
+    ElMessage.success(orphanModels.length
+      ? `通道已删除，连带删除 ${orphanModels.length} 个仅此路由的模型；重启路由后生效`
+      : '通道已删除；重启路由后生效');
     await loadConfig();
   } catch { /* 错误提示由请求拦截器统一处理（如通道仍被模型绑定） */ }
+}
+
+async function handleCleanupUnusedGoogle() {
+  if (cleanupSaving.value) return;
+  cleanupSaving.value = true;
+  try {
+    const routing = await getModelRouting({ skipGlobalError: true });
+    const desktop = await getCodexDesktopState({ skipGlobalError: true }).catch(() => ({ models: [] }));
+    const loadedSet = new Set(
+      (desktop.models || []).filter((m) => m.loaded && !m.official).map((m) => m.slug),
+    );
+    const targetsList = Array.isArray(routing?.targets) ? routing.targets : [];
+    const bindings = Array.isArray(routing?.bindings) ? routing.bindings : [];
+    const google = targetsList.filter((t) => t.platform === 'google');
+    const modelsOf = (ref) => bindings.filter((b) => (b.targetRefs || []).includes(ref)).map((b) => b.slug);
+    // 待删通道：绑定模型里没有一个在「已加载」集（用户当前不用的）
+    const removeRefs = new Set();
+    for (const t of google) {
+      const models = modelsOf(t.targetRef);
+      if (models.some((s) => loadedSet.has(s))) continue;
+      removeRefs.add(t.targetRef);
+    }
+    if (removeRefs.size === 0) {
+      ElMessage.info('没有发现未使用的谷歌通道（全部当前都在用或已被清理）');
+      return;
+    }
+    // 孤儿模型：其所有匹配通道都是待删通道（其他通道匹配不到）
+    const orphanModels = [...new Set(
+      bindings
+        .filter((b) => (b.targetRefs || []).length > 0
+          && b.targetRefs.every((ref) => removeRefs.has(ref)))
+        .map((b) => b.slug),
+    )];
+    const removedTargets = targetsList.filter((t) => removeRefs.has(t.targetRef)).map((t) => t.name);
+    try {
+      await ElMessageBox.confirm(
+        `将删除 ${removedTargets.length} 个未使用的谷歌通道${orphanModels.length ? `，并连带删除 ${orphanModels.length} 个仅由这些通道路由的模型（${orphanModels.slice(0, 8).join('、')}${orphanModels.length > 8 ? ' 等' : ''}）` : ''}。`
+        + '\n\n保留标准：通道绑定的模型里有你在用的（已加载）。\n删除后重启路由生效；订阅页「一键接入」可随时重新加入。',
+        '清理未使用的谷歌通道',
+        { confirmButtonText: '删除', cancelButtonText: '取消', type: 'warning' },
+      );
+    } catch { return; }
+    const operations = [];
+    for (const ref of removeRefs) operations.push({ kind: 'target.delete', targetRef: ref });
+    for (const slug of orphanModels) operations.push({ kind: 'model.delete', slug });
+    await commitModelOperations(operations);
+    ElMessage.success(`已删除 ${removedTargets.length} 个谷歌通道${orphanModels.length ? ` + ${orphanModels.length} 个模型` : ''}；重启路由后生效`);
+    await loadConfig();
+  } catch { /* 错误提示由请求拦截器统一处理 */ } finally {
+    cleanupSaving.value = false;
+  }
 }
 
 const visionEndpoints = ref([]);
