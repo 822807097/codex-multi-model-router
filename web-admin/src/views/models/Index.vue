@@ -564,7 +564,7 @@ my-glm=glm-5.3-flash"
 </template>
 
 <script setup>
-import { ref, computed, onMounted, onUnmounted } from 'vue';
+import { ref, reactive, computed, onMounted, onUnmounted } from 'vue';
 import { useRoute } from 'vue-router';
 import {
   testModelLatency,
