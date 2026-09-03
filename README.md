@@ -40,7 +40,7 @@
 ```
 Codex 桌面端/任意客户端 ──▶ 127.0.0.1:15730（本项目）
    ├─ 官方通道（gpt-*/codex-*）──────▶ chatgpt.com（复用桌面端登录态）
-   ├─ DeepSeek / Qwen / GLM / Kimi ──▶ 各厂商 OpenAI 兼容 API
+   ├─ DeepSeek / Qwen / GLM / Kimi ──▶ 各厂商 OpenAI 兼容 API（GLM 支持 Coding Plan 订阅额度：同一把 key 走 /api/coding/paas/v4 即计费订阅套餐，务必给订阅通道配密钥，否则会兜底到按量通道被「余额不足」429）
    ├─ Claude / Gemini / ChatGPT 订阅 ─▶ 用你的会员账号额度（多账号自动轮换）
    ├─ Cursor Pro 订阅 ────────────────▶ 通过内置网关多账号额度池
    └─ …… 任意 OpenAI 兼容接口

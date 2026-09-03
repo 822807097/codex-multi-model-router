@@ -116,7 +116,7 @@
       "wireApi": "chat"
     },
     {
-      "_comment": "智谱 GLM Coding Plan 订阅通道（周额度，GLM-5.3-Flash 等多模态支持图片）：密钥设环境变量 ZHIPU_CODING_KEY 后重启路由生效；国内直连。自定义 slug 用 zhipu- 前缀（官方内置 GLM 模型按 slug 片段识别，含 GLM-5.3-Flash 片段的 slug 会被直连官方而 400）",
+      "_comment": "智谱 GLM Coding Plan 订阅通道（周额度+5小时积分，GLM-5.3-Flash 等多模态支持图片；窗口实测 1M）：密钥设环境变量 ZHIPU_CODING_KEY 或在「通道密钥池」录入 target=zhipu-coding 后重启生效——开放平台同一把 key 走本通道（/api/coding/paas/v4）即计费到订阅套餐，走 /api/paas/v4 则计费到按量余额，务必保证本通道有密钥，否则请求会静默兜底到按量通道，余额不足时 429「余额不足或无可用资源包」；国内直连。自定义 slug 用 zhipu- 前缀（官方内置 GLM 模型按 slug 片段识别，含 GLM-5.3-Flash 片段的 slug 会被直连官方而 400）",
       "match": "^glm|^GLM|^zhipu-",
       "name": "zhipu-coding",
       "platform": "zhipu",

@@ -38,7 +38,7 @@ The Codex desktop app allows "only one model provider at a time". This project p
 ```
 Codex desktop / any client ──▶ 127.0.0.1:15730 (this project)
    ├─ Official channel (gpt-*/codex-*) ────▶ chatgpt.com (reuses desktop login)
-   ├─ DeepSeek / Qwen / GLM / Kimi ───────▶ vendor OpenAI-compatible APIs
+   ├─ DeepSeek / Qwen / GLM / Kimi ───────▶ vendor OpenAI-compatible APIs (GLM supports the Coding Plan subscription: the same key billed to the plan via /api/coding/paas/v4 - always configure a key on the subscription channel, otherwise requests fall back to the pay-as-you-go channel and 429 with "insufficient balance")
    ├─ Claude / Gemini / ChatGPT subs ─────▶ your membership quota (multi-account rotation)
    ├─ Cursor Pro subscription ────────────▶ built-in gateway, multi-account pool
    └─ …… any OpenAI-compatible endpoint
