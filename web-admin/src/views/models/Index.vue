@@ -428,15 +428,22 @@ my-glm=glm-5.3-flash"
           </el-select>
         </el-form-item>
         <el-form-item label="上下文窗口 (Tokens)">
-          <el-input-number
+          <el-select
             v-model="editForm.context_window"
-            :min="1024"
-            :max="2000000"
-            :step="1000"
+            filterable
+            allow-create
+            default-first-option
+            placeholder="选择常用档位，或直接输入数字"
             class="w-full"
-            controls-position="right"
-          />
-          <div class="text-xs text-secondary mt-1">例如 272000 ≈ 272k，1000000 ≈ 1M</div>
+          >
+            <el-option
+              v-for="opt in CONTEXT_WINDOW_PRESETS"
+              :key="String(opt.value)"
+              :label="opt.label"
+              :value="opt.value"
+            />
+          </el-select>
+          <div class="text-xs text-secondary mt-1">下拉选 128k / 272k / 1M 等常用档位；也可直接输入数字或 1M、272k 这类简写，保存时自动换算</div>
         </el-form-item>
         <el-form-item label="输入模态">
           <el-checkbox :model-value="true" disabled>文本 (text)</el-checkbox>
@@ -656,6 +663,31 @@ const fetchIndeterminate = computed(() => (
 const showEditModal = ref(false);
 const editSaving = ref(false);
 const editingSlug = ref('');
+
+// 上下文窗口快捷档位：下拉直选；allow-create 也支持手输数字或 1M/272k 简写
+const CONTEXT_WINDOW_PRESETS = [
+  { label: '128k（128,000）', value: 131072 },
+  { label: '200k（200,000）', value: 200000 },
+  { label: '256k（256,000）', value: 262144 },
+  { label: '272k（272,000）', value: 278528 },
+  { label: '400k（400,000）', value: 400000 },
+  { label: '1M（1,000,000）', value: 1000000 },
+  { label: '2M（2,000,000）', value: 2000000 },
+];
+
+// 把下拉值（数字）或手输文本（1000000 / 1M / 272k / 272000）换算成 token 数字
+function parseContextTokens(value) {
+  if (typeof value === 'number') return Number.isFinite(value) && value > 0 ? value : null;
+  const text = String(value ?? '').trim().toUpperCase().replace(/[,\s_]/g, '');
+  if (!text) return null;
+  const match = /^([0-9.]+)([KMB])?$/.exec(text);
+  if (!match) return null;
+  const base = Number(match[1]);
+  if (!Number.isFinite(base) || base <= 0) return null;
+  const unit = { K: 1000, M: 1_000_000, B: 1_000_000_000 }[match[2]] || 1;
+  const tokens = Math.round(base * unit);
+  return tokens > 0 ? tokens : null;
+}
 const editForm = ref({
   slug: '',
   display_name: '',
@@ -1003,7 +1035,7 @@ async function handleSaveEdit() {
     patch.default_reasoning_level = editForm.value.default_reasoning_level;
   }
   if (Number(editForm.value.context_window) > 0) {
-    patch.context_window = Number(editForm.value.context_window);
+    patch.context_window = parseContextTokens(editForm.value.context_window);
   }
   editSaving.value = true;
   try {
