@@ -129,7 +129,8 @@
       "modelMap": {
         "zhipu-flash-plan": "glm-5.3-flash",
         "zhipu-plan": "glm-5.3"
-      }
+      },
+      "contextWindow": 1000000
     },
     {
       "_comment": "智谱开放平台按量 API 兜底通道：Coding Plan 密钥缺失或冷却时自动切换到这里；密钥设环境变量 ZHIPU_API_KEY（GLM-4/5 系均支持视觉）",
@@ -145,7 +146,8 @@
       "modelMap": {
         "zhipu-flash-plan": "glm-5.3-flash",
         "zhipu-plan": "glm-5.3"
-      }
+      },
+      "contextWindow": 1000000
     },
     {
       "name": "google-gemini-3.7-flash-high",
@@ -204,9 +206,9 @@
       "imageTokens": 2048
     },
     {
-      "_comment": "智谱 GLM 全系按 128K 窗口预算（预设推荐参数，防超限）",
+      "_comment": "智谱 GLM 全系实测 1M 窗口（2026-09-03 96 万字符探测通过）；autoCompact 由 modelContext 全局 400K 收口",
       "match": "^glm|^GLM|^zhipu-",
-      "contextWindow": 131072,
+      "contextWindow": 1000000,
       "maxOutputTokens": 8192,
       "safetyRatio": 0.9,
       "protocolReserveTokens": 1024,
@@ -221,7 +223,9 @@
     "slugs": [
       "deepseek-v4-flash",
       "deepseek-v4-pro",
-      "qwen3.8-max"
+      "qwen3.8-max",
+      "zhipu-flash-plan",
+      "zhipu-plan"
     ],
     "overrides": [
       {
