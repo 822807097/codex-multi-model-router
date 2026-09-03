@@ -1,1 +1,0 @@
-import{s as t}from"./index-BcIdI3qq.js";function s(e={}){return t({url:"/keys",method:"get",...e})}function o(e){return t({url:"/keys/create",method:"post",data:e})}function n(e){return t({url:"/keys/revoke",method:"post",data:{id:e}})}function u(e){return t({url:"/keys/sync-codex",method:"post",data:{apiKey:e}})}export{o as c,s as l,n as r,u as s};
