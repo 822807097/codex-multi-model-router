@@ -203,81 +203,6 @@
       </div>
     </el-card>
 
-    <!-- 路由 Targets 清单（动态管理：添加/编辑/删除自定义厂商通道） -->
-    <el-card shadow="never" class="setting-card">
-      <template #header>
-        <div class="flex items-center justify-between">
-          <div class="font-bold text-primary text-sm">模型接口配置（高级）</div>
-          <div class="flex items-center gap-2">
-            <el-button size="small" type="primary" :loading="cleanupSaving" @click="handleCleanupUnusedGoogle">
-              <el-icon class="mr-1"><Delete /></el-icon>清理未使用的谷歌通道
-            </el-button>
-            <el-button size="small" type="primary" @click="openAddModelDialog">
-              <el-icon class="mr-1"><Plus /></el-icon>添加模型到 Codex
-            </el-button>
-            <el-button size="small" plain @click="openTargetEditor(null)">
-              <el-icon class="mr-1"><Plus /></el-icon>直接配置接口（高级）
-            </el-button>
-          </div>
-        </div>
-      </template>
-      <div class="overflow-x-auto">
-      <el-table :data="targets" style="width: 100%" class="custom-table">
-        <el-table-column prop="name" label="目标名称" width="180">
-          <template #default="{ row }">
-            <span class="font-bold text-primary font-mono">{{ row.name }}</span>
-          </template>
-        </el-table-column>
-        <el-table-column prop="platform" label="平台类型" width="140" />
-        <el-table-column prop="host" label="上游 Host" min-width="220" />
-        <el-table-column label="密钥来源" width="150">
-          <template #default="{ row }">
-            <el-tag
-              v-if="poolKeyCounts[row.name] > 0"
-              type="success"
-              size="small"
-              effect="plain"
-            >
-              密钥池（{{ poolKeyCounts[row.name] }} 把）
-            </el-tag>
-            <el-tag
-              v-else-if="row.envKey"
-              type="info"
-              size="small"
-              effect="plain"
-            >
-              环境变量 {{ row.envKey }}
-            </el-tag>
-            <el-tag v-else type="warning" size="small" effect="plain">未配置</el-tag>
-          </template>
-        </el-table-column>
-        <el-table-column prop="proxy" label="代理" width="180">
-          <template #default="{ row }">
-            <el-tooltip v-if="row.proxyUrl" :content="`走 ${row.proxyUrl}（协议由地址决定）`" placement="top">
-              <el-tag type="warning" size="small" class="font-mono">{{ row.proxyUrl }}</el-tag>
-            </el-tooltip>
-            <el-tag v-else-if="row.proxy" type="warning" size="small">全局代理</el-tag>
-            <el-tag v-else type="success" size="small">直连</el-tag>
-          </template>
-        </el-table-column>
-        <el-table-column label="操作" width="200" fixed="right">
-          <template #default="{ row }">
-            <el-button
-              size="small"
-              text
-              type="primary"
-              :loading="testingTarget === row.name"
-              @click="handleTestTarget(row)"
-            >
-              测试
-            </el-button>
-            <el-button size="small" text type="primary" @click="openTargetEditor(row)">编辑</el-button>
-            <el-button size="small" text type="danger" @click="handleDeleteTarget(row)">删除</el-button>
-          </template>
-        </el-table-column>
-      </el-table>
-      </div>
-    </el-card>
     </AsyncContainer>
 
     <!-- Codex 桌面端接入：一键恢复官方直连 / 一键接入路由 + 模型动态加载 -->
@@ -360,62 +285,20 @@
         <el-button type="primary" :loading="desktopSaving" @click="applyDesktopRouter">应用并接入路由</el-button>
       </template>
     </el-dialog>
-
-    <!-- 通道编辑弹窗（自定义厂商动态管理） -->
-    <TargetEditorDialog
-      v-model="showTargetEditor"
-      :editing="editingTarget"
-      :config-revision="configRevision"
-      :catalog-revision="catalogRevision"
-      @saved="loadConfig"
-    />
   </div>
 </template>
 
 <script setup>
 import { ref, reactive, computed, onMounted } from 'vue';
-import { useRouter } from 'vue-router';
 import {
   getSystemConfig, saveSystemConfig, testVisionRelay, getCursorGatewayStatus, listCursorGatewayAccounts, addCursorGatewayAccount, removeCursorGatewayAccount, restartCursorGateway, startCursorGateway, listCursorGatewayModels, restartCodexDesktopApp, syncCodexSessionProviders, getCodexDesktopState, restoreCodexDesktopOfficial, applyCodexDesktopRouter,
 } from '../../api/system.js';
-import { listChannelKeys } from '../../api/channelKeys.js';
-import { getModelRouting, commitModelOperations, testTargetConnection } from '../../api/models.js';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import AsyncContainer from '../../components/AsyncContainer.vue';
-import TargetEditorDialog from '../../components/TargetEditorDialog.vue';
 import ProxyConfigEditor from '../../components/ProxyConfigEditor.vue';
 
 const loading = ref(true);
-const router = useRouter();
-function openAddModelDialog() {
-  // 一次表单添加「模型 + 通道 + 分组 + 多 Key」：跳转到模型页并自动打开弹窗
-  router.push({ path: '/models', query: { add: '1' } });
-}
 const loadError = ref('');
-// 通道密钥池条目数（target → 池内 key 数），供「密钥来源」列展示
-const poolKeyCounts = ref({});
-
-// 预置展示；onMounted 后用 /_admin/api/config 的脱敏真实配置覆盖。
-const targets = ref([
-  { name: 'openai', platform: 'openai', host: 'chatgpt.com', proxy: true },
-  { name: 'deepseek-chat', platform: 'deepseek', host: 'api.deepseek.com', proxy: false },
-  { name: 'bailian', platform: 'dashscope', host: 'dashscope.aliyuncs.com', proxy: false },
-  { name: 'opencode-go-chat', platform: 'openai', host: 'opencode.ai', proxy: false },
-]);
-// ---- 通道动态管理（自定义厂商：可编辑 API 地址/协议/匹配，可增删） ----
-const showTargetEditor = ref(false);
-const editingTarget = ref(null);
-const testingTarget = ref('');
-const cleanupSaving = ref(false);
-const testResult = reactive({ target: '', text: '', ok: false });
-const configRevision = ref('');
-const catalogRevision = ref('');
-
-function openTargetEditor(row) {
-  editingTarget.value = row || null;
-  showTargetEditor.value = true;
-}
-
 function serializeVisionEndpoint(ep) {
   const result = {
     model: ep.model?.trim() || '',
@@ -495,129 +378,6 @@ async function handleVisionSave() {
     await loadConfig();
   } catch { /* 错误提示由请求拦截器统一处理 */ } finally {
     visionSaving.value = false;
-  }
-}
-
-// 用已保存配置真实测试连通性（走目标级/全局代理）
-async function handleTestTarget(row) {
-  testingTarget.value = row.name;
-  testResult.target = row.name;
-  try {
-    const res = await testTargetConnection({ targetName: row.name });
-    if (res?.ok && res.authFailed) {
-      testResult.ok = true;
-      testResult.text = `网络连通（${res.latencyMs}ms），但${res.error}`;
-      ElMessage.warning(testResult.text);
-    } else if (res?.ok) {
-      testResult.ok = true;
-      testResult.text = `连接正常：${res.latencyMs}ms，上游 ${res.modelCount} 个模型${res.proxy !== '直连' ? ` · ${res.proxy}` : ''}`;
-      ElMessage.success(testResult.text);
-    } else {
-      testResult.ok = false;
-      testResult.text = `连接失败：${res?.error || '未知错误'}`;
-      ElMessage.warning(testResult.text);
-    }
-  } catch (err) {
-    testResult.ok = false;
-    testResult.text = err.response?.data?.error?.message || err.message || '测试失败';
-    ElMessage.error(testResult.text);
-  } finally {
-    testingTarget.value = '';
-  }
-}
-
-async function handleDeleteTarget(row) {
-  // 拓扑预检：哪些模型仅由该通道路由——连同它们一起删，否则被
-  // model_route_missing 硬错误拦下（防「从模型脚下抽走通道」的保护对
-  // 连带删除场景不适用，2026-09-02 用户谷歌垃圾通道批量清理实锤）。
-  let orphanModels = [];
-  try {
-    const routing = await getModelRouting({ skipGlobalError: true });
-    const targets = Array.isArray(routing?.targets) ? routing.targets : [];
-    const ref = row.targetRef || targets.find((t) => t.name === row.name)?.targetRef;
-    const otherRefs = ref
-      ? new Set(targets.filter((t) => t.targetRef !== ref).map((t) => t.targetRef))
-      : null;
-    if (ref && otherRefs) {
-      orphanModels = (Array.isArray(routing?.bindings) ? routing.bindings : [])
-        .filter((b) => Array.isArray(b.targetRefs)
-          && b.targetRefs.includes(ref)
-          && b.targetRefs.every((r) => !otherRefs.has(r)))
-        .map((b) => b.slug);
-    }
-  } catch { /* 预检失败不阻断，走单删让后端报错兜底 */ }
-  const affected = orphanModels.length
-    ? `\n\n注意：${orphanModels.length} 个模型仅由该通道路由，将一并删除：${orphanModels.slice(0, 6).join('、')}${orphanModels.length > 6 ? ` 等 ${orphanModels.length} 个` : ''}`
-    : '';
-  try {
-    await ElMessageBox.confirm(
-      `确定删除通道「${row.name}」吗？删除后路由不再向该通道转发请求（需重启生效）。${affected}`,
-      '删除通道',
-      { confirmButtonText: '删除', cancelButtonText: '取消', type: 'warning' },
-    );
-  } catch { return; }
-  try {
-    // 顺序：先删依赖该通道的模型，再删通道本身（后端不再要求「精确专属 match」，
-    // 宽松匹配的多模型通道也可直接删除；失路由模型由本操作连带清理）
-    const operations = [];
-    for (const slug of orphanModels) operations.push({ kind: 'model.delete', slug });
-    operations.push({ kind: 'target.delete', targetRef: row.targetRef });
-    await commitModelOperations(operations);
-    ElMessage.success(orphanModels.length
-      ? `通道已删除，连带删除 ${orphanModels.length} 个仅此路由的模型；重启路由后生效`
-      : '通道已删除；重启路由后生效');
-    await loadConfig();
-  } catch { /* 错误提示由请求拦截器统一处理（如通道仍被模型绑定） */ }
-}
-
-async function handleCleanupUnusedGoogle() {
-  if (cleanupSaving.value) return;
-  cleanupSaving.value = true;
-  try {
-    const routing = await getModelRouting({ skipGlobalError: true });
-    const desktop = await getCodexDesktopState({ skipGlobalError: true }).catch(() => ({ models: [] }));
-    const loadedSet = new Set(
-      (desktop.models || []).filter((m) => m.loaded && !m.official).map((m) => m.slug),
-    );
-    const targetsList = Array.isArray(routing?.targets) ? routing.targets : [];
-    const bindings = Array.isArray(routing?.bindings) ? routing.bindings : [];
-    const google = targetsList.filter((t) => t.platform === 'google');
-    const modelsOf = (ref) => bindings.filter((b) => (b.targetRefs || []).includes(ref)).map((b) => b.slug);
-    // 待删通道：绑定模型里没有一个在「已加载」集（用户当前不用的）
-    const removeRefs = new Set();
-    for (const t of google) {
-      const models = modelsOf(t.targetRef);
-      if (models.some((s) => loadedSet.has(s))) continue;
-      removeRefs.add(t.targetRef);
-    }
-    if (removeRefs.size === 0) {
-      ElMessage.info('没有发现未使用的谷歌通道（全部当前都在用或已被清理）');
-      return;
-    }
-    // 孤儿模型：其所有匹配通道都是待删通道（其他通道匹配不到）
-    const orphanModels = [...new Set(
-      bindings
-        .filter((b) => (b.targetRefs || []).length > 0
-          && b.targetRefs.every((ref) => removeRefs.has(ref)))
-        .map((b) => b.slug),
-    )];
-    const removedTargets = targetsList.filter((t) => removeRefs.has(t.targetRef)).map((t) => t.name);
-    try {
-      await ElMessageBox.confirm(
-        `将删除 ${removedTargets.length} 个未使用的谷歌通道${orphanModels.length ? `，并连带删除 ${orphanModels.length} 个仅由这些通道路由的模型（${orphanModels.slice(0, 8).join('、')}${orphanModels.length > 8 ? ' 等' : ''}）` : ''}。`
-        + '\n\n保留标准：通道绑定的模型里有你在用的（已加载）。\n删除后重启路由生效；订阅页「一键接入」可随时重新加入。',
-        '清理未使用的谷歌通道',
-        { confirmButtonText: '删除', cancelButtonText: '取消', type: 'warning' },
-      );
-    } catch { return; }
-    const operations = [];
-    for (const ref of removeRefs) operations.push({ kind: 'target.delete', targetRef: ref });
-    for (const slug of orphanModels) operations.push({ kind: 'model.delete', slug });
-    await commitModelOperations(operations);
-    ElMessage.success(`已删除 ${removedTargets.length} 个谷歌通道${orphanModels.length ? ` + ${orphanModels.length} 个模型` : ''}；重启路由后生效`);
-    await loadConfig();
-  } catch { /* 错误提示由请求拦截器统一处理 */ } finally {
-    cleanupSaving.value = false;
   }
 }
 
@@ -798,46 +558,6 @@ async function loadConfig() {
     const config = res?.config;
     if (!config) return;
     configLoaded.value = true;
-    if (Array.isArray(config.targets) && config.targets.length > 0) {
-      targets.value = config.targets.map((t) => ({
-        name: t.name || '未命名通道',
-        platform: t.platform || 'generic',
-        host: t.host || '',
-        proxy: t.viaProxy === true,
-        viaProxy: t.viaProxy === true,
-        wireApi: t.wireApi || 'chat',
-        envKey: t.envKey || '',
-      }));
-    }
-    // 拉取联合路由状态（targetRef + revision），供通道编辑/删除事务使用
-    try {
-      const routing = await getModelRouting({ skipGlobalError: true });
-      if (routing?.targets && Array.isArray(routing.targets)) {
-        configRevision.value = routing.configRevision || '';
-        catalogRevision.value = routing.catalogRevision || '';
-        const byName = new Map(routing.targets.map((t) => [t.name, t]));
-        targets.value = targets.value.map((t) => ({
-          ...t,
-          targetRef: byName.get(t.name)?.targetRef || '',
-          match: byName.get(t.name)?.match || '',
-          prefix: byName.get(t.name)?.prefix || '',
-          protocol: byName.get(t.name)?.protocol || 'https',
-          port: byName.get(t.name)?.port || null,
-          proxyUrl: byName.get(t.name)?.proxyUrl || '',
-          vision: byName.get(t.name)?.vision !== false,
-          useOpenAiAuth: byName.get(t.name)?.useOpenAiAuth === true,
-        }));
-      }
-    } catch { /* 联合状态不可用时仅展示静态列表 */ }
-    // 密钥池条目数（全量分组返回，静默失败不影响通道表）
-    try {
-      const poolRes = await listChannelKeys('', { skipGlobalError: true });
-      const counts = {};
-      for (const group of (poolRes?.groups || [])) {
-        counts[group.target] = group.count;
-      }
-      poolKeyCounts.value = counts;
-    } catch { /* 密钥池不可用时仅显示 envKey 状态 */ }
     if (typeof config.proxy === 'string' && config.proxy) proxyAddress.value = config.proxy;
     if (config.visionRelay && typeof config.visionRelay === 'object') {
       const relay = config.visionRelay;
