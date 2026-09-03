@@ -167,6 +167,249 @@
       "wireApi": "chat",
       "viaProxy": true,
       "proxyUrl": null
+    },
+    {
+      "name": "google-gemini-3.1-flash-lite",
+      "match": "^gemini-3\\.1-flash-lite$",
+      "platform": "google",
+      "host": "cloudcode-pa.googleapis.com",
+      "wireApi": "chat",
+      "upstreamModel": "gemini-3.1-flash-lite",
+      "viaProxy": true
+    },
+    {
+      "name": "google-tab_flash_lite_preview",
+      "match": "^tab_flash_lite_preview$",
+      "platform": "google",
+      "host": "cloudcode-pa.googleapis.com",
+      "wireApi": "chat",
+      "upstreamModel": "tab_flash_lite_preview",
+      "viaProxy": true
+    },
+    {
+      "name": "google-chat_23310",
+      "match": "^chat_23310$",
+      "platform": "google",
+      "host": "cloudcode-pa.googleapis.com",
+      "wireApi": "chat",
+      "upstreamModel": "chat_23310",
+      "viaProxy": true
+    },
+    {
+      "name": "google-gemini-3.5-flash-extra-low",
+      "match": "^gemini-3\\.5-flash-extra-low$",
+      "platform": "google",
+      "host": "cloudcode-pa.googleapis.com",
+      "wireApi": "chat",
+      "upstreamModel": "gemini-3.5-flash-extra-low",
+      "viaProxy": true
+    },
+    {
+      "name": "google-gemini-3.1-pro-high",
+      "match": "^gemini-3\\.1-pro-high$",
+      "platform": "google",
+      "host": "cloudcode-pa.googleapis.com",
+      "wireApi": "chat",
+      "upstreamModel": "gemini-3.1-pro-high",
+      "viaProxy": true
+    },
+    {
+      "name": "google-gemini-3.6-flash-medium",
+      "match": "^gemini-3\\.6-flash-medium$",
+      "platform": "google",
+      "host": "cloudcode-pa.googleapis.com",
+      "wireApi": "chat",
+      "upstreamModel": "gemini-3.6-flash-medium",
+      "viaProxy": true
+    },
+    {
+      "name": "google-gemini-2.5-flash-thinking",
+      "match": "^gemini-2\\.5-flash-thinking$",
+      "platform": "google",
+      "host": "cloudcode-pa.googleapis.com",
+      "wireApi": "chat",
+      "upstreamModel": "gemini-2.5-flash-thinking",
+      "viaProxy": true
+    },
+    {
+      "name": "google-claude-opus-4-6-thinking",
+      "match": "^claude-opus-4-6-thinking$",
+      "platform": "google",
+      "host": "cloudcode-pa.googleapis.com",
+      "wireApi": "chat",
+      "upstreamModel": "claude-opus-4-6-thinking",
+      "viaProxy": true
+    },
+    {
+      "name": "google-gemini-3-flash-agent",
+      "match": "^gemini-3-flash-agent$",
+      "platform": "google",
+      "host": "cloudcode-pa.googleapis.com",
+      "wireApi": "chat",
+      "upstreamModel": "gemini-3-flash-agent",
+      "viaProxy": true
+    },
+    {
+      "name": "google-gemini-3.1-flash-image",
+      "match": "^gemini-3\\.1-flash-image$",
+      "platform": "google",
+      "host": "cloudcode-pa.googleapis.com",
+      "wireApi": "chat",
+      "upstreamModel": "gemini-3.1-flash-image",
+      "viaProxy": true
+    },
+    {
+      "name": "google-gemini-pro-agent",
+      "match": "^gemini-pro-agent$",
+      "platform": "google",
+      "host": "cloudcode-pa.googleapis.com",
+      "wireApi": "chat",
+      "upstreamModel": "gemini-pro-agent",
+      "viaProxy": true
+    },
+    {
+      "name": "google-gemini-3.6-flash-tiered",
+      "match": "^gemini-3\\.6-flash-tiered$",
+      "platform": "google",
+      "host": "cloudcode-pa.googleapis.com",
+      "wireApi": "chat",
+      "upstreamModel": "gemini-3.6-flash-tiered",
+      "viaProxy": true
+    },
+    {
+      "name": "google-gemini-2.5-flash",
+      "match": "^gemini-2\\.5-flash$",
+      "platform": "google",
+      "host": "cloudcode-pa.googleapis.com",
+      "wireApi": "chat",
+      "upstreamModel": "gemini-2.5-flash",
+      "viaProxy": true
+    },
+    {
+      "name": "google-gemini-3.7-flash-tiered",
+      "match": "^gemini-3\\.7-flash-tiered$",
+      "platform": "google",
+      "host": "cloudcode-pa.googleapis.com",
+      "wireApi": "chat",
+      "upstreamModel": "gemini-3.7-flash-tiered",
+      "viaProxy": true
+    },
+    {
+      "name": "google-gpt-oss-120b-medium",
+      "match": "^gpt-oss-120b-medium$",
+      "platform": "google",
+      "host": "cloudcode-pa.googleapis.com",
+      "wireApi": "chat",
+      "upstreamModel": "gpt-oss-120b-medium",
+      "viaProxy": true
+    },
+    {
+      "name": "google-gemini-3.1-pro-low",
+      "match": "^gemini-3\\.1-pro-low$",
+      "platform": "google",
+      "host": "cloudcode-pa.googleapis.com",
+      "wireApi": "chat",
+      "upstreamModel": "gemini-3.1-pro-low",
+      "viaProxy": true
+    },
+    {
+      "name": "google-gemini-3.6-flash-high",
+      "match": "^gemini-3\\.6-flash-high$",
+      "platform": "google",
+      "host": "cloudcode-pa.googleapis.com",
+      "wireApi": "chat",
+      "upstreamModel": "gemini-3.6-flash-high",
+      "viaProxy": true
+    },
+    {
+      "name": "google-gemini-3.5-flash-low",
+      "match": "^gemini-3\\.5-flash-low$",
+      "platform": "google",
+      "host": "cloudcode-pa.googleapis.com",
+      "wireApi": "chat",
+      "upstreamModel": "gemini-3.5-flash-low",
+      "viaProxy": true
+    },
+    {
+      "name": "google-gemini-2.5-flash-lite",
+      "match": "^gemini-2\\.5-flash-lite$",
+      "platform": "google",
+      "host": "cloudcode-pa.googleapis.com",
+      "wireApi": "chat",
+      "upstreamModel": "gemini-2.5-flash-lite",
+      "viaProxy": true
+    },
+    {
+      "name": "google-claude-sonnet-4-6",
+      "match": "^claude-sonnet-4-6$",
+      "platform": "google",
+      "host": "cloudcode-pa.googleapis.com",
+      "wireApi": "chat",
+      "upstreamModel": "claude-sonnet-4-6",
+      "viaProxy": true
+    },
+    {
+      "name": "google-chat_20706",
+      "match": "^chat_20706$",
+      "platform": "google",
+      "host": "cloudcode-pa.googleapis.com",
+      "wireApi": "chat",
+      "upstreamModel": "chat_20706",
+      "viaProxy": true
+    },
+    {
+      "name": "google-gemini-3.6-flash-low",
+      "match": "^gemini-3\\.6-flash-low$",
+      "platform": "google",
+      "host": "cloudcode-pa.googleapis.com",
+      "wireApi": "chat",
+      "upstreamModel": "gemini-3.6-flash-low",
+      "viaProxy": true
+    },
+    {
+      "name": "google-gemini-2.5-pro",
+      "match": "^gemini-2\\.5-pro$",
+      "platform": "google",
+      "host": "cloudcode-pa.googleapis.com",
+      "wireApi": "chat",
+      "upstreamModel": "gemini-2.5-pro",
+      "viaProxy": true
+    },
+    {
+      "name": "google-tab_jump_flash_lite_preview",
+      "match": "^tab_jump_flash_lite_preview$",
+      "platform": "google",
+      "host": "cloudcode-pa.googleapis.com",
+      "wireApi": "chat",
+      "upstreamModel": "tab_jump_flash_lite_preview",
+      "viaProxy": true
+    },
+    {
+      "name": "google-gemini-3-flash",
+      "match": "^gemini-3-flash$",
+      "platform": "google",
+      "host": "cloudcode-pa.googleapis.com",
+      "wireApi": "chat",
+      "upstreamModel": "gemini-3-flash",
+      "viaProxy": true
+    },
+    {
+      "name": "google-gemini-3.7-flash-low",
+      "match": "^gemini-3\\.7-flash-low$",
+      "platform": "google",
+      "host": "cloudcode-pa.googleapis.com",
+      "wireApi": "chat",
+      "upstreamModel": "gemini-3.7-flash-tiered",
+      "viaProxy": true
+    },
+    {
+      "name": "google-gemini-3.7-flash-medium",
+      "match": "^gemini-3\\.7-flash-medium$",
+      "platform": "google",
+      "host": "cloudcode-pa.googleapis.com",
+      "wireApi": "chat",
+      "upstreamModel": "gemini-3.7-flash-tiered",
+      "viaProxy": true
     }
   ],
   "supportsResponses": {
@@ -219,6 +462,15 @@
       "_comment": "智谱 GLM 全系实测 1M 窗口（2026-09-03 96 万字符探测通过）；autoCompact 由 modelContext 全局 400K 收口",
       "match": "^glm|^GLM|^zhipu-",
       "contextWindow": 1000000,
+      "maxOutputTokens": 8192,
+      "safetyRatio": 0.9,
+      "protocolReserveTokens": 1024,
+      "imageTokens": 2048
+    },
+    {
+      "_comment": "DeepSeek 预设推荐参数（接入时自动生成）",
+      "match": "^deepseek-",
+      "contextWindow": 131072,
       "maxOutputTokens": 8192,
       "safetyRatio": 0.9,
       "protocolReserveTokens": 1024,

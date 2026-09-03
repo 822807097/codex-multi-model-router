@@ -143,3 +143,22 @@ export function applyCodexDesktopRouter(data) {
     data,
   });
 }
+
+/** 检查开源仓库新版本（GitHub Releases 对比本地版本） */
+export function checkForUpdate(config = {}) {
+  return request({
+    url: '/update/check',
+    method: 'get',
+    ...config,
+  });
+}
+
+/** 一键更新：git 同步到最新代码（保留运行配置）并优雅重启 */
+export function applyUpdate(data) {
+  return request({
+    url: '/update/apply',
+    method: 'post',
+    data,
+    timeout: 120_000,
+  });
+}

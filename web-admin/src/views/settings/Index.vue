@@ -3,7 +3,11 @@
     <div class="flex items-center justify-between">
       <div>
         <div class="text-xl font-bold text-primary tracking-wide">系统与路由配置中心</div>
-        <div class="text-xs text-secondary mt-1">管理多模型视觉中继（借眼看图）、Codex 插件转换、网络代理与目标 Targets</div>
+        <div class="text-xs text-secondary mt-1">管理多模型视觉中继（借眼看图）、Codex 插件转换、网络代理与模型接口</div>
+      </div>
+      <div class="flex items-center gap-2">
+        <span class="text-xs text-secondary font-mono">v{{ currentVersion || '?' }}</span>
+        <el-button size="small" :loading="updateChecking" @click="handleCheckUpdate">检查更新</el-button>
       </div>
     </div>
 
@@ -299,6 +303,10 @@ import ProxyConfigEditor from '../../components/ProxyConfigEditor.vue';
 
 const loading = ref(true);
 const loadError = ref('');
+
+function reloadPage() {
+  setTimeout(() => window.location.reload(), 300);
+}
 function serializeVisionEndpoint(ep) {
   const result = {
     model: ep.model?.trim() || '',
