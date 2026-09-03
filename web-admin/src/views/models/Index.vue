@@ -79,12 +79,39 @@
       <el-card shadow="never" class="group-card">
         <template #header>
           <div class="flex items-center justify-between flex-wrap gap-2">
-            <div class="flex items-center gap-2 min-w-0">
+            <div class="flex items-center gap-2 min-w-0 flex-wrap">
               <span class="w-2.5 h-2.5 rounded-full shrink-0" :class="group.dotClass"></span>
               <span class="font-semibold text-primary text-sm">{{ group.name }}</span>
               <el-tag size="small" type="info" effect="plain" class="rounded-full text-3xs shrink-0">
                 {{ group.models.length }} 个模型
               </el-tag>
+              <span
+                v-if="vendorGroupInfo(group)"
+                class="text-xs text-secondary font-mono"
+              >{{ vendorGroupInfo(group).apiBase }}</span>
+            </div>
+            <div v-if="vendorGroupInfo(group)" class="flex items-center gap-2 flex-wrap">
+              <el-tag
+                v-if="(poolKeyCounts[vendorGroupInfo(group).name] || 0) > 0"
+                type="success"
+                size="small"
+                effect="plain"
+                class="cursor-pointer"
+                @click="openKeyPoolFor(vendorGroupInfo(group).name)"
+              >🔑 Key 池 {{ poolKeyCounts[vendorGroupInfo(group).name] }} 把</el-tag>
+              <el-button size="small" plain @click="openVendorEdit(vendorGroupInfo(group))">
+                <el-icon class="mr-1"><Edit /></el-icon>
+                编辑接口
+              </el-button>
+              <el-button
+                v-if="selectedForDelete.size > 0 && selectedInGroup(group).length > 0"
+                size="small"
+                type="danger"
+                @click="handleBatchDelete(group)"
+              >删除所选 ({{ selectedInGroup(group).length }})</el-button>
+              <el-button size="small" type="danger" plain @click="handleDeleteVendorGroup(vendorGroupInfo(group), group)">
+                删除分组
+              </el-button>
             </div>
           </div>
         </template>
@@ -95,8 +122,14 @@
             :key="m.slug"
             class="py-3.5 flex items-center justify-between flex-wrap gap-3 hover:bg-surface-2 px-3 rounded-lg transition-colors"
           >
-            <!-- 左侧：模型核心信息 -->
-            <div class="space-y-1.5 min-w-0">
+            <!-- 左侧：批量选择 + 模型核心信息 -->
+            <div class="flex items-center gap-2.5 min-w-0">
+              <el-checkbox
+                :model-value="selectedForDelete.has(m.slug)"
+                class="shrink-0"
+                @change="toggleSelected(m.slug, $event)"
+              />
+              <div class="space-y-1.5 min-w-0">
               <div class="flex items-center gap-2.5 flex-wrap">
                 <span class="font-bold text-primary font-mono text-sm">{{ m.displayName || m.slug }}</span>
                 <span class="text-xs text-secondary font-mono">{{ m.slug }}</span>
@@ -180,6 +213,7 @@
               <el-button size="small" type="danger" plain @click="handleDeleteModel(m)">
                 删除
               </el-button>
+            </div>
             </div>
           </div>
         </div>
@@ -287,6 +321,23 @@ my-glm=glm-5.3-flash"
         <pre class="font-mono text-xs bg-secondary/10 rounded p-2 overflow-auto whitespace-pre-wrap" style="max-height: 160px">{{ row.reply || '（无文本回复——工具调用型响应或该次探测被上游截断，可在「请求日志」里看完整响应）' }}</pre>
       </div>
       <div class="text-xs text-secondary">探测请求固定为「请用一句中文简短介绍你自己。」（max_output_tokens=256）；完整请求体可在「请求日志」里查看。</div>
+    </el-dialog>
+
+    <!-- 编辑接口（分组级）：改厂商通道的 API 地址，组内全部模型共用 -->
+    <el-dialog v-model="showVendorEdit" title="编辑接口地址" :width="isMobile ? '94%' : '560px'" class="custom-dialog-pro">
+      <el-form label-position="top">
+        <el-form-item label="接口配置（通道名，不可修改）">
+          <el-input :model-value="vendorEdit.name" disabled class="font-mono" />
+        </el-form-item>
+        <el-form-item label="API 地址" required>
+          <el-input v-model="vendorEdit.apiBase" placeholder="例如: https://api.deepseek.com/v1" class="font-mono" />
+          <div class="text-xs text-secondary mt-1">该厂商（{{ vendorEdit.name }}）下全部模型共用此地址；密钥请在「Key 池」里管理</div>
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="showVendorEdit = false">取消</el-button>
+        <el-button type="primary" :loading="vendorEditSaving" @click="handleSaveVendorEdit">保存</el-button>
+      </template>
     </el-dialog>
 
     <!-- 分组管理：全部有模型的分组都可重命名（整组迁移）或删除（移入其他已接入模型） -->
@@ -520,6 +571,7 @@ import { useRoute } from 'vue-router';
 import {
   testModelLatency,
   getModels,
+  getModelRouting,
   commitModelOperations,
   createModels,
   fetchTargetModels,
@@ -629,6 +681,141 @@ async function openRequestDetail(row) {
     const res = await getRequestLogDetail(row.id, { skipGlobalError: true });
     requestDetail.value = res?.entry || null;
   } catch { /* 拦截器提示 */ }
+}
+
+// ---- 厂商分组级管理：分组名=通道名（厂商名）时，分组头部提供接口编辑/Key 池/整组删除 ----
+const vendorGroups = ref([]); // [{ name, targetRef, apiBase, host, prefix, protocol, port }]
+const selectedForDelete = reactive(new Set());
+
+function vendorGroupInfo(group) {
+  // 分组名 === 通道名 且 组内模型确属该通道 → 厂商分组（可整组编辑/删除）
+  const name = group.name;
+  const info = vendorGroups.value.find((v) => v.name === name);
+  if (!info) return null;
+  const inGroup = group.models.every((m) => m.target === name);
+  return inGroup ? info : null;
+}
+
+function selectedInGroup(group) {
+  return group.models.filter((m) => selectedForDelete.has(m.slug));
+}
+
+function toggleSelected(slug, checked) {
+  if (checked) selectedForDelete.add(slug);
+  else selectedForDelete.delete(slug);
+}
+
+async function refreshVendorGroups() {
+  try {
+    const res = await getModelRouting({ skipGlobalError: true });
+    vendorGroups.value = (Array.isArray(res?.targets) ? res.targets : [])
+      .filter((t) => t?.name && t?.host && !t.useOpenAiAuth)
+      .map((t) => ({
+        name: t.name,
+        targetRef: t.targetRef || null,
+        host: t.host || '',
+        prefix: t.prefix || '/v1',
+        protocol: t.protocol || 'https',
+        port: t.port || null,
+        apiBase: `${t.protocol || 'https'}://${t.host}${t.port ? `:${t.port}` : ''}${t.prefix || ''}`,
+      }));
+  } catch { /* 路由状态不可用时分组级按钮自动隐藏 */ }
+}
+
+// ---- 编辑接口（分组级）：改 API 地址 = target.update（host/prefix/port） ----
+const showVendorEdit = ref(false);
+const vendorEditSaving = ref(false);
+const vendorEdit = ref({ name: '', targetRef: null, apiBase: '' });
+
+function openVendorEdit(info) {
+  vendorEdit.value = { name: info.name, targetRef: info.targetRef, apiBase: info.apiBase };
+  showVendorEdit.value = true;
+}
+
+async function handleSaveVendorEdit() {
+  const endpoint = parseApiBase(vendorEdit.value.apiBase);
+  if (!endpoint || !endpoint.host) {
+    ElMessage.warning('请填写正确的 API 地址（例如 https://api.deepseek.com/v1）');
+    return;
+  }
+  const patch = { host: endpoint.host, prefix: endpoint.prefix, protocol: endpoint.protocol };
+  if (endpoint.port) patch.port = endpoint.port; else patch.port = null;
+  vendorEditSaving.value = true;
+  try {
+    await commitModelOperations([
+      { kind: 'target.update', targetRef: vendorEdit.value.targetRef, patch },
+    ]);
+    ElMessage.success('接口地址已更新；重启路由后完全生效');
+    showVendorEdit.value = false;
+    await refreshVendorGroups();
+    await loadModels();
+  } catch { /* 错误提示由请求拦截器统一处理 */ } finally {
+    vendorEditSaving.value = false;
+  }
+}
+
+// ---- 批量删除所选 + 整组删除（先删组内全部模型，再删通道） ----
+async function deleteModelsBySlugs(slugs, confirmTitle, confirmBody) {
+  try {
+    await ElMessageBox.confirm(confirmBody, confirmTitle, {
+      confirmButtonText: '删除', cancelButtonText: '取消', type: 'warning',
+    });
+  } catch { return false; }
+  try {
+    await commitModelOperations(slugs.map((slug) => ({ kind: 'model.delete', slug })));
+    for (const slug of slugs) {
+      delete latencies.value[slug];
+      delete customGroupMap.value[slug];
+      selectedForDelete.delete(slug);
+    }
+    persistGroupMap();
+    ElMessage.success(`已删除 ${slugs.length} 个模型；重启路由与 Codex 后完全生效`);
+    await loadModels();
+    await refreshVendorGroups();
+    return true;
+  } catch { return false; }
+}
+
+async function handleBatchDelete(group) {
+  const slugs = selectedInGroup(group).map((m) => m.slug);
+  if (slugs.length === 0) return;
+  await deleteModelsBySlugs(
+    slugs,
+    `批量删除 ${slugs.length} 个模型`,
+    `确定删除所选 ${slugs.length} 个模型吗？将从目录与接口配置中一并移除，该操作不可恢复：\n${slugs.join('、')}`,
+  );
+}
+
+async function handleDeleteVendorGroup(info, group) {
+  const officialInGroup = group.models.filter((m) => OFFICIAL_SLUGS.has(m.slug));
+  const officialNote = officialInGroup.length
+    ? `\n注意：其中包含 ${officialInGroup.length} 个官方基础模型（${officialInGroup.slice(0, 4).map((m) => m.slug).join('、')}${officialInGroup.length > 4 ? ' 等' : ''}），历史会话可能正在引用，删除后旧对话可能异常。`
+    : '';
+  try {
+    await ElMessageBox.confirm(
+      `删除分组「${group.name}」将一并删除该厂商的 ${group.models.length} 个模型与接口配置（${info.apiBase}），密钥池中的 key 保留。此操作不可恢复。${officialNote}`,
+      '删除分组',
+      { confirmButtonText: '全部删除', cancelButtonText: '取消', type: 'warning' },
+    );
+  } catch { return; }
+  try {
+    const routing = await getModelRouting({ skipGlobalError: true });
+    const targetEntry = (routing?.targets || []).find((t) => t.name === info.name);
+    const operations = [
+      ...group.models.map((m) => ({ kind: 'model.delete', slug: m.slug })),
+    ];
+    if (targetEntry?.targetRef) operations.push({ kind: 'target.delete', targetRef: targetEntry.targetRef });
+    await commitModelOperations(operations);
+    for (const m of group.models) {
+      delete latencies.value[m.slug];
+      delete customGroupMap.value[m.slug];
+      selectedForDelete.delete(m.slug);
+    }
+    persistGroupMap();
+    ElMessage.success(`分组「${group.name}」已删除（${group.models.length} 个模型 + 接口配置）；重启路由与 Codex 后完全生效`);
+    await loadModels();
+    await refreshVendorGroups();
+  } catch { /* 错误提示由请求拦截器统一处理 */ }
 }
 
 // 把用户填的完整 API 地址拆成路由内部需要的 host/protocol/port/路径前缀
@@ -1328,6 +1515,7 @@ function resetFetchState() {
 onMounted(() => {
   window.addEventListener('test-all-models', handleTestAll);
   loadModels();
+  refreshVendorGroups();
   loadCodexDefaultModel();
   // 「系统与路由配置」页的主按钮带 ?add=1 跳转过来：自动打开添加模型弹窗
   const route = useRoute();
