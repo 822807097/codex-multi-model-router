@@ -143,9 +143,12 @@
                 <span class="text-xs text-secondary font-mono truncate">{{ m.slug }}</span>
                 <el-tag v-if="isOfficialModel(m)" size="small" effect="plain" type="warning" class="text-3xs shrink-0">账号自带</el-tag>
               </div>
-              <div class="text-xs text-secondary mt-0.5 flex items-center gap-3">
-                <span title="上下文窗口">{{ m.context }} 上下文</span>
-                <span title="默认思考档位">思考 {{ effortLabel(m.default_level) }}</span>
+              <div
+                class="text-xs text-secondary mt-0.5 flex items-center gap-3"
+                title="这些是模型的默认参数；实际思考档位由客户端（Codex 等）每次请求选择并传给路由，路由原样透传"
+              >
+                <span>{{ m.context }} 上下文</span>
+                <span>客户端默认档位: {{ effortLabel(m.default_level) }}</span>
               </div>
             </div>
             <!-- 右侧：延迟徽章（测过才显示）+ 操作 -->
