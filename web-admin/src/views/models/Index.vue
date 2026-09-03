@@ -326,9 +326,7 @@ my-glm=glm-5.3-flash"
     <!-- 编辑接口（分组级）：改厂商通道的 API 地址，组内全部模型共用 -->
     <el-dialog v-model="showVendorEdit" title="编辑接口地址" :width="isMobile ? '94%' : '560px'" class="custom-dialog-pro">
       <el-form label-position="top">
-        <el-form-item label="接口配置（通道名，不可修改）">
-          <el-input :model-value="vendorEdit.name" disabled class="font-mono" />
-        </el-form-item>
+
         <el-form-item label="API 地址" required>
           <el-input v-model="vendorEdit.apiBase" placeholder="例如: https://api.deepseek.com/v1" class="font-mono" />
           <div class="text-xs text-secondary mt-1">该厂商（{{ vendorEdit.name }}）下全部模型共用此地址；密钥请在「Key 池」里管理</div>
