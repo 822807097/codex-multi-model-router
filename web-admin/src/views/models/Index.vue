@@ -146,16 +146,8 @@
 
             <!-- 右侧：测速 Badge 与操作 -->
             <div class="flex items-center gap-2 flex-wrap">
-              <!-- 密钥状态：环境变量未配但密钥池有 key 时不再误报；池内有 key 直接显示数量并可点管理 -->
-              <el-tag
-                v-if="poolKeyCounts[m.target] > 0"
-                type="success"
-                size="small"
-                effect="plain"
-                class="cursor-pointer"
-                @click="openKeyPoolFor(m.target)"
-              >🔑 密钥池 {{ poolKeyCounts[m.target] }} 把</el-tag>
-              <el-tag v-else-if="m.envSet === false" type="warning" size="small" effect="plain" class="cursor-pointer" @click="openKeyPoolFor(m.target)">⚠ 密钥未配置</el-tag>
+              <!-- 密钥状态：池数量统一在分组头部显示（同一厂商共享一个池）；行内仅在实际无 key 时警告 -->
+              <el-tag v-if="m.envSet === false && !(poolKeyCounts[m.target] > 0)" type="warning" size="small" effect="plain" class="cursor-pointer" @click="openKeyPoolFor(m.target)">⚠ 密钥未配置</el-tag>
               <!-- 测速 Badge -->
               <div v-if="latencies[m.slug]" class="flex items-center">
                 <el-tag
