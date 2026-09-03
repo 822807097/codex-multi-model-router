@@ -117,7 +117,7 @@
     },
     {
       "_comment": "智谱 GLM Coding Plan 订阅通道（周额度，GLM-5.3-Flash 等多模态支持图片）：密钥设环境变量 ZHIPU_CODING_KEY 后重启路由生效；国内直连。自定义 slug 用 zhipu- 前缀（官方内置 GLM 模型按 slug 片段识别，含 GLM-5.3-Flash 片段的 slug 会被直连官方而 400）",
-      "match": "^glm|^GLM|^zhipu-glm",
+      "match": "^glm|^GLM|^zhipu-",
       "name": "zhipu-coding",
       "platform": "zhipu",
       "host": "open.bigmodel.cn",
@@ -129,7 +129,7 @@
     },
     {
       "_comment": "智谱开放平台按量 API 兜底通道：Coding Plan 密钥缺失或冷却时自动切换到这里；密钥设环境变量 ZHIPU_API_KEY（GLM-4/5 系均支持视觉）",
-      "match": "^glm-|^GLM-|^zhipu-glm",
+      "match": "^glm|^GLM|^zhipu-",
       "name": "zhipu-api",
       "platform": "zhipu",
       "host": "open.bigmodel.cn",
@@ -197,7 +197,7 @@
     },
     {
       "_comment": "智谱 GLM 全系按 128K 窗口预算（预设推荐参数，防超限）",
-      "match": "^glm-|^GLM-|^zhipu-glm",
+      "match": "^glm|^GLM|^zhipu-",
       "contextWindow": 131072,
       "maxOutputTokens": 8192,
       "safetyRatio": 0.9,
