@@ -62,6 +62,7 @@ Point your client's `base_url` at `http://127.0.0.1:15730/v1`; the router forwar
 | Channel key pools | Multiple API keys per vendor with priority rotation and persisted 429 cooldown |
 | Free-form model groups | Model cards can be freely edited / deleted / regrouped |
 | Per-channel proxy | Each channel can go direct / via global proxy / via a custom node (paste ss / trojan / vless / socks5 / http links) |
+| **Resume any task with any model (no new chat)** | When the official quota runs out or you just want a different model, switch mid-task and hit "continue from breakpoint" in the same conversation: official subscription to a custom model, GLM to DeepSeek, etc. - protocol conversion (tool calls, reasoning format, session metadata) is handled by the router |
 | Cross-model continuation | Context trimming auto-generates a "goal checkpoint" so switching models never drops the task |
 | Usage dashboard | Daily token trends, activity heatmap, per-model breakdown |
 | Optional API key auth | Issue `sk-router-*` keys to control who may access |
@@ -80,6 +81,12 @@ Screenshots:
 
 ![Official & custom models in one menu](docs/demo-model-switching.png)
 ![Same task continuing across models](docs/demo-cross-model-continuation.png)
+
+**Official quota exhausted? Resume seamlessly with a custom model (no new chat)**
+
+When your ChatGPT subscription quota runs out, the task does not restart: pick a custom model (e.g. `zhipu/GLM-5.3-Flash`) in the same conversation's model picker and hit "continue from breakpoint" - the router migrates the session's connection metadata and converts protocols automatically, carrying the full context and tools. The reverse (custom to official) and any custom-to-custom switch work the same way.
+
+> Prerequisite: onboard the desktop app via "Codex desktop access" in API-key mode (with official login mode the desktop locks models once quota is exhausted; API-key mode is immune).
 
 ## 2. Preparation (3 minutes)
 
