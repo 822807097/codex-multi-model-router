@@ -87,7 +87,8 @@
               </el-tag>
               <span
                 v-if="vendorGroupInfo(group)"
-                class="text-xs text-secondary font-mono"
+                class="text-xs font-mono px-2 py-0.5 rounded-md bg-surface-2 text-secondary shrink-0"
+                :title="'接口地址（' + vendorGroupInfo(group).name + ' 下全部模型共用）'"
               >{{ vendorGroupInfo(group).apiBase }}</span>
             </div>
             <div v-if="vendorGroupInfo(group)" class="flex items-center gap-2 flex-wrap">
@@ -120,66 +121,52 @@
           <div
             v-for="m in group.models"
             :key="m.slug"
-            class="py-3.5 flex items-center justify-between flex-wrap gap-3 hover:bg-surface-2 px-3 rounded-lg transition-colors"
+            class="py-3 px-3 rounded-lg transition-colors hover:bg-surface-2 flex items-center gap-3"
           >
-            <!-- 左侧：批量选择（官方模型不可删，无勾选框） + 模型核心信息 -->
-            <div class="flex items-center gap-2.5 min-w-0">
-              <el-checkbox
-                v-if="!isOfficialModel(m)"
-                :model-value="selectedForDelete.has(m.slug)"
-                class="shrink-0"
-                @change="toggleSelected(m.slug, $event)"
-              />
-              <div class="space-y-1.5 min-w-0">
-              <div class="flex items-center gap-2.5 flex-wrap">
-                <span class="font-bold text-primary font-mono text-sm">{{ m.displayName || m.slug }}</span>
-                <span class="text-xs text-secondary font-mono">{{ m.slug }}</span>
-                <el-tag v-if="isOfficialModel(m)" size="small" type="warning" effect="plain" class="text-xs">账号自带</el-tag>
+            <!-- 批量选择（官方模型不可删，无勾选框） -->
+            <el-checkbox
+              v-if="!isOfficialModel(m)"
+              :model-value="selectedForDelete.has(m.slug)"
+              class="shrink-0"
+              @change="toggleSelected(m.slug, $event)"
+            />
+            <!-- 模型信息：名称行 + 规格行（轻量文字，不再用带框标签） -->
+            <div class="min-w-0 flex-1">
+              <div class="flex items-center gap-2 min-w-0">
+                <span class="font-semibold text-primary text-sm truncate">{{ m.displayName || m.slug }}</span>
+                <span class="text-xs text-secondary font-mono truncate">{{ m.slug }}</span>
+                <el-tag v-if="isOfficialModel(m)" size="small" effect="plain" type="warning" class="text-3xs shrink-0">账号自带</el-tag>
               </div>
-              <div class="flex items-center gap-2 flex-wrap">
-                <el-tag size="small" effect="plain" type="info" class="text-xs">
-                  上下文: {{ m.context }}
-                </el-tag>
-                <el-tag size="small" effect="plain" type="info" class="text-xs">
-                  默认思考: {{ effortLabel(m.default_level) }}
-                </el-tag>
+              <div class="text-xs text-secondary mt-0.5 flex items-center gap-3">
+                <span title="上下文窗口">{{ m.context }} 上下文</span>
+                <span title="默认思考档位">思考 {{ effortLabel(m.default_level) }}</span>
               </div>
             </div>
-
-            <!-- 右侧：测速 Badge 与操作 -->
-            <div class="flex items-center gap-2 flex-wrap">
-              <!-- 密钥状态：池数量统一在分组头部显示（同一厂商共享一个池）；行内仅在实际无 key 时警告 -->
-              <el-tag v-if="m.envSet === false && !(poolKeyCounts[m.target] > 0)" type="warning" size="small" effect="plain" class="cursor-pointer" @click="openKeyPoolFor(m.target)">⚠ 密钥未配置</el-tag>
-              <!-- 测速 Badge -->
-              <div v-if="latencies[m.slug]" class="flex items-center">
-                <el-tag
-                  v-if="latencies[m.slug].ok"
-                  type="success"
-                  effect="dark"
-                  size="small"
-                  class="font-mono font-semibold"
-                >
-                  {{ latencies[m.slug].latencyMs }}ms
-                </el-tag>
-                <el-tooltip
-                  v-else
-                  :content="latencies[m.slug].error || '连接失败'"
-                  placement="top"
-                  :show-after="100"
-                >
-                  <el-tag
-                    type="danger"
-                    effect="dark"
-                    size="small"
-                    class="font-mono latency-fail-tag"
-                  >
-                    连接失败
-                  </el-tag>
-                </el-tooltip>
-              </div>
-              <el-tag v-else type="info" size="small" class="text-secondary">待测速</el-tag>
-
-              <!-- 测试连接按钮（真实探测：走完整路由管线打一条 ping） -->
+            <!-- 右侧：延迟徽章（测过才显示）+ 操作 -->
+            <div class="flex items-center gap-1.5 shrink-0">
+              <el-tooltip
+                v-if="m.envSet === false && !(poolKeyCounts[m.target] > 0)"
+                content="该厂商还没有配置密钥，点击去 Key 池添加"
+                placement="top"
+                :show-after="100"
+              >
+                <el-tag type="warning" size="small" effect="plain" class="cursor-pointer" @click="openKeyPoolFor(m.target)">密钥未配置</el-tag>
+              </el-tooltip>
+              <el-tag
+                v-if="latencies[m.slug] && latencies[m.slug].ok"
+                type="success"
+                effect="dark"
+                size="small"
+                class="font-mono font-semibold"
+              >{{ latencies[m.slug].latencyMs }}ms</el-tag>
+              <el-tooltip
+                v-else-if="latencies[m.slug]"
+                :content="latencies[m.slug].error || '连接失败'"
+                placement="top"
+                :show-after="100"
+              >
+                <el-tag type="danger" effect="dark" size="small" class="font-mono">失败</el-tag>
+              </el-tooltip>
               <el-button
                 size="small"
                 type="primary"
@@ -188,19 +175,21 @@
                 @click="testLatency(m)"
               >
                 <el-icon class="mr-1"><Lightning /></el-icon>
-                测试连接
+                测试
               </el-button>
-              <!-- 官方账号绑定模型只读（可用性随账号/套餐，不可编辑删除）；自定义模型可自由管理 -->
+              <!-- 官方账号绑定模型只读；自定义模型可编辑/删除（图标按钮 + 悬停提示） -->
               <template v-if="!isOfficialModel(m)">
-                <el-button size="small" plain @click="openEdit(m)">
-                  <el-icon class="mr-1"><Edit /></el-icon>
-                  编辑
-                </el-button>
-                <el-button size="small" type="danger" plain @click="handleDeleteModel(m)">
-                  删除
-                </el-button>
+                <el-tooltip content="编辑模型" placement="top" :show-after="200">
+                  <el-button size="small" plain @click="openEdit(m)">
+                    <el-icon><Edit /></el-icon>
+                  </el-button>
+                </el-tooltip>
+                <el-tooltip content="删除模型" placement="top" :show-after="200">
+                  <el-button size="small" type="danger" plain @click="handleDeleteModel(m)">
+                    <el-icon><Delete /></el-icon>
+                  </el-button>
+                </el-tooltip>
               </template>
-            </div>
             </div>
           </div>
         </div>
