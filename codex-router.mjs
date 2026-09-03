@@ -45,6 +45,7 @@ import { resolveOAuthViaProxy } from './lib/provider-adapters.mjs';
 import { ProviderPool } from './lib/provider-pool.mjs';
 import { ResponseToolHistoryStore } from './lib/response-history.mjs';
 import { RequestBudget } from './lib/request-budget.mjs';
+import { createRequestLogStore } from './lib/request-log.mjs';
 import { rawHttpsRequest } from './lib/transport.mjs';
 import {
   RouterConfigError,
@@ -159,6 +160,8 @@ const REFRESH_SKEW_SECONDS = ROUTER_OAUTH.refreshSkewSeconds;
 const TARGETS = preparedConfig.targets;
 const providerPool = new ProviderPool(TARGETS, cfg.providerPool);
 const responseHistory = new ResponseToolHistoryStore(cfg.responseHistory);
+// 请求/响应查看器：内存环形日志（管理面板可视化真实请求与回复）
+const requestLog = createRequestLogStore();
 const memoryGoalCheckpoints = new GoalCheckpointStore(cfg.goalCheckpoint);
 const requestBudget = new RequestBudget(REQUEST_BUDGET);
 const modelQuotaCooldown = createModelQuotaCooldownStore();
@@ -451,6 +454,7 @@ const apiKeyStore = createApiKeyStore({ db: getDatabase() });
 const keyPool = createChannelKeyPool({ db: getDatabase(), envKeySource, log });
 
 const adminHandler = createAdminHandler({
+  requestLog,
   configPath: CONFIG_PATH,
   catalogPath: CATALOG_PATH,
   codexHome: CODEX_HOME,
@@ -482,6 +486,7 @@ const adminHandler = createAdminHandler({
 let routerHandler;
 try {
   routerHandler = createRouterHandler({
+    requestLog,
     config: cfg,
     targets: TARGETS,
     catalog: activeCatalog,

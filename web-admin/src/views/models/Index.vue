@@ -54,6 +54,10 @@
           <el-icon class="mr-1"><Files /></el-icon>
           分组管理
         </el-button>
+        <el-button size="small" plain @click="openRequestLog">
+          <el-icon class="mr-1"><Document /></el-icon>
+          请求日志
+        </el-button>
         <el-button type="primary" size="small" @click="openAddModal">
           <el-icon class="mr-1"><Plus /></el-icon>
           添加自定义模型
@@ -215,6 +219,41 @@ my-glm=glm-5.3-flash"
         <el-button @click="showAddModal = false">取消</el-button>
         <el-button type="primary" @click="handleAddModel">保存全部模型</el-button>
       </template>
+    </el-dialog>
+
+    <!-- 请求日志：真实请求与模型回复原文（环形缓冲，最近 300 条） -->
+    <el-dialog v-model="showRequestLog" title="请求日志（真实请求与回复）" :width="isMobile ? '96%' : '1100px'" class="custom-dialog-pro" top="4vh">
+      <div class="flex items-center justify-between mb-2">
+        <span class="text-xs text-secondary">最近 {{ requestLogRows.length }} 条（环形缓冲自动淘汰）；点「查看」展开完整请求体与模型回复原文</span>
+        <el-button size="small" :loading="requestLogLoading" @click="loadRequestLog">刷新</el-button>
+      </div>
+      <el-table :data="requestLogRows" size="small" class="custom-table" max-height="320" @row-click="openRequestDetail">
+        <el-table-column label="时间" width="100">
+          <template #default="{ row }">{{ new Date(row.startedAt).toLocaleTimeString('zh-CN', { hour12: false }) }}</template>
+        </el-table-column>
+        <el-table-column prop="model" label="模型" min-width="150" show-overflow-tooltip />
+        <el-table-column prop="target" label="接口" min-width="120" show-overflow-tooltip />
+        <el-table-column label="状态" width="130">
+          <template #default="{ row }">
+            <el-tag v-if="row.status === 'ok'" type="success" size="small" effect="plain">{{ row.upstreamStatus || 'OK' }}</el-tag>
+            <el-tag v-else-if="row.status === 'running'" type="info" size="small" effect="plain">进行中</el-tag>
+            <el-tag v-else type="danger" size="small" effect="plain">{{ row.upstreamStatus || row.status }}</el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column label="耗时" width="90">
+          <template #default="{ row }">{{ row.elapsedMs != null ? `${(row.elapsedMs / 1000).toFixed(1)}s` : '—' }}</template>
+        </el-table-column>
+        <el-table-column prop="error" label="错误" min-width="180" show-overflow-tooltip />
+      </el-table>
+      <div v-if="requestDetail" class="mt-3">
+        <div class="text-xs font-bold text-primary mb-1">
+          请求详情 · {{ requestDetail.model }} · {{ new Date(requestDetail.startedAt).toLocaleString('zh-CN', { hour12: false }) }}
+        </div>
+        <div class="text-xs text-secondary mb-1">发往上游的请求体（真实原文）：</div>
+        <pre class="font-mono text-xs bg-secondary/10 rounded p-2 overflow-auto" style="max-height: 260px">{{ requestDetail.requestBody || '（空）' }}</pre>
+        <div class="text-xs text-secondary mb-1 mt-2">模型回复原文（上游响应，前 64KB）：</div>
+        <pre class="font-mono text-xs bg-secondary/10 rounded p-2 overflow-auto" style="max-height: 260px">{{ requestDetail.responseText || '（空——流式进行中或该管道未捕获正文）' }}</pre>
+      </div>
     </el-dialog>
 
     <!-- 分组管理：重命名/删除自定义分组（预置分组按规则自动生成，不在此列） -->
@@ -443,6 +482,8 @@ import {
   fetchTargetModels,
   updateModel,
   deleteModel,
+  listRequestLog,
+  getRequestLogDetail,
 } from '../../api/models.js';
 import { getSystemConfig } from '../../api/system.js';
 import { getCodexDefaultModel, setCodexDefaultModel, createChannelKey } from '../../api/channelKeys.js';
@@ -497,6 +538,35 @@ function parseModelLines(text) {
 function openAddModal() {
   form.value = { vendor: '', apiBase: '', keysText: '', modelsText: '', group: '', groupTouched: false };
   showAddModal.value = true;
+}
+
+// ---- 请求/响应查看器（sub2api 式：真实请求与回复原文） ----
+const showRequestLog = ref(false);
+const requestLogLoading = ref(false);
+const requestLogRows = ref([]);
+const requestDetail = ref(null);
+
+async function loadRequestLog() {
+  requestLogLoading.value = true;
+  try {
+    const res = await listRequestLog(50, { skipGlobalError: true });
+    requestLogRows.value = Array.isArray(res?.requests) ? res.requests : [];
+  } catch { /* 错误提示由请求拦截器统一处理 */ } finally {
+    requestLogLoading.value = false;
+  }
+}
+
+async function openRequestLog() {
+  showRequestLog.value = true;
+  requestDetail.value = null;
+  await loadRequestLog();
+}
+
+async function openRequestDetail(row) {
+  try {
+    const res = await getRequestLogDetail(row.id, { skipGlobalError: true });
+    requestDetail.value = res?.entry || null;
+  } catch { /* 拦截器提示 */ }
 }
 
 // 把用户填的完整 API 地址拆成路由内部需要的 host/protocol/port/路径前缀

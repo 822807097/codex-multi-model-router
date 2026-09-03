@@ -26,6 +26,24 @@ export function testModelLatency(model, targetName) {
   });
 }
 
+/** 请求/响应查看器：环形日志列表（元数据，新→旧） */
+export function listRequestLog(limit = 50, config = {}) {
+  return request({
+    url: `/requests?limit=${Number(limit) || 50}`,
+    method: 'get',
+    ...config,
+  });
+}
+
+/** 请求/响应查看器：单条详情（请求体 + 上游回复原文） */
+export function getRequestLogDetail(id, config = {}) {
+  return request({
+    url: `/requests/${encodeURIComponent(id)}`,
+    method: 'get',
+    ...config,
+  });
+}
+
 /**
  * 联合模型路由事务：读取当前双文件 revision → 预检（必要时携带确认令牌）→ 提交。
  * model.* / target.* 全部共用这一条写入路径（通道/模型动态管理）。
