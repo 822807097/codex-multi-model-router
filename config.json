@@ -125,7 +125,11 @@
       "viaProxy": false,
       "vision": true,
       "envKey": "ZHIPU_CODING_KEY",
-      "wireApi": "chat"
+      "wireApi": "chat",
+      "modelMap": {
+        "zhipu-flash-plan": "glm-5.3-flash",
+        "zhipu-plan": "glm-5.3"
+      }
     },
     {
       "_comment": "智谱开放平台按量 API 兜底通道：Coding Plan 密钥缺失或冷却时自动切换到这里；密钥设环境变量 ZHIPU_API_KEY（GLM-4/5 系均支持视觉）",
@@ -137,7 +141,11 @@
       "viaProxy": false,
       "vision": true,
       "envKey": "ZHIPU_API_KEY",
-      "wireApi": "chat"
+      "wireApi": "chat",
+      "modelMap": {
+        "zhipu-flash-plan": "glm-5.3-flash",
+        "zhipu-plan": "glm-5.3"
+      }
     },
     {
       "name": "google-gemini-3.7-flash-high",
