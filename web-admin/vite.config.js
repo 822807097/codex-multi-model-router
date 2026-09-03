@@ -22,6 +22,8 @@ export default defineConfig({
   },
   build: {
     outDir: path.resolve(__dirname, '../web'),
-    emptyOutDir: true,
+    // 保留旧 chunk：运行中面板的 SPA 引用着上一版文件名，清空会让已打开页面切路由时 401 空白
+    // （2026-09-04 实锤）；assets 累积可定期手动清理。
+    emptyOutDir: false,
   },
 });
