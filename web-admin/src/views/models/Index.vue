@@ -272,16 +272,19 @@ my-glm=glm-5.3-flash"
       <div class="text-xs text-secondary">探测请求固定为「请用一句中文简短介绍你自己。」（max_output_tokens=256）；完整请求体可在「请求日志」里查看。</div>
     </el-dialog>
 
-    <!-- 分组管理：重命名/删除自定义分组（预置分组按规则自动生成，不在此列） -->
-    <el-dialog v-model="showGroupManage" title="分组管理" :width="isMobile ? '92%' : '480px'" class="custom-dialog-pro">
-      <div class="text-xs text-secondary mb-3">自定义分组来自你给模型设置的「所属分组」。重命名会同步更新所有归属模型；删除后模型回到自动分组（模型本身不受影响）。</div>
+    <!-- 分组管理：全部有模型的分组都可重命名（整组迁移）或删除（移入其他已接入模型） -->
+    <el-dialog v-model="showGroupManage" title="分组管理" :width="isMobile ? '96%' : '560px'" class="custom-dialog-pro">
+      <div class="text-xs text-secondary mb-3">
+        列出当前全部有模型的分组（含官方基础模型等内置分组）。重命名 = 整组迁移到新名字；
+        删除 = 整组移入「其他已接入模型」。模型本身不受影响，分组只是本页展示方式。
+      </div>
       <div v-for="g in manageableGroups" :key="g.name" class="flex items-center gap-2 mb-2">
         <el-input v-model="g.editName" size="small" class="font-mono" maxlength="64" />
         <span class="text-xs text-secondary whitespace-nowrap">{{ g.count }} 个模型</span>
         <el-button size="small" type="primary" plain :disabled="!g.editName.trim() || g.editName.trim() === g.name" @click="renameGroup(g)">重命名</el-button>
         <el-button size="small" type="danger" plain @click="deleteGroup(g)">删除</el-button>
       </div>
-      <el-empty v-if="manageableGroups.length === 0" description="还没有自定义分组——添加/编辑模型时输入新分组名即可创建" :image-size="60" />
+      <el-empty v-if="manageableGroups.length === 0" description="还没有任何模型——先添加模型" :image-size="60" />
     </el-dialog>
 
     <!-- 自动拉取模型弹窗：选接口来源 → 拉取上游模型列表 → 勾选批量写入 -->
@@ -745,21 +748,21 @@ function setCustomGroup(slug, groupName) {
   persistGroupMap();
 }
 
-// ---- 分组管理：重命名/删除自定义分组（预置分组按规则生成，不在此管理范围） ----
-const manageableGroups = computed(() => {
-  const counts = new Map();
-  for (const m of allModels.value) {
-    const g = customGroupMap.value[m.slug];
-    if (g) counts.set(g, (counts.get(g) || 0) + 1);
-  }
-  return [...counts.entries()].map(([name, count]) => ({ name, count, editName: name }));
-});
+// ---- 分组管理：全部有模型的分组都可重命名（整组迁移）或删除（移入其他已接入模型） ----
+// 自定义归属存在 customGroupMap（localStorage），优先级高于内置预置表——因此内置分组
+// （官方基础模型/国内直连等）同样可以整组改名或删除：改名=逐模型写入新组映射，
+// 删除=逐模型移入「其他已接入模型」，模型本身不受影响。
+const manageableGroups = computed(() => modelGroups.value.map((g) => ({
+  name: g.name,
+  count: g.models.length,
+  editName: g.name,
+})));
 
 function renameGroup(group) {
   const nextName = group.editName.trim();
   if (!nextName || nextName === group.name) return;
   for (const m of allModels.value) {
-    if (customGroupMap.value[m.slug] === group.name) customGroupMap.value[m.slug] = nextName;
+    if (groupOf(m.slug) === group.name) setCustomGroup(m.slug, nextName);
   }
   persistGroupMap();
   group.name = nextName;
@@ -769,15 +772,14 @@ function renameGroup(group) {
 
 function deleteGroup(group) {
   ElMessageBox.confirm(
-    `删除分组「${group.name}」？其中 ${group.count} 个模型将回到自动分组（模型本身不受影响）。`,
+    `删除分组「${group.name}」？其中 ${group.count} 个模型将移入「${OTHER_GROUP_NAME}」（模型本身不受影响）。`,
     '删除分组',
     { confirmButtonText: '删除', cancelButtonText: '取消', type: 'warning' },
   ).then(() => {
     for (const m of allModels.value) {
-      if (customGroupMap.value[m.slug] === group.name) delete customGroupMap.value[m.slug];
+      if (groupOf(m.slug) === group.name) setCustomGroup(m.slug, OTHER_GROUP_NAME);
     }
-    persistGroupMap();
-    ElMessage.success('分组已删除');
+    ElMessage.success(`分组已删除，${group.count} 个模型移入「${OTHER_GROUP_NAME}」`);
   }).catch(() => { /* 用户取消 */ });
 }
 const defaultGroupBySlug = new Map(DEFAULT_GROUPS.flatMap((g) => g.slugs.map((slug) => [slug, g.name])));

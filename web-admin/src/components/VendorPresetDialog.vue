@@ -19,7 +19,7 @@
             v-for="preset in group.items"
             :key="preset.id"
             class="vendor-card cursor-pointer"
-            @click="selectedPreset = preset"
+            @click="selectPreset(preset)"
           >
             <div class="flex items-center justify-between gap-2">
               <span class="font-semibold text-primary text-sm">{{ preset.name }}</span>
@@ -150,9 +150,9 @@
 
       <div class="flex items-center justify-between gap-2 mt-4 flex-wrap">
         <div class="flex flex-col gap-1">
-          <el-checkbox v-model="addCatalog" class="text-xs">同时写入预设默认模型清单到 catalog</el-checkbox>
+          <el-checkbox v-model="addCatalog" class="text-xs">按下方模型清单写入目录（可自由编辑）</el-checkbox>
           <el-checkbox v-model="fetchModels" class="text-xs">
-            接入后直连拉取真实模型清单（拉取失败自动回退预设清单）
+            接入后直连拉取真实模型清单（拉取结果与下方清单合并，失败时用下方清单）
           </el-checkbox>
         </div>
         <div class="flex gap-2">
@@ -160,6 +160,22 @@
           <el-button type="primary" :loading="activating" @click="handleActivate">
             一键接入
           </el-button>
+        </div>
+      </div>
+
+      <!-- 模型清单：预填预设默认模型，可自由增删改（slug=上游码 做名字映射） -->
+      <div class="mt-3">
+        <div class="text-sm font-semibold text-primary mb-2">模型清单（每行一个，可自由增删改）</div>
+        <el-input
+          v-model="modelsText"
+          type="textarea"
+          :rows="6"
+          class="font-mono"
+          placeholder="每行一个模型标识；需要对外用别名时写 slug=厂商真实模型码"
+        />
+        <div class="text-xs text-secondary mt-1">
+          勾选「按下方模型清单写入目录」时按这里的清单接入，不勾选则不动目录；
+          写法 slug=真实模型码 表示对外用左边名字、对厂商用右边名字（自动映射）
         </div>
       </div>
 
@@ -199,6 +215,30 @@ const addCatalog = ref(true);
 const fetchModels = ref(false);
 const activating = ref(false);
 const activateError = ref(null);
+const modelsText = ref('');
+
+// 选中厂商时预填预设默认模型清单（每行 slug；预设自带上游码的一并预填映射）
+function fillModelsText(preset) {
+  const lines = (preset?.models || []).map((m) => (m.upstream && m.upstream !== m.slug ? `${m.slug}=${m.upstream}` : m.slug));
+  modelsText.value = lines.join('\n');
+}
+
+function parseModelsText(text) {
+  const models = [];
+  for (const raw of String(text || '').split(/\r?\n/)) {
+    const line = raw.trim();
+    if (!line) continue;
+    const eq = line.indexOf('=');
+    if (eq > 0) {
+      const slug = line.slice(0, eq).trim();
+      const upstream = line.slice(eq + 1).trim();
+      if (slug) models.push({ slug, upstream });
+    } else {
+      models.push({ slug: line, upstream: '' });
+    }
+  }
+  return models;
+}
 
 const groupedPresets = computed(() => {
   const categories = ['cn_official', 'official', 'aggregator'];
@@ -220,6 +260,13 @@ function quotaWindowTagType(window) {
 
 function addKeyRow() {
   keyRows.value.push({ kind: 'plaintext', key: '', label: '', priority: 0 });
+}
+
+// 点进厂商详情：预填可编辑的模型清单
+function selectPreset(preset) {
+  selectedPreset.value = preset;
+  fillModelsText(preset);
+  activateError.value = null;
 }
 
 async function onOpen() {
@@ -247,11 +294,17 @@ async function handleActivate() {
   activating.value = true;
   activateError.value = null;
   try {
+    const customModels = addCatalog.value ? parseModelsText(modelsText.value) : null;
+    if (customModels && customModels.length === 0) {
+      ElMessage.warning('模型清单为空：请至少填写一个模型，或取消「按下方模型清单写入目录」');
+      return;
+    }
     const res = await activateVendorPreset({
       vendorId: selectedPreset.value.id,
       keys,
       addCatalog: addCatalog.value,
       fetchModels: fetchModels.value,
+      models: customModels || undefined,
     });
     const summary = [
       res.changes?.join('；'),
@@ -280,6 +333,7 @@ function resetState() {
   addCatalog.value = true;
   fetchModels.value = false;
   activateError.value = null;
+  modelsText.value = '';
 }
 </script>
 
