@@ -256,6 +256,22 @@ my-glm=glm-5.3-flash"
       </div>
     </el-dialog>
 
+    <!-- 测试结果：真实请求往返（延迟 + 模型回复原文） -->
+    <el-dialog v-model="showTestReply" title="测试结果（真实请求与模型回复）" :width="isMobile ? '94%' : '760px'" class="custom-dialog-pro" top="6vh">
+      <div v-for="(row, idx) in testReplyRows" :key="idx" class="mb-3 pb-3" style="border-bottom: 1px solid var(--el-border-color-lighter)">
+        <div class="flex items-center gap-2 mb-1">
+          <span class="font-bold text-primary text-sm">{{ row.name }}</span>
+          <el-tag :type="row.ok ? 'success' : 'danger'" size="small" effect="plain">
+            {{ row.ok ? `正常 · ${row.latencyMs}ms` : '失败' }}
+          </el-tag>
+        </div>
+        <div v-if="row.error" class="text-xs mb-1" style="color: var(--el-color-danger)">错误：{{ row.error }}</div>
+        <div class="text-xs text-secondary mb-1">模型回复：</div>
+        <pre class="font-mono text-xs bg-secondary/10 rounded p-2 overflow-auto whitespace-pre-wrap" style="max-height: 160px">{{ row.reply || '（无文本回复——工具调用型响应或该次探测被上游截断，可在「请求日志」里看完整响应）' }}</pre>
+      </div>
+      <div class="text-xs text-secondary">探测请求固定为「请用一句中文简短介绍你自己。」（max_output_tokens=256）；完整请求体可在「请求日志」里查看。</div>
+    </el-dialog>
+
     <!-- 分组管理：重命名/删除自定义分组（预置分组按规则自动生成，不在此列） -->
     <el-dialog v-model="showGroupManage" title="分组管理" :width="isMobile ? '92%' : '480px'" class="custom-dialog-pro">
       <div class="text-xs text-secondary mb-3">自定义分组来自你给模型设置的「所属分组」。重命名会同步更新所有归属模型；删除后模型回到自动分组（模型本身不受影响）。</div>
@@ -851,16 +867,33 @@ async function loadModels() {
   }
 }
 
+// 测试结果弹窗：展示真实请求与模型回复（sub2api 式）
+const showTestReply = ref(false);
+const testReplyRows = ref([]);
+
+function openTestReply(res, displayName) {
+  testReplyRows.value = [{
+    name: displayName || res.model,
+    ok: res.ok,
+    latencyMs: res.latencyMs,
+    reply: res.reply || '',
+    requestBody: res.requestBody || '',
+    error: res.error || '',
+  }];
+  showTestReply.value = true;
+}
+
 async function testLatency(m) {
   testingSlug.value = m.slug;
   try {
     const res = await testModelLatency(m.slug, m.target);
     latencies.value[m.slug] = res;
     if (res.ok) {
-      ElMessage.success(`${m.displayName} 连接正常: ${res.latencyMs}ms`);
+      ElMessage.success(`${m.displayName} 测试完成: ${res.latencyMs}ms`);
     } else {
-      ElMessage.warning(`${m.displayName} 连接异常: ${res.error}`);
+      ElMessage.warning(`${m.displayName} 测试失败: ${res.error}`);
     }
+    openTestReply(res, m.displayName);
   } catch (err) {
     latencies.value[m.slug] = { ok: false, error: err.response?.data?.error?.message || err.message };
   } finally {
@@ -870,14 +903,27 @@ async function testLatency(m) {
 
 // 真实探测会打到上游，全量测速限制并发避免挤占路由请求预算
 async function handleTestAll() {
-  ElMessage.info('开始并发测试所有模型连接（真实探测，逐个打 ping）...');
+  ElMessage.info('开始逐个真实对话测试（每个模型会收到一条真实请求）...');
   const allModels = modelGroups.value.flatMap((g) => g.models);
   const CONCURRENCY = 4;
   try {
     for (let i = 0; i < allModels.length; i += CONCURRENCY) {
       await Promise.allSettled(allModels.slice(i, i + CONCURRENCY).map((m) => testLatency(m)));
     }
-    ElMessage.success('全部模型测速完成！');
+    // 批量完成后汇总展示全部回复（单模型测试的弹窗已在 testLatency 打开过）
+    testReplyRows.value = allModels
+      .map((m) => ({ name: m.displayName || m.slug, res: latencies.value[m.slug] }))
+      .filter((item) => item.res)
+      .map((item) => ({
+        name: item.name,
+        ok: item.res.ok,
+        latencyMs: item.res.latencyMs,
+        reply: item.res.reply || '',
+        requestBody: item.res.requestBody || '',
+        error: item.res.error || '',
+      }));
+    showTestReply.value = true;
+    ElMessage.success('全部模型测试完成！');
   } finally {
     // 通知顶栏复位「测试所有模型连接」按钮 loading
     window.dispatchEvent(new CustomEvent('test-all-models-done'));
