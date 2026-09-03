@@ -122,9 +122,10 @@
             :key="m.slug"
             class="py-3.5 flex items-center justify-between flex-wrap gap-3 hover:bg-surface-2 px-3 rounded-lg transition-colors"
           >
-            <!-- 左侧：批量选择 + 模型核心信息 -->
+            <!-- 左侧：批量选择（官方模型不可删，无勾选框） + 模型核心信息 -->
             <div class="flex items-center gap-2.5 min-w-0">
               <el-checkbox
+                v-if="!isOfficialModel(m)"
                 :model-value="selectedForDelete.has(m.slug)"
                 class="shrink-0"
                 @change="toggleSelected(m.slug, $event)"
@@ -133,6 +134,7 @@
               <div class="flex items-center gap-2.5 flex-wrap">
                 <span class="font-bold text-primary font-mono text-sm">{{ m.displayName || m.slug }}</span>
                 <span class="text-xs text-secondary font-mono">{{ m.slug }}</span>
+                <el-tag v-if="isOfficialModel(m)" size="small" type="warning" effect="plain" class="text-xs">账号自带</el-tag>
               </div>
               <div class="flex items-center gap-2 flex-wrap">
                 <el-tag size="small" effect="plain" type="info" class="text-xs">
@@ -188,14 +190,16 @@
                 <el-icon class="mr-1"><Lightning /></el-icon>
                 测试连接
               </el-button>
-              <!-- 编辑/删除：目录里的每个模型都可自由编辑与删除（Key 池在分组头部，同厂商共享） -->
-              <el-button size="small" plain @click="openEdit(m)">
-                <el-icon class="mr-1"><Edit /></el-icon>
-                编辑
-              </el-button>
-              <el-button size="small" type="danger" plain @click="handleDeleteModel(m)">
-                删除
-              </el-button>
+              <!-- 官方账号绑定模型只读（可用性随账号/套餐，不可编辑删除）；自定义模型可自由管理 -->
+              <template v-if="!isOfficialModel(m)">
+                <el-button size="small" plain @click="openEdit(m)">
+                  <el-icon class="mr-1"><Edit /></el-icon>
+                  编辑
+                </el-button>
+                <el-button size="small" type="danger" plain @click="handleDeleteModel(m)">
+                  删除
+                </el-button>
+              </template>
             </div>
             </div>
           </div>
@@ -1298,6 +1302,11 @@ async function handleSaveEdit() {
 
 // 官方模型删除的额外警示：历史会话引用它们，删掉可能让旧对话打不开
 const OFFICIAL_SLUGS = new Set(DEFAULT_GROUPS[0].slugs);
+
+// 官方账号绑定模型（OpenAI Frontier 等）：随账号/套餐自带，只读——不可编辑/删除/批量勾选
+function isOfficialModel(m) {
+  return OFFICIAL_SLUGS.has(m && m.slug);
+}
 async function handleDeleteModel(m) {
   const officialNote = OFFICIAL_SLUGS.has(m.slug)
     ? '\n注意：这是官方基础模型，历史会话可能正在引用它，删除后旧对话在 Codex 里可能异常；确定仍要删除可继续。'
