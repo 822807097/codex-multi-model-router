@@ -154,7 +154,7 @@
             <!-- 右侧：延迟徽章（测过才显示）+ 操作 -->
             <div class="flex items-center gap-1.5 shrink-0">
               <el-tooltip
-                v-if="m.envSet === false && !(poolKeyCounts[m.target] > 0)"
+                v-if="m.envSet === false && !(poolKeyCounts[m.target] > 0) && !isSubscriptionModel(m)"
                 content="该厂商还没有配置密钥，点击去 Key 池添加"
                 placement="top"
                 :show-after="100"
@@ -744,14 +744,20 @@ const vendorGroups = ref([]); // [{ name, targetRef, apiBase, host, prefix, prot
 const selectedForDelete = reactive(new Set());
 
 function vendorChannelsOf(group) {
-  // 厂商分组通道：组内模型绑定的全部「有 host 的非官方通道」。
-  // 历史接入可能让同一分组挂在多个通道上（如 deepseek 组同时有 responses/chat
-  // 两个协议通道）——头部按通道各显示一个地址胶囊，均可单独编辑。
+  // 厂商分组通道：组内模型绑定的全部「有 host 的非官方通道」，
+  // 按 API 地址去重合并（谷歌一键接入曾为每模型建专属通道 → 27 个同地址通道
+  // 只显示一个地址胶囊；编辑保存时批量更新同地址全部通道）。
   const names = [...new Set(group.models.map((m) => m.target).filter(Boolean))];
   if (names.length === 0) return [];
-  return names
-    .map((name) => vendorGroups.value.find((v) => v.name === name))
-    .filter(Boolean);
+  const byApiBase = new Map();
+  for (const name of names) {
+    const ch = vendorGroups.value.find((v) => v.name === name);
+    if (!ch) continue;
+    const key = ch.apiBase || `${ch.protocol || 'https'}://${ch.host}${ch.prefix || ''}`;
+    if (byApiBase.has(key)) byApiBase.get(key).channels.push(ch);
+    else byApiBase.set(key, { ...ch, apiBaseKey: key, channels: [ch] });
+  }
+  return [...byApiBase.values()];
 }
 
 function vendorPoolKeyTotal(group) {
@@ -1454,6 +1460,13 @@ const OFFICIAL_SLUGS = new Set(DEFAULT_GROUPS[0].slugs);
 // 官方账号绑定模型（OpenAI Frontier 等）：随账号/套餐自带，只读——不可编辑/删除/批量勾选
 function isOfficialModel(m) {
   return OFFICIAL_SLUGS.has(m && m.slug);
+}
+
+// OAuth 订阅授权模型（谷歌 AI Pro 等）：走账号授权而非 API Key，不显示密钥警告
+function isSubscriptionModel(m) {
+  const t = String(m && m.target || '');
+  if (t.startsWith('google-')) return true;
+  return String(m && m.displayName || '').startsWith('google/');
 }
 async function handleDeleteModel(m) {
   const officialNote = OFFICIAL_SLUGS.has(m.slug)
