@@ -113,8 +113,16 @@
 
             <!-- 右侧：测速 Badge 与操作 -->
             <div class="flex items-center gap-2 flex-wrap">
-              <!-- 密钥状态 -->
-              <el-tag v-if="m.envSet === false" type="warning" size="small" effect="plain">⚠ 密钥未配置</el-tag>
+              <!-- 密钥状态：环境变量未配但密钥池有 key 时不再误报；池内有 key 直接显示数量并可点管理 -->
+              <el-tag
+                v-if="poolKeyCounts[m.target] > 0"
+                type="success"
+                size="small"
+                effect="plain"
+                class="cursor-pointer"
+                @click="openKeyPoolFor(m.target)"
+              >🔑 密钥池 {{ poolKeyCounts[m.target] }} 把</el-tag>
+              <el-tag v-else-if="m.envSet === false" type="warning" size="small" effect="plain" class="cursor-pointer" @click="openKeyPoolFor(m.target)">⚠ 密钥未配置</el-tag>
               <!-- 测速 Badge -->
               <div v-if="latencies[m.slug]" class="flex items-center">
                 <el-tag
@@ -156,6 +164,15 @@
                 测试连接
               </el-button>
               <!-- 编辑/删除：目录里的每个模型都可自由编辑与删除 -->
+              <el-button
+                v-if="m.target"
+                size="small"
+                plain
+                @click="openKeyPoolFor(m.target)"
+              >
+                <el-icon class="mr-1"><Key /></el-icon>
+                Key 池
+              </el-button>
               <el-button size="small" plain @click="openEdit(m)">
                 <el-icon class="mr-1"><Edit /></el-icon>
                 编辑
@@ -491,7 +508,7 @@ my-glm=glm-5.3-flash"
     </el-dialog>
 
     <!-- 密钥池：同一接口多把 key / 优先级 / 冷却与恢复时间展示 -->
-    <ChannelKeyPoolDialog v-model="showKeyPool" @changed="loadModels" />
+    <ChannelKeyPoolDialog v-model="showKeyPool" :target-name="keyPoolTarget" @changed="() => { loadModels(); loadPoolKeyCounts(); }" />
     <!-- 厂商预设接入：选厂商 → 填 key → 自动配好接口与密钥轮换 -->
     <VendorPresetDialog v-model="showVendorPreset" @activated="onVendorActivated" />
   </div>
@@ -512,7 +529,7 @@ import {
   getRequestLogDetail,
 } from '../../api/models.js';
 import { getSystemConfig } from '../../api/system.js';
-import { getCodexDefaultModel, setCodexDefaultModel, createChannelKey } from '../../api/channelKeys.js';
+import { getCodexDefaultModel, setCodexDefaultModel, createChannelKey, listChannelKeys } from '../../api/channelKeys.js';
 import { prefixModelPlatform } from '../../api/models.js';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import AsyncContainer from '../../components/AsyncContainer.vue';
@@ -526,6 +543,25 @@ const loadError = ref('');
 
 // ---- 密钥池 / 厂商预设 / Codex 默认模型 ----
 const showKeyPool = ref(false);
+const keyPoolTarget = ref('');
+// 每个接口通道在密钥池中的 key 数（用于「密钥未配置」误报修正与「密钥池 N 把」展示）
+const poolKeyCounts = ref({});
+
+function openKeyPoolFor(targetName) {
+  keyPoolTarget.value = targetName || '';
+  showKeyPool.value = true;
+  loadPoolKeyCounts();
+}
+
+async function loadPoolKeyCounts() {
+  try {
+    const res = await listChannelKeys('', { skipGlobalError: true });
+    const counts = {};
+    for (const group of (res?.groups || [])) counts[group.target] = group.count;
+    poolKeyCounts.value = counts;
+  } catch { /* 密钥池不可用时保持现状 */ }
+}
+
 const showVendorPreset = ref(false);
 const codexModelLoading = ref(false);
 const codexModelSaving = ref(false);
@@ -862,6 +898,7 @@ async function loadModels() {
     // 错误态由 AsyncContainer 呈现，跳过全局 toast
     const res = await getModels({ skipGlobalError: true });
     if (!res?.ok || !Array.isArray(res.models)) return;
+    loadPoolKeyCounts();
     catalogSlugs.value = new Set(
       res.models.map((entry) => entry?.slug).filter((slug) => typeof slug === 'string' && slug),
     );
