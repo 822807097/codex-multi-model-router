@@ -237,6 +237,9 @@ DEEPSEEK_API_KEY（环境变量名，路由运行时读取）"
           />
           <div class="text-xs text-secondary mt-1">该厂商全部模型共用这些 Key；开多个账号就有多把，某一把没额度自动无感切换下一把</div>
         </el-form-item>
+        <el-form-item label="代理（国外厂商/中转站需要，国内直连不用管）">
+          <ProxyConfigEditor v-model="form.proxy" />
+        </el-form-item>
         <el-form-item label="模型列表（每行一个）" required>
           <el-input
             v-model="form.modelsText"
@@ -324,6 +327,9 @@ my-glm=glm-5.3-flash"
         <el-form-item label="API 地址" required>
           <el-input v-model="vendorEdit.apiBase" placeholder="例如: https://api.deepseek.com/v1" class="font-mono" />
           <div class="text-xs text-secondary mt-1">该厂商（{{ vendorEdit.name }}）下全部模型共用此地址；密钥请在「Key 池」里管理</div>
+        </el-form-item>
+        <el-form-item label="代理（国外厂商/中转站需要，国内直连不用管）">
+          <ProxyConfigEditor v-model="vendorEdit.proxy" />
         </el-form-item>
       </el-form>
       <template #footer>
@@ -578,6 +584,7 @@ import { prefixModelPlatform } from '../../api/models.js';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import AsyncContainer from '../../components/AsyncContainer.vue';
 import ChannelKeyPoolDialog from '../../components/ChannelKeyPoolDialog.vue';
+import ProxyConfigEditor from '../../components/ProxyConfigEditor.vue';
 import VendorPresetDialog from '../../components/VendorPresetDialog.vue';
 import { useBreakpoint } from '../../composables/useBreakpoint.js';
 
@@ -615,12 +622,27 @@ const codexDefaultModel = ref('');
 const showAddModal = ref(false);
 const testingSlug = ref(null);
 const latencies = ref({});
-const form = ref({ vendor: '', apiBase: '', keysText: '', modelsText: '', group: '' });
+const form = ref({ vendor: '', apiBase: '', keysText: '', modelsText: '', group: '' , proxy: { mode: 'direct', url: '' } });
 const showGroupManage = ref(false);
 
 function syncVendorGroup() {
   // 分组默认跟随厂商名称（用户选过分组就不覆盖）
   if (!form.value.groupTouched) form.value.group = form.value.vendor?.trim() || '';
+}
+
+// 代理编辑器（direct/global/custom）→ target 字段（viaProxy/proxyUrl）
+// 约定：proxyUrl 清除必须发 null（后端按 null 删字段）
+function proxyFieldsFromEditor(proxy) {
+  const mode = proxy?.mode || 'direct';
+  if (mode === 'global') return { viaProxy: true, proxyUrl: null };
+  if (mode === 'custom' && proxy?.url) return { viaProxy: false, proxyUrl: proxy.url };
+  return { viaProxy: false, proxyUrl: null };
+}
+
+function editorValueFromTargetFields(fields = {}) {
+  if (fields.proxyUrl) return { mode: 'custom', url: fields.proxyUrl };
+  if (fields.viaProxy === true) return { mode: 'global', url: '' };
+  return { mode: 'direct', url: '' };
 }
 
 // 解析模型列表文本：每行一个 slug，支持 slug=上游码 声明真实模型码映射
@@ -642,7 +664,7 @@ function parseModelLines(text) {
 }
 
 function openAddModal() {
-  form.value = { vendor: '', apiBase: '', keysText: '', modelsText: '', group: '', groupTouched: false };
+  form.value = { vendor: '', apiBase: '', keysText: '', modelsText: '', group: '', groupTouched: false, proxy: { mode: 'direct', url: '' } };
   showAddModal.value = true;
 }
 
@@ -709,6 +731,8 @@ async function refreshVendorGroups() {
         prefix: t.prefix || '/v1',
         protocol: t.protocol || 'https',
         port: t.port || null,
+        viaProxy: t.viaProxy === true,
+        proxyUrl: t.proxyUrl || null,
         apiBase: `${t.protocol || 'https'}://${t.host}${t.port ? `:${t.port}` : ''}${t.prefix || ''}`,
       }));
   } catch { /* 路由状态不可用时分组级按钮自动隐藏 */ }
@@ -720,7 +744,12 @@ const vendorEditSaving = ref(false);
 const vendorEdit = ref({ name: '', targetRef: null, apiBase: '' });
 
 function openVendorEdit(info) {
-  vendorEdit.value = { name: info.name, targetRef: info.targetRef, apiBase: info.apiBase };
+  vendorEdit.value = {
+    name: info.name,
+    targetRef: info.targetRef,
+    apiBase: info.apiBase,
+    proxy: editorValueFromTargetFields(info),
+  };
   showVendorEdit.value = true;
 }
 
@@ -730,7 +759,12 @@ async function handleSaveVendorEdit() {
     ElMessage.warning('请填写正确的 API 地址（例如 https://api.deepseek.com/v1）');
     return;
   }
-  const patch = { host: endpoint.host, prefix: endpoint.prefix, protocol: endpoint.protocol };
+  const patch = {
+    host: endpoint.host,
+    prefix: endpoint.prefix,
+    protocol: endpoint.protocol,
+    ...proxyFieldsFromEditor(vendorEdit.value.proxy),
+  };
   if (endpoint.port) patch.port = endpoint.port; else patch.port = null;
   vendorEditSaving.value = true;
   try {
@@ -1330,6 +1364,7 @@ async function handleAddModel() {
     wireApi: 'chat',
   };
   if (endpoint.port) target.port = endpoint.port;
+  Object.assign(target, proxyFieldsFromEditor(form.value.proxy));
   if (Object.keys(modelMap).length > 0) target.modelMap = modelMap;
   const operations = [
     // 模型先入目录，接口配置再绑定——assertDedicatedTarget 要求精确 match 命中已存在的模型

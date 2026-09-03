@@ -163,6 +163,11 @@
         </div>
       </div>
 
+      <div class="mt-3">
+        <div class="text-sm font-semibold text-primary mb-2">代理（国外厂商必选，国内厂商直连）</div>
+        <ProxyConfigEditor v-model="proxy" :allow-global="true" />
+      </div>
+
       <!-- 模型清单：预填预设默认模型，可自由增删改（slug=上游码 做名字映射） -->
       <div class="mt-3">
         <div class="text-sm font-semibold text-primary mb-2">模型清单（每行一个，可自由增删改）</div>
@@ -200,6 +205,7 @@
 import { ref, computed } from 'vue';
 import { ElMessage } from 'element-plus';
 import { getVendorPresets, activateVendorPreset } from '../api/channelKeys.js';
+import ProxyConfigEditor from './ProxyConfigEditor.vue';
 import { useBreakpoint } from '../composables/useBreakpoint.js';
 
 const props = defineProps({
@@ -216,6 +222,7 @@ const fetchModels = ref(false);
 const activating = ref(false);
 const activateError = ref(null);
 const modelsText = ref('');
+const proxy = ref({ mode: 'direct', url: '' });
 
 // 选中厂商时预填预设默认模型清单（每行 slug；预设自带上游码的一并预填映射）
 function fillModelsText(preset) {
@@ -266,6 +273,10 @@ function addKeyRow() {
 function selectPreset(preset) {
   selectedPreset.value = preset;
   fillModelsText(preset);
+  // 国外官方厂商默认走全局代理（否则直连不可达）；国内厂商默认直连
+  proxy.value = preset.category === 'official'
+    ? { mode: 'global', url: '' }
+    : { mode: 'direct', url: '' };
   activateError.value = null;
 }
 
@@ -305,6 +316,10 @@ async function handleActivate() {
       addCatalog: addCatalog.value,
       fetchModels: fetchModels.value,
       models: customModels || undefined,
+      proxy: {
+        viaProxy: proxy.value.mode === 'global',
+        proxyUrl: proxy.value.mode === 'custom' ? (proxy.value.url || null) : null,
+      },
     });
     const summary = [
       res.changes?.join('；'),
@@ -334,6 +349,7 @@ function resetState() {
   fetchModels.value = false;
   activateError.value = null;
   modelsText.value = '';
+  proxy.value = { mode: 'direct', url: '' };
 }
 </script>
 
