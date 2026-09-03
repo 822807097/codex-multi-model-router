@@ -289,13 +289,51 @@
         <el-button type="primary" :loading="desktopSaving" @click="applyDesktopRouter">应用并接入路由</el-button>
       </template>
     </el-dialog>
+
+  <el-dialog v-model="showUpdateDialog" title="软件更新" width="520px" class="custom-dialog-pro" append-to-body>
+    <template v-if="updateDone">
+      <el-result icon="success" title="更新完成" sub-title="服务正在优雅重启，约 3 秒后刷新页面即可使用新版本">
+        <template #extra>
+          <el-button type="primary" @click="reloadPage">刷新页面</el-button>
+        </template>
+      </el-result>
+    </template>
+    <template v-else>
+      <div class="space-y-3">
+        <div class="flex items-center justify-between text-sm">
+          <span class="text-secondary">当前版本</span>
+          <span class="font-mono">v{{ updateInfo?.current || currentVersion }}</span>
+        </div>
+        <div class="flex items-center justify-between text-sm">
+          <span class="text-secondary">最新版本</span>
+          <span class="font-mono font-semibold">{{ updateInfo?.latest || (updateChecking ? '查询中…' : '—') }}</span>
+        </div>
+        <el-alert
+          v-if="updateInfo && !updateInfo.hasUpdate"
+          type="success"
+          :closable="false"
+          title="已是最新版本"
+        />
+        <div v-if="updateInfo?.notes" class="text-xs text-secondary whitespace-pre-wrap border-t border-muted pt-2 max-h-56 overflow-auto">{{ updateInfo.notes }}</div>
+      </div>
+    </template>
+    <template #footer>
+      <el-button @click="showUpdateDialog = false">关闭</el-button>
+      <el-button
+        v-if="updateInfo?.hasUpdate && !updateDone"
+        type="primary"
+        :loading="updateApplying"
+        @click="handleApplyUpdate"
+      >一键更新</el-button>
+    </template>
+  </el-dialog>
   </div>
 </template>
 
 <script setup>
 import { ref, reactive, computed, onMounted } from 'vue';
 import {
-  getSystemConfig, saveSystemConfig, testVisionRelay, getCursorGatewayStatus, listCursorGatewayAccounts, addCursorGatewayAccount, removeCursorGatewayAccount, restartCursorGateway, startCursorGateway, listCursorGatewayModels, restartCodexDesktopApp, syncCodexSessionProviders, getCodexDesktopState, restoreCodexDesktopOfficial, applyCodexDesktopRouter,
+  getSystemConfig, saveSystemConfig, testVisionRelay, getCursorGatewayStatus, listCursorGatewayAccounts, addCursorGatewayAccount, removeCursorGatewayAccount, restartCursorGateway, startCursorGateway, listCursorGatewayModels, restartCodexDesktopApp, syncCodexSessionProviders, getCodexDesktopState, restoreCodexDesktopOfficial, applyCodexDesktopRouter, checkForUpdate, applyUpdate,
 } from '../../api/system.js';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import AsyncContainer from '../../components/AsyncContainer.vue';
@@ -303,9 +341,41 @@ import ProxyConfigEditor from '../../components/ProxyConfigEditor.vue';
 
 const loading = ref(true);
 const loadError = ref('');
+const currentVersion = ref('1.4.1');
+const updateChecking = ref(false);
+const updateInfo = ref(null);
+const showUpdateDialog = ref(false);
+const updateApplying = ref(false);
+const updateDone = ref(false);
 
 function reloadPage() {
   setTimeout(() => window.location.reload(), 300);
+}
+
+async function handleCheckUpdate() {
+  updateChecking.value = true;
+  try {
+    const res = await checkForUpdate({ skipGlobalError: true });
+    updateInfo.value = res;
+    showUpdateDialog.value = true;
+  } catch (err) {
+    ElMessage.error(err.response?.data?.error?.message || err.message || '检查更新失败（需网络或全局代理可达 GitHub）');
+  } finally {
+    updateChecking.value = false;
+  }
+}
+
+async function handleApplyUpdate() {
+  updateApplying.value = true;
+  try {
+    const res = await applyUpdate();
+    updateDone.value = true;
+    ElMessage.success(res.message || '已更新，服务重启中');
+  } catch (err) {
+    ElMessage.error(err.response?.data?.error?.message || err.message || '更新失败');
+  } finally {
+    updateApplying.value = false;
+  }
 }
 function serializeVisionEndpoint(ep) {
   const result = {
