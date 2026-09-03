@@ -186,7 +186,12 @@
                 <el-icon class="mr-1"><Lightning /></el-icon>
                 测试
               </el-button>
-              <!-- 官方账号绑定模型只读；自定义模型可编辑/删除（图标按钮 + 悬停提示） -->
+              <!-- 官方账号绑定模型：仅可编辑客户端默认参数；自定义模型可编辑/删除（图标按钮 + 悬停提示） -->
+              <el-tooltip content="编辑客户端默认参数（思考档位 / 上下文）" placement="top" :show-after="200">
+                <el-button size="small" plain @click="openEdit(m)">
+                  <el-icon><Setting /></el-icon>
+                </el-button>
+              </el-tooltip>
               <template v-if="!isOfficialModel(m)">
                 <el-tooltip content="编辑模型" placement="top" :show-after="200">
                   <el-button size="small" plain @click="openEdit(m)">
@@ -497,12 +502,13 @@ my-model=real-vendor-name"
     <!-- 编辑模型弹窗：写入 catalog 的模型条目字段 -->
     <el-dialog
       v-model="showEditModal"
-      title="编辑模型"
+      :title="editForm.officialLimited ? '编辑客户端默认参数' : '编辑模型'"
       :width="isMobile ? '92%' : '520px'"
       class="custom-dialog-pro"
       @closed="editingSlug = ''"
     >
       <el-form :model="editForm" label-position="top">
+        <template v-if="!editForm.officialLimited">
         <el-form-item label="模型标识 (Slug)">
           <el-input v-model="editForm.slug" placeholder="模型唯一标识" />
           <div class="text-xs text-secondary mt-1">修改 Slug 相当于重命名；分组归属会跟着保留</div>
@@ -516,6 +522,7 @@ my-model=real-vendor-name"
           </el-select>
           <div class="text-xs text-secondary mt-1">改分组只影响本页展示；清空则回到按预置规则自动分组</div>
         </el-form-item>
+        </template>
         <el-form-item label="默认思考级别 (Reasoning Effort)">
           <el-select v-model="editForm.default_reasoning_level" placeholder="选择默认思考级别" class="w-full">
             <el-option
@@ -544,11 +551,14 @@ my-model=real-vendor-name"
           </el-select>
           <div class="text-xs text-secondary mt-1">下拉选 128k / 272k / 1M 等常用档位；也可直接输入数字或 1M、272k 这类简写，保存时自动换算</div>
         </el-form-item>
-        <el-form-item label="输入模态">
+        <template v-if="!editForm.officialLimited">
+                <el-form-item label="输入模态">
           <el-checkbox :model-value="true" disabled>文本 (text)</el-checkbox>
           <el-checkbox v-model="editForm.supportsImage">图片 (image / 视觉)</el-checkbox>
         </el-form-item>
-        <el-form-item label="Codex 插件能力（自定义模型可声明使用全部插件）">
+        </template>
+        <template v-if="!editForm.officialLimited">
+                <el-form-item label="Codex 插件能力（自定义模型可声明使用全部插件）">
           <div class="w-full space-y-1">
             <el-checkbox-group v-model="editForm.plugins.tools" class="plugin-tools">
               <el-checkbox v-for="t in CODEX_TOOL_OPTIONS" :key="t.value" :value="t.value">
@@ -572,7 +582,8 @@ my-model=real-vendor-name"
             </div>
           </div>
         </el-form-item>
-        <el-form-item label="描述 (Description)">
+        </template>
+        <el-form-item v-if="!editForm.officialLimited" label="描述 (Description)">
           <el-input
             v-model="editForm.description"
             type="textarea"
@@ -1368,6 +1379,7 @@ function openEdit(m) {
       customTools: custom.join(', '),
       skills: m.includeSkills === true,
     },
+    officialLimited: isOfficialModel(m),
   };
   showEditModal.value = true;
 }
@@ -1376,6 +1388,22 @@ async function handleSaveEdit() {
   const slug = editForm.value.slug?.trim();
   if (!slug || /\s/.test(slug)) {
     ElMessage.warning('Slug 不能为空且不能包含空格');
+    return;
+  }
+  // 官方账号绑定模型走受限编辑：只更新客户端默认参数，其余目录字段保持原样
+  if (editForm.value.officialLimited) {
+    const limitedPatch = {};
+    if (editForm.value.default_reasoning_level) limitedPatch.default_reasoning_level = editForm.value.default_reasoning_level;
+    if (Number(editForm.value.context_window) > 0) limitedPatch.context_window = parseContextTokens(editForm.value.context_window);
+    editSaving.value = true;
+    try {
+      await updateModel(editingSlug.value, limitedPatch);
+      ElMessage.success('客户端默认参数已更新；重启路由与 Codex 后完全生效');
+      showEditModal.value = false;
+      await loadModels();
+    } catch { /* 错误提示由请求拦截器统一处理 */ } finally {
+      editSaving.value = false;
+    }
     return;
   }
   const patch = {
