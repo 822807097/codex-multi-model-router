@@ -207,13 +207,16 @@
     <el-card shadow="never" class="setting-card">
       <template #header>
         <div class="flex items-center justify-between">
-          <div class="font-bold text-primary text-sm">已启用的路由目标通道 (Targets)</div>
+          <div class="font-bold text-primary text-sm">模型接口配置（高级）</div>
           <div class="flex items-center gap-2">
-            <el-button size="small" plain :loading="cleanupSaving" @click="handleCleanupUnusedGoogle">
+            <el-button size="small" type="primary" :loading="cleanupSaving" @click="handleCleanupUnusedGoogle">
               <el-icon class="mr-1"><Delete /></el-icon>清理未使用的谷歌通道
             </el-button>
-            <el-button size="small" type="primary" plain @click="openTargetEditor(null)">
-              <el-icon class="mr-1"><Plus /></el-icon>添加通道
+            <el-button size="small" type="primary" @click="openAddModelDialog">
+              <el-icon class="mr-1"><Plus /></el-icon>添加模型到 Codex
+            </el-button>
+            <el-button size="small" plain @click="openTargetEditor(null)">
+              <el-icon class="mr-1"><Plus /></el-icon>直接配置接口（高级）
             </el-button>
           </div>
         </div>
@@ -371,7 +374,10 @@
 
 <script setup>
 import { ref, reactive, computed, onMounted } from 'vue';
-import { getSystemConfig, saveSystemConfig, testVisionRelay, getCursorGatewayStatus, listCursorGatewayAccounts, addCursorGatewayAccount, removeCursorGatewayAccount, restartCursorGateway, startCursorGateway, listCursorGatewayModels, restartCodexDesktopApp, syncCodexSessionProviders, getCodexDesktopState, restoreCodexDesktopOfficial, applyCodexDesktopRouter } from '../../api/system.js';
+import { useRouter } from 'vue-router';
+import {
+  getSystemConfig, saveSystemConfig, testVisionRelay, getCursorGatewayStatus, listCursorGatewayAccounts, addCursorGatewayAccount, removeCursorGatewayAccount, restartCursorGateway, startCursorGateway, listCursorGatewayModels, restartCodexDesktopApp, syncCodexSessionProviders, getCodexDesktopState, restoreCodexDesktopOfficial, applyCodexDesktopRouter,
+} from '../../api/system.js';
 import { listChannelKeys } from '../../api/channelKeys.js';
 import { getModelRouting, commitModelOperations, testTargetConnection } from '../../api/models.js';
 import { ElMessage, ElMessageBox } from 'element-plus';
@@ -380,6 +386,11 @@ import TargetEditorDialog from '../../components/TargetEditorDialog.vue';
 import ProxyConfigEditor from '../../components/ProxyConfigEditor.vue';
 
 const loading = ref(true);
+const router = useRouter();
+function openAddModelDialog() {
+  // 一次表单添加「模型 + 通道 + 分组 + 多 Key」：跳转到模型页并自动打开弹窗
+  router.push({ path: '/models', query: { add: '1' } });
+}
 const loadError = ref('');
 // 通道密钥池条目数（target → 池内 key 数），供「密钥来源」列展示
 const poolKeyCounts = ref({});

@@ -99,9 +99,6 @@
               </div>
               <div class="flex items-center gap-2 flex-wrap">
                 <el-tag size="small" effect="plain" type="info" class="text-xs">
-                  目标: {{ m.target }}
-                </el-tag>
-                <el-tag size="small" effect="plain" type="info" class="text-xs">
                   上下文: {{ m.context }}
                 </el-tag>
                 <el-tag size="small" effect="plain" type="info" class="text-xs">
@@ -112,8 +109,8 @@
 
             <!-- 右侧：测速 Badge 与操作 -->
             <div class="flex items-center gap-2 flex-wrap">
-              <!-- 通道凭据状态 -->
-              <el-tag v-if="m.envSet === false" type="warning" size="small" effect="plain">⚠ 通道 Key 未配置</el-tag>
+              <!-- 密钥状态 -->
+              <el-tag v-if="m.envSet === false" type="warning" size="small" effect="plain">⚠ 密钥未配置</el-tag>
               <!-- 测速 Badge -->
               <div v-if="latencies[m.slug]" class="flex items-center">
                 <el-tag
@@ -170,14 +167,15 @@
     </div>
     </AsyncContainer>
 
-    <!-- 添加模型弹窗：选现有通道，或直接内联新建通道（API 地址 + 多 Key 自动轮换） -->
+    <!-- 添加模型弹窗：全部自由填写——模型名 + API 地址 + 密钥即可，接口配置自动生成 -->
     <el-dialog v-model="showAddModal" title="添加模型到 Codex" :width="isMobile ? '92%' : '560px'" class="custom-dialog-pro">
       <el-form :model="form" label-position="top">
         <el-form-item label="模型标识 (Slug)">
-          <el-input v-model="form.slug" placeholder="例如: deepseek-v4-flash, qwen3.8-max" @input="syncNewChannelName" />
+          <el-input v-model="form.slug" placeholder="例如: deepseek-v4-flash, qwen3.8-max" />
+          <div class="text-xs text-secondary mt-1">客户端里选择的模型名，只用小写字母/数字/点/短横线</div>
         </el-form-item>
         <el-form-item label="显示名称 (Display Name)">
-          <el-input v-model="form.displayName" placeholder="留空则与 Slug 相同" />
+          <el-input v-model="form.displayName" placeholder="留空则与模型标识相同" />
         </el-form-item>
         <el-form-item label="所属分组 (Group)">
           <el-select v-model="form.group" placeholder="选择分组，或直接输入新名字自建" filterable allow-create default-first-option>
@@ -185,45 +183,26 @@
           </el-select>
           <div class="text-xs text-secondary mt-1">输入不存在的名字回车即创建新分组（分组只影响本页展示，可在「分组管理」里重命名/删除）</div>
         </el-form-item>
-        <el-form-item label="路由目标 (Target)">
-          <el-select v-model="form.targetMode" filterable>
-            <el-option label="➕ 新建通道（填 API 地址和密钥）" value="__create_new__" />
-            <el-option v-for="t in addTargetChoices" :key="t.name" :label="`${t.name}${t.host ? ` (${t.host})` : ''}`" :value="t.name" />
-          </el-select>
-          <div class="text-xs text-secondary mt-1">不用再单独去系统配置建通道——这里一步到位；已有通道也可直接选</div>
+        <el-form-item label="API 地址" required>
+          <el-input v-model="form.apiBase" placeholder="例如: https://api.deepseek.com/v1 或 https://open.bigmodel.cn/api/paas/v4" class="font-mono" />
+          <div class="text-xs text-secondary mt-1">从厂商文档原样复制完整的接口地址（含路径）；路由会自动把对话请求发到这里</div>
         </el-form-item>
-        <template v-if="form.targetMode === '__create_new__'">
-          <el-form-item label="通道名称">
-            <el-input v-model="newChannel.name" placeholder="默认与模型标识相同" class="font-mono" />
-          </el-form-item>
-          <el-form-item label="API 地址 (Host)" required>
-            <el-input v-model="newChannel.host" placeholder="例如: api.deepseek.com, api.moonshot.cn" class="font-mono" />
-          </el-form-item>
-          <el-form-item label="路径前缀">
-            <el-input v-model="newChannel.prefix" placeholder="/v1（绝大多数厂商）" class="font-mono" />
-          </el-form-item>
-          <el-form-item label="接口格式">
-            <el-select v-model="newChannel.wireApi">
-              <el-option label="chat（OpenAI 通用格式，绝大多数厂商支持）" value="chat" />
-              <el-option label="responses（Codex 官方格式）" value="responses" />
-            </el-select>
-          </el-form-item>
-          <el-form-item label="API 密钥（每行一个，自动无感轮换）">
-            <el-input
-              v-model="newChannel.keysText"
-              type="textarea"
-              :rows="3"
-              class="font-mono"
-              placeholder="每行一个，两种写法可混填：
+        <el-form-item label="上游模型码（可选）">
+          <el-input v-model="form.upstreamModel" placeholder="留空 = 与模型标识相同" class="font-mono" />
+          <div class="text-xs text-secondary mt-1">仅当厂商处的真实模型名与你填的模型标识不一样时才需要填（例如标识叫 my-glm、厂商叫 glm-5.3-flash），会自动做名字映射</div>
+        </el-form-item>
+        <el-form-item label="API 密钥（每行一个，自动无感轮换）">
+          <el-input
+            v-model="form.keysText"
+            type="textarea"
+            :rows="3"
+            class="font-mono"
+            placeholder="每行一个，两种写法可混填：
 sk-xxxxxxxx（直接粘贴 Key，自动进密钥池）
 DEEPSEEK_API_KEY（环境变量名，路由运行时读取）"
-            />
-            <div class="text-xs text-secondary mt-1">开多个账号就有多把 Key：某一把没额度自动无感切换下一把；只填环境变量名则不落盘、更安全</div>
-          </el-form-item>
-        </template>
-        <div v-else-if="form.targetMode" class="text-xs text-secondary mb-2">
-          保存时若通道「{{ form.targetMode }}」的匹配规则不包含此模型名，会自动追加 ^模型标识$ 使路由生效
-        </div>
+          />
+          <div class="text-xs text-secondary mt-1">开多个账号就有多把 Key：某一把没额度自动无感切换下一把；只填环境变量名则不落盘、更安全</div>
+        </el-form-item>
       </el-form>
       <template #footer>
         <el-button @click="showAddModal = false">取消</el-button>
@@ -243,7 +222,7 @@ DEEPSEEK_API_KEY（环境变量名，路由运行时读取）"
       <el-empty v-if="manageableGroups.length === 0" description="还没有自定义分组——添加/编辑模型时输入新分组名即可创建" :image-size="60" />
     </el-dialog>
 
-    <!-- 自动拉取模型弹窗：选通道 → 拉取上游模型列表 → 勾选批量写入 -->
+    <!-- 自动拉取模型弹窗：选接口来源 → 拉取上游模型列表 → 勾选批量写入 -->
     <el-dialog
       v-model="showFetchModal"
       title="自动拉取模型"
@@ -252,11 +231,11 @@ DEEPSEEK_API_KEY（环境变量名，路由运行时读取）"
       @closed="resetFetchState"
     >
       <el-form label-position="top">
-        <el-form-item label="目标通道 (Target)">
+        <el-form-item label="接口来源">
           <el-select
             v-model="fetchTarget"
             class="w-full"
-            placeholder="选择要拉取的平台通道"
+            placeholder="选择要从哪个接口拉取"
             :disabled="fetchingModels"
           >
             <el-option
@@ -275,7 +254,7 @@ DEEPSEEK_API_KEY（环境变量名，路由运行时读取）"
             </el-option>
           </el-select>
           <div class="text-xs text-secondary mt-1">
-            从所选通道的上游接口（GET /models）获取全部可用模型；官方登录态通道无公开列表接口，请手动添加
+            从所选接口的上游（GET /models）获取全部可用模型；官方登录态接口没有公开列表，请手动添加
           </div>
         </el-form-item>
       </el-form>
@@ -291,13 +270,13 @@ DEEPSEEK_API_KEY（环境变量名，路由运行时读取）"
           <el-icon class="mr-1"><Download /></el-icon>
           {{ fetchingModels ? '正在拉取…' : '拉取模型列表' }}
         </el-button>
-        <span v-if="fetchTargets.length === 0 && !fetchError" class="text-xs text-secondary">通道清单加载中…</span>
+        <span v-if="fetchTargets.length === 0 && !fetchError" class="text-xs text-secondary">接口清单加载中…</span>
       </div>
 
       <!-- 拉取失败 / 网络异常：明确提示 + 保留手动添加备选 -->
       <el-alert v-if="fetchError" type="error" show-icon :closable="false" class="mt-3">
         <template #title>{{ fetchError }}</template>
-        <template #default>可检查通道凭据与网络后重试，或改用「手动添加」逐个输入。</template>
+        <template #default>可检查接口的密钥与网络后重试，或改用「手动添加」逐个输入。</template>
       </el-alert>
 
       <template v-if="fetchResult">
@@ -309,7 +288,7 @@ DEEPSEEK_API_KEY（环境变量名，路由运行时读取）"
           :closable="false"
           class="mt-3"
         >
-          <template #default>上游返回了空的模型列表，可换其他通道重试或手动添加。</template>
+          <template #default>上游返回了空的模型列表，可换其他接口重试或手动添加。</template>
         </el-alert>
         <div v-else class="mt-4">
           <div class="flex items-center justify-between flex-wrap gap-2 mb-2">
@@ -329,7 +308,7 @@ DEEPSEEK_API_KEY（环境变量名，路由运行时读取）"
               </el-checkbox>
               <el-tag v-if="m.exists" size="small" type="info" effect="plain" class="shrink-0">已存在</el-tag>
               <el-tag v-else-if="!m.routeTarget" size="small" type="warning" effect="plain" class="shrink-0">
-                无匹配通道
+                待配置接口
               </el-tag>
               <el-tag v-else size="small" type="success" effect="plain" class="shrink-0">→ {{ m.routeTarget }}</el-tag>
             </div>
@@ -439,19 +418,19 @@ DEEPSEEK_API_KEY（环境变量名，路由运行时读取）"
       </template>
     </el-dialog>
 
-    <!-- 通道密钥池：同通道多账号 key / 优先级 / 冷却与恢复时间展示 -->
+    <!-- 密钥池：同一接口多把 key / 优先级 / 冷却与恢复时间展示 -->
     <ChannelKeyPoolDialog v-model="showKeyPool" @changed="loadModels" />
-    <!-- 厂商预设接入：选厂商 → 填 key → 建通道 + 密钥入池 + 默认模型 -->
+    <!-- 厂商预设接入：选厂商 → 填 key → 自动配好接口与密钥轮换 -->
     <VendorPresetDialog v-model="showVendorPreset" @activated="onVendorActivated" />
   </div>
 </template>
 
 <script setup>
 import { ref, computed, onMounted, onUnmounted } from 'vue';
+import { useRoute } from 'vue-router';
 import {
   testModelLatency,
   getModels,
-  getModelRouting,
   commitModelOperations,
   createModels,
   fetchTargetModels,
@@ -482,29 +461,31 @@ const codexDefaultModel = ref('');
 const showAddModal = ref(false);
 const testingSlug = ref(null);
 const latencies = ref({});
-const form = ref({ slug: '', displayName: '', group: '国内直连 / 重度代码主力', targetMode: '__create_new__' });
-// 内联新建通道（添加模型一步到位，不用单独去系统配置建通道）
-const newChannel = ref({ name: '', host: '', prefix: '/v1', wireApi: 'chat', keysText: '' });
-const addTargetChoices = ref([]); // 现有通道下拉（来自 /model-routing，含 targetRef 供匹配扩展）
+const form = ref({ slug: '', displayName: '', group: '国内直连 / 重度代码主力', apiBase: '', upstreamModel: '', keysText: '' });
 const showGroupManage = ref(false);
 
-function syncNewChannelName() {
-  // 通道名称默认跟随模型标识（用户改过就不覆盖）
-  if (!newChannel.value.nameTouched) newChannel.value.name = form.value.slug?.trim() || '';
+function openAddModal() {
+  form.value = { slug: '', displayName: '', group: form.value.group, apiBase: '', upstreamModel: '', keysText: '' };
+  showAddModal.value = true;
 }
 
-function openAddModal() {
-  form.value = { slug: '', displayName: '', group: form.value.group, targetMode: '__create_new__' };
-  newChannel.value = { name: '', host: '', prefix: '/v1', wireApi: 'chat', keysText: '', nameTouched: false };
-  showAddModal.value = true;
-  if (addTargetChoices.value.length === 0) {
-    getModelRouting({ skipGlobalError: true }).then((res) => {
-      const list = Array.isArray(res?.targets) ? res.targets : [];
-      addTargetChoices.value = list
-        .filter((t) => t?.name && t.useOpenAiAuth !== true)
-        .map((t) => ({ name: t.name, host: t.host || '', match: typeof t.match === 'string' ? t.match : '', targetRef: t.targetRef || null }));
-    }).catch(() => { /* 下拉留空也能走新建通道 */ });
+// 把用户填的完整 API 地址拆成路由内部需要的 host/protocol/port/路径前缀
+function parseApiBase(apiBase) {
+  const trimmed = String(apiBase || '').trim();
+  let url;
+  try {
+    url = new URL(/^[a-z][a-z0-9+.-]*:\/\//i.test(trimmed) ? trimmed : `https://${trimmed}`);
+  } catch {
+    return null;
   }
+  if (url.protocol !== 'https:' && url.protocol !== 'http:') return null;
+  const path = url.pathname.replace(/\/+$/, '');
+  return {
+    protocol: url.protocol.replace(':', ''),
+    host: url.hostname,
+    port: url.port ? Number(url.port) : null,
+    prefix: path || '/v1',
+  };
 }
 
 function parseKeyLines(text) {
@@ -517,10 +498,6 @@ function parseKeyLines(text) {
 
 function escapeRegex(value) {
   return String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-}
-
-function matchCovers(match, slug) {
-  try { return new RegExp(match).test(slug); } catch { return false; }
 }
 
 // ---- 自动拉取模型状态 ----
@@ -752,7 +729,7 @@ async function loadModels() {
         webSearchToolType: typeof entry.webSearchToolType === 'string' ? entry.webSearchToolType : '',
         supportsSearchTool: entry.supportsSearchTool === true,
         includeSkills: entry.includeSkills === true,
-        target: entry.target?.name || '未匹配通道',
+        target: entry.target?.name || '',
         envSet: entry.target ? entry.target.envSet !== false : undefined,
         context: formatContextWindow(Number(entry.contextWindow) > 0 ? Number(entry.contextWindow) : null),
         default_level: entry.reasoningEffort || '',
@@ -793,7 +770,7 @@ async function testLatency(m) {
 
 // 真实探测会打到上游，全量测速限制并发避免挤占路由请求预算
 async function handleTestAll() {
-  ElMessage.info('开始并发测试所有模型连接（真实探测，逐通道打 ping）...');
+  ElMessage.info('开始并发测试所有模型连接（真实探测，逐个打 ping）...');
   const allModels = modelGroups.value.flatMap((g) => g.models);
   const CONCURRENCY = 4;
   try {
@@ -919,64 +896,41 @@ async function handleDeleteModel(m) {
 async function handleAddModel() {
   const slug = form.value.slug?.trim();
   if (!slug) {
-    ElMessage.warning('请填写模型 Slug');
+    ElMessage.warning('请填写模型标识');
     return;
   }
-  const operations = [];
-  let keyTargetName = '';
-  // 模型先入目录，通道再绑定——assertDedicatedTarget 要求精确 match 命中已存在的模型
-  operations.push({
-    kind: 'model.create',
-    model: { slug, display_name: form.value.displayName?.trim() || slug },
-  });
-  if (form.value.targetMode === '__create_new__') {
-    const ch = newChannel.value;
-    const chName = (ch.name || '').trim() || slug;
-    if (!ch.host?.trim()) {
-      ElMessage.warning('请填写 API 地址（Host）');
-      return;
-    }
-    keyTargetName = chName;
-    operations.push({
-      kind: 'target.create',
-      target: {
-        name: chName,
-        // 匹配规则绑定到本模型 slug：这就是「模型 ↔ 通道」的真实绑定方式
-        match: `^${escapeRegex(slug)}$`,
-        host: ch.host.trim(),
-        prefix: (ch.prefix || '').trim() || '/v1',
-        protocol: 'https',
-        wireApi: ch.wireApi || 'chat',
-      },
-    });
-  } else if (form.value.targetMode) {
-    const chosen = addTargetChoices.value.find((t) => t.name === form.value.targetMode);
-    if (chosen && chosen.match && !matchCovers(chosen.match, slug)) {
-      try {
-        await ElMessageBox.confirm(
-          `通道「${chosen.name}」的匹配规则（${chosen.match}）不包含模型名 ${slug}。将自动追加 ^${slug}$ 使路由生效，是否继续？`,
-          '扩展通道匹配规则',
-          { confirmButtonText: '追加并保存', cancelButtonText: '取消', type: 'warning' },
-        );
-      } catch { return; }
-      if (chosen.targetRef) {
-        operations.push({
-          kind: 'target.update',
-          targetRef: chosen.targetRef,
-          patch: { match: `${chosen.match}|^${escapeRegex(slug)}$` },
-        });
-      }
-    }
+  const endpoint = parseApiBase(form.value.apiBase);
+  if (!endpoint || !endpoint.host) {
+    ElMessage.warning('请填写正确的 API 地址（例如 https://api.deepseek.com/v1）');
+    return;
   }
+  const upstreamModel = form.value.upstreamModel?.trim();
+  // 模型先入目录，接口配置再绑定——assertDedicatedTarget 要求精确 match 命中已存在的模型
+  const target = {
+    // 接口配置名内部生成、与模型标识一致，用户无需感知
+    name: slug,
+    match: `^${escapeRegex(slug)}$`,
+    host: endpoint.host,
+    prefix: endpoint.prefix,
+    protocol: endpoint.protocol,
+    wireApi: 'chat',
+  };
+  if (endpoint.port) target.port = endpoint.port;
+  // 用户给模型起了自定义名字时，自动做「模型标识 → 厂商真实模型码」映射
+  if (upstreamModel && upstreamModel !== slug) target.modelMap = { [slug]: upstreamModel };
+  const operations = [
+    { kind: 'model.create', model: { slug, display_name: form.value.displayName?.trim() || slug } },
+    { kind: 'target.create', target },
+  ];
   try {
     await commitModelOperations(operations);
-    // 明文/环境变量密钥逐把进通道密钥池（priority=行序，先填的先用）
-    const keys = form.value.targetMode === '__create_new__' ? parseKeyLines(newChannel.value.keysText) : [];
+    // 明文/环境变量密钥逐把进密钥池（priority=行序，先填的先用）
+    const keys = parseKeyLines(form.value.keysText);
     let keyOk = 0;
     for (let i = 0; i < keys.length; i += 1) {
       try {
         await createChannelKey({
-          target: keyTargetName,
+          target: slug,
           kind: keys[i].kind,
           label: `初始密钥 ${i + 1}`,
           key: keys[i].line,
@@ -988,7 +942,6 @@ async function handleAddModel() {
     }
     setCustomGroup(slug, form.value.group);
     const parts = ['模型已添加'];
-    if (form.value.targetMode === '__create_new__') parts.push('新通道已创建');
     if (keyOk > 0) parts.push(`${keyOk} 把密钥已入池轮换`);
     ElMessage.success(`${parts.join('，')}；重启路由与 Codex 后完全生效`);
     showAddModal.value = false;
@@ -1017,7 +970,7 @@ async function openFetchModal() {
     const first = fetchTargets.value.find((t) => t.fetchable);
     if (first) fetchTarget.value = first.name;
   } catch (err) {
-    fetchError.value = `通道清单加载失败：${err.response?.data?.error?.message || err.message || '请求失败'}`;
+    fetchError.value = `接口清单加载失败：${err.response?.data?.error?.message || err.message || '请求失败'}`;
   }
 }
 
@@ -1063,7 +1016,7 @@ async function handleImportModels() {
     const warnings = Array.isArray(res?.warnings) ? res.warnings : [];
     ElMessage.success(`已添加 ${selectedFetchModels.value.length} 个模型；重启路由与 Codex 后完全生效`);
     if (warnings.length > 0) {
-      ElMessage.warning(warnings[0]?.message ? `注意：${warnings[0].message}` : '部分模型可能未匹配到路由通道');
+      ElMessage.warning(warnings[0]?.message ? `注意：${warnings[0].message}` : '部分模型可能还未配置接口');
     }
     showFetchModal.value = false;
     await loadModels();
@@ -1138,6 +1091,11 @@ onMounted(() => {
   window.addEventListener('test-all-models', handleTestAll);
   loadModels();
   loadCodexDefaultModel();
+  // 「系统与路由配置」页的主按钮带 ?add=1 跳转过来：自动打开添加模型弹窗
+  const route = useRoute();
+  if (route.query?.add === '1') {
+    openAddModal();
+  }
 });
 
 onUnmounted(() => {
