@@ -2,7 +2,7 @@
   <div class="space-y-6">
     <div class="flex items-center justify-between flex-wrap gap-3">
       <div>
-        <div class="text-xl font-bold text-primary tracking-wide">Codex 自定义模型与路由规则</div>
+        <div class="text-xl font-bold text-primary tracking-wide">自定义模型与路由</div>
         <div class="text-xs text-secondary mt-1">模型列表 1:1 映射 Codex 桌面端下拉菜单，支持自由分组（可自建/改名/移动）、编辑、删除与真实连通性测速</div>
       </div>
       <div class="flex items-center gap-2 flex-wrap">
@@ -167,29 +167,16 @@
     </div>
     </AsyncContainer>
 
-    <!-- 添加模型弹窗：全部自由填写——模型名 + API 地址 + 密钥即可，接口配置自动生成 -->
-    <el-dialog v-model="showAddModal" title="添加模型到 Codex" :width="isMobile ? '92%' : '560px'" class="custom-dialog-pro">
+    <!-- 添加模型弹窗：按厂商填写（地址+密钥一次），模型批量添加，接口配置自动生成 -->
+    <el-dialog v-model="showAddModal" title="添加模型" :width="isMobile ? '94%' : '600px'" class="custom-dialog-pro">
       <el-form :model="form" label-position="top">
-        <el-form-item label="模型标识 (Slug)">
-          <el-input v-model="form.slug" placeholder="例如: deepseek-v4-flash, qwen3.8-max" />
-          <div class="text-xs text-secondary mt-1">客户端里选择的模型名，只用小写字母/数字/点/短横线</div>
-        </el-form-item>
-        <el-form-item label="显示名称 (Display Name)">
-          <el-input v-model="form.displayName" placeholder="留空则与模型标识相同" />
-        </el-form-item>
-        <el-form-item label="所属分组 (Group)">
-          <el-select v-model="form.group" placeholder="选择分组，或直接输入新名字自建" filterable allow-create default-first-option>
-            <el-option v-for="name in groupNames" :key="name" :label="name" :value="name" />
-          </el-select>
-          <div class="text-xs text-secondary mt-1">输入不存在的名字回车即创建新分组（分组只影响本页展示，可在「分组管理」里重命名/删除）</div>
+        <el-form-item label="厂商名称" required>
+          <el-input v-model="form.vendor" placeholder="例如: deepseek、zhipu、moonshot，或任意自定义名字" @input="syncVendorGroup" />
+          <div class="text-xs text-secondary mt-1">同一厂商的多个模型只需填一次地址和密钥；厂商名会用作分组名和显示名前缀（如 deepseek/deepseek-v4-flash）</div>
         </el-form-item>
         <el-form-item label="API 地址" required>
           <el-input v-model="form.apiBase" placeholder="例如: https://api.deepseek.com/v1 或 https://open.bigmodel.cn/api/paas/v4" class="font-mono" />
-          <div class="text-xs text-secondary mt-1">从厂商文档原样复制完整的接口地址（含路径）；路由会自动把对话请求发到这里</div>
-        </el-form-item>
-        <el-form-item label="上游模型码（可选）">
-          <el-input v-model="form.upstreamModel" placeholder="留空 = 与模型标识相同" class="font-mono" />
-          <div class="text-xs text-secondary mt-1">仅当厂商处的真实模型名与你填的模型标识不一样时才需要填（例如标识叫 my-glm、厂商叫 glm-5.3-flash），会自动做名字映射</div>
+          <div class="text-xs text-secondary mt-1">从厂商文档原样复制完整的接口地址（含路径）；该厂商全部模型共用</div>
         </el-form-item>
         <el-form-item label="API 密钥（每行一个，自动无感轮换）">
           <el-input
@@ -201,12 +188,32 @@
 sk-xxxxxxxx（直接粘贴 Key，自动进密钥池）
 DEEPSEEK_API_KEY（环境变量名，路由运行时读取）"
           />
-          <div class="text-xs text-secondary mt-1">开多个账号就有多把 Key：某一把没额度自动无感切换下一把；只填环境变量名则不落盘、更安全</div>
+          <div class="text-xs text-secondary mt-1">该厂商全部模型共用这些 Key；开多个账号就有多把，某一把没额度自动无感切换下一把</div>
+        </el-form-item>
+        <el-form-item label="模型列表（每行一个）" required>
+          <el-input
+            v-model="form.modelsText"
+            type="textarea"
+            :rows="4"
+            class="font-mono"
+            placeholder="每行一个模型标识，例如：
+deepseek-v4-flash
+deepseek-v4-pro
+需要映射厂商真实模型名时用 = 号：
+my-glm=glm-5.3-flash"
+          />
+          <div class="text-xs text-secondary mt-1">每行一个；写法 slug=厂商真实模型码 表示该模型对外用 slug、对厂商用真实码（自动映射）</div>
+        </el-form-item>
+        <el-form-item label="所属分组 (Group)">
+          <el-select v-model="form.group" placeholder="默认按厂商名称分组，也可自建" filterable allow-create default-first-option>
+            <el-option v-for="name in groupNames" :key="name" :label="name" :value="name" />
+          </el-select>
+          <div class="text-xs text-secondary mt-1">留空/回车保持默认 = 按厂商名称分组；分组只影响本页展示</div>
         </el-form-item>
       </el-form>
       <template #footer>
         <el-button @click="showAddModal = false">取消</el-button>
-        <el-button type="primary" @click="handleAddModel">保存模型</el-button>
+        <el-button type="primary" @click="handleAddModel">保存全部模型</el-button>
       </template>
     </el-dialog>
 
@@ -461,11 +468,34 @@ const codexDefaultModel = ref('');
 const showAddModal = ref(false);
 const testingSlug = ref(null);
 const latencies = ref({});
-const form = ref({ slug: '', displayName: '', group: '国内直连 / 重度代码主力', apiBase: '', upstreamModel: '', keysText: '' });
+const form = ref({ vendor: '', apiBase: '', keysText: '', modelsText: '', group: '' });
 const showGroupManage = ref(false);
 
+function syncVendorGroup() {
+  // 分组默认跟随厂商名称（用户选过分组就不覆盖）
+  if (!form.value.groupTouched) form.value.group = form.value.vendor?.trim() || '';
+}
+
+// 解析模型列表文本：每行一个 slug，支持 slug=上游码 声明真实模型码映射
+function parseModelLines(text) {
+  const models = [];
+  for (const raw of String(text || '').split(/\r?\n/)) {
+    const line = raw.trim();
+    if (!line) continue;
+    const eq = line.indexOf('=');
+    if (eq > 0) {
+      const slug = line.slice(0, eq).trim();
+      const upstream = line.slice(eq + 1).trim();
+      if (slug) models.push({ slug, upstream });
+    } else {
+      models.push({ slug: line, upstream: '' });
+    }
+  }
+  return models;
+}
+
 function openAddModal() {
-  form.value = { slug: '', displayName: '', group: form.value.group, apiBase: '', upstreamModel: '', keysText: '' };
+  form.value = { vendor: '', apiBase: '', keysText: '', modelsText: '', group: '', groupTouched: false };
   showAddModal.value = true;
 }
 
@@ -894,9 +924,13 @@ async function handleDeleteModel(m) {
 }
 
 async function handleAddModel() {
-  const slug = form.value.slug?.trim();
-  if (!slug) {
-    ElMessage.warning('请填写模型标识');
+  const vendor = form.value.vendor?.trim();
+  if (!vendor) {
+    ElMessage.warning('请填写厂商名称');
+    return;
+  }
+  if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(vendor)) {
+    ElMessage.warning('厂商名称只用字母/数字/点/短横线（用作接口配置名与显示名前缀）');
     return;
   }
   const endpoint = parseApiBase(form.value.apiBase);
@@ -904,33 +938,50 @@ async function handleAddModel() {
     ElMessage.warning('请填写正确的 API 地址（例如 https://api.deepseek.com/v1）');
     return;
   }
-  const upstreamModel = form.value.upstreamModel?.trim();
-  // 模型先入目录，接口配置再绑定——assertDedicatedTarget 要求精确 match 命中已存在的模型
+  const models = parseModelLines(form.value.modelsText);
+  if (models.length === 0) {
+    ElMessage.warning('请至少填写一个模型（每行一个）');
+    return;
+  }
+  const slugs = models.map((m) => m.slug);
+  if (new Set(slugs).size !== slugs.length) {
+    ElMessage.warning('模型列表里有重复的模型标识');
+    return;
+  }
+  const group = form.value.group?.trim() || vendor;
+  // 接口配置内部生成：一个厂商一个通道，match 精确覆盖该厂商标识集合，用户无需感知
+  const modelMap = {};
+  for (const m of models) {
+    if (m.upstream && m.upstream !== m.slug) modelMap[m.slug] = m.upstream;
+  }
+  const altNames = slugs.map((s) => escapeRegex(s)).join('|');
   const target = {
-    // 接口配置名内部生成、与模型标识一致，用户无需感知
-    name: slug,
-    match: `^${escapeRegex(slug)}$`,
+    name: vendor,
+    match: `^(?:${altNames})$`,
     host: endpoint.host,
     prefix: endpoint.prefix,
     protocol: endpoint.protocol,
     wireApi: 'chat',
   };
   if (endpoint.port) target.port = endpoint.port;
-  // 用户给模型起了自定义名字时，自动做「模型标识 → 厂商真实模型码」映射
-  if (upstreamModel && upstreamModel !== slug) target.modelMap = { [slug]: upstreamModel };
+  if (Object.keys(modelMap).length > 0) target.modelMap = modelMap;
   const operations = [
-    { kind: 'model.create', model: { slug, display_name: form.value.displayName?.trim() || slug } },
+    // 模型先入目录，接口配置再绑定——assertDedicatedTarget 要求精确 match 命中已存在的模型
+    ...models.map((m) => ({
+      kind: 'model.create',
+      model: { slug: m.slug, display_name: `${vendor}/${m.slug}` },
+    })),
     { kind: 'target.create', target },
   ];
   try {
     await commitModelOperations(operations);
-    // 明文/环境变量密钥逐把进密钥池（priority=行序，先填的先用）
+    // 明文/环境变量密钥逐把进密钥池（priority=行序，先填的先用），全厂商共用
     const keys = parseKeyLines(form.value.keysText);
     let keyOk = 0;
     for (let i = 0; i < keys.length; i += 1) {
       try {
         await createChannelKey({
-          target: slug,
+          target: vendor,
           kind: keys[i].kind,
           label: `初始密钥 ${i + 1}`,
           key: keys[i].line,
@@ -940,8 +991,8 @@ async function handleAddModel() {
         keyOk += 1;
       } catch { /* 单把失败不阻断整体，用户可在密钥池里补 */ }
     }
-    setCustomGroup(slug, form.value.group);
-    const parts = ['模型已添加'];
+    for (const slug of slugs) setCustomGroup(slug, group);
+    const parts = [`${slugs.length} 个模型已添加`];
     if (keyOk > 0) parts.push(`${keyOk} 把密钥已入池轮换`);
     ElMessage.success(`${parts.join('，')}；重启路由与 Codex 后完全生效`);
     showAddModal.value = false;
