@@ -157,6 +157,16 @@
       "wireApi": "chat",
       "upstreamModel": "gemini-3.7-flash-tiered",
       "viaProxy": true
+    },
+    {
+      "name": "b.ai",
+      "match": "^(?:glm-5\\.3-flash|qwen3\\.8-flash|mimo-v2\\.5)$",
+      "host": "api.b.ai",
+      "prefix": "/v1",
+      "protocol": "https",
+      "wireApi": "chat",
+      "viaProxy": true,
+      "proxyUrl": null
     }
   ],
   "supportsResponses": {
