@@ -188,16 +188,7 @@
                 <el-icon class="mr-1"><Lightning /></el-icon>
                 测试连接
               </el-button>
-              <!-- 编辑/删除：目录里的每个模型都可自由编辑与删除 -->
-              <el-button
-                v-if="m.target"
-                size="small"
-                plain
-                @click="openKeyPoolFor(m.target)"
-              >
-                <el-icon class="mr-1"><Key /></el-icon>
-                Key 池
-              </el-button>
+              <!-- 编辑/删除：目录里的每个模型都可自由编辑与删除（Key 池在分组头部，同厂商共享） -->
               <el-button size="small" plain @click="openEdit(m)">
                 <el-icon class="mr-1"><Edit /></el-icon>
                 编辑
@@ -702,12 +693,11 @@ const vendorGroups = ref([]); // [{ name, targetRef, apiBase, host, prefix, prot
 const selectedForDelete = reactive(new Set());
 
 function vendorGroupInfo(group) {
-  // 分组名 === 通道名 且 组内模型确属该通道 → 厂商分组（可整组编辑/删除）
+  // 分组名 === 通道名 → 厂商分组（可整组编辑/删除）。
+  // 组内个别模型的绑定预览可能仍显示旧顺序通道（binding 按声明顺序取首个命中，
+  // 运行时已改为精确枚举优先），不以此为判定条件。
   const name = group.name;
-  const info = vendorGroups.value.find((v) => v.name === name);
-  if (!info) return null;
-  const inGroup = group.models.every((m) => m.target === name);
-  return inGroup ? info : null;
+  return vendorGroups.value.find((v) => v.name === name) || null;
 }
 
 function selectedInGroup(group) {
@@ -1065,8 +1055,14 @@ function deleteGroup(group) {
 }
 const defaultGroupBySlug = new Map(DEFAULT_GROUPS.flatMap((g) => g.slugs.map((slug) => [slug, g.name])));
 const defaultDotByName = new Map(DEFAULT_GROUPS.map((g) => [g.name, g.dotClass]));
-function groupOf(slug) {
-  return customGroupMap.value[slug] || defaultGroupBySlug.get(slug) || OTHER_GROUP_NAME;
+function groupOf(slug, displayName = '') {
+  // 优先级：用户显式设置的分组 > 显示名的「厂商/模型名」前缀（b.ai/glm-5.3-flash → b.ai）
+  // > 预置 slug 表 > 其他已接入模型。显示名带厂商前缀的模型自动按厂商归组。
+  if (customGroupMap.value[slug]) return customGroupMap.value[slug];
+  const dn = String(displayName || '');
+  const slash = dn.indexOf('/');
+  if (slash > 0) return dn.slice(0, slash).trim();
+  return defaultGroupBySlug.get(slug) || OTHER_GROUP_NAME;
 }
 function dotClassOf(groupName) {
   if (defaultDotByName.has(groupName)) return defaultDotByName.get(groupName);
@@ -1081,7 +1077,7 @@ const allModels = ref([]);
 const modelGroups = computed(() => {
   const byName = new Map();
   for (const m of allModels.value) {
-    const name = groupOf(m.slug);
+    const name = groupOf(m.slug, m.displayName);
     if (!byName.has(name)) byName.set(name, { name, dotClass: dotClassOf(name), models: [] });
     byName.get(name).models.push(m);
   }
@@ -1235,7 +1231,7 @@ function openEdit(m) {
     display_name: m.displayName || m.slug,
     description: m.description || '',
     // 回显当前生效分组（自定义优先，其次预置基调）；清空保存=回到自动分组
-    group: groupOf(m.slug),
+    group: groupOf(m.slug, m.displayName),
     default_reasoning_level: options.includes(rawLevel) ? rawLevel : '',
     context_window: m.contextWindow || null,
     supportsImage: Array.isArray(m.inputModalities) ? m.inputModalities.includes('image') : false,
