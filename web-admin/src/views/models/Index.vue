@@ -187,7 +187,12 @@
                 测试
               </el-button>
               <!-- 官方账号绑定模型：仅可编辑客户端默认参数；自定义模型可编辑/删除（图标按钮 + 悬停提示） -->
-              <el-tooltip content="编辑客户端默认参数（思考档位 / 上下文）" placement="top" :show-after="200">
+              <el-tooltip
+                v-if="isOfficialModel(m)"
+                content="编辑客户端默认参数（思考档位 / 上下文）"
+                placement="top"
+                :show-after="200"
+              >
                 <el-button size="small" plain @click="openEdit(m)">
                   <el-icon><Setting /></el-icon>
                 </el-button>
