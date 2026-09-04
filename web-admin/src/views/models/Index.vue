@@ -104,7 +104,7 @@
               >🔑 Key 池 {{ vendorPoolKeyTotal(group) }} 把</el-tag>
               <el-button size="small" plain @click="openVendorEdit(vendorChannelsOf(group)[0])">
                 <el-icon class="mr-1"><Edit /></el-icon>
-                编辑接口
+                编辑分组（名称/地址/Key）
               </el-button>
               <el-button
                 v-if="selectedForDelete.size > 0 && selectedInGroup(group).length > 0"
@@ -328,13 +328,17 @@ my-glm=glm-5.3-flash"
       <div class="text-xs text-secondary">探测请求固定为「请用一句中文简短介绍你自己。」（max_output_tokens=256）；完整请求体可在「请求日志」里查看。</div>
     </el-dialog>
 
-    <!-- 编辑接口（分组级）：改厂商通道的 API 地址，组内全部模型共用 -->
-    <el-dialog v-model="showVendorEdit" title="编辑接口地址" :width="isMobile ? '94%' : '560px'" class="custom-dialog-pro">
+    <!-- 编辑分组：分组名称 + 接口地址/协议/代理 + 密钥管理，一站式 -->
+    <el-dialog v-model="showVendorEdit" title="编辑分组" :width="isMobile ? '94%' : '600px'" class="custom-dialog-pro">
       <el-form label-position="top">
 
+        <el-form-item label="分组名称（通道标识）" required>
+          <el-input v-model="vendorEdit.name" placeholder="例如: b.ai / deepseek / my-relay" class="font-mono" maxlength="64" />
+          <div class="text-xs text-secondary mt-1">改名后该通道密钥池里的 key 自动跟随新名称，模型可用性不受影响</div>
+        </el-form-item>
         <el-form-item label="API 地址" required>
           <el-input v-model="vendorEdit.apiBase" placeholder="例如: https://api.deepseek.com/v1" class="font-mono" />
-          <div class="text-xs text-secondary mt-1">该厂商（{{ vendorEdit.name }}）下全部模型共用此地址；密钥请在「Key 池」里管理</div>
+          <div class="text-xs text-secondary mt-1">该分组（{{ vendorEdit.name }}）下全部模型共用此地址</div>
         </el-form-item>
         <el-form-item label="接口协议">
           <el-select v-model="vendorEdit.wireApi" class="w-full">
@@ -345,6 +349,43 @@ my-glm=glm-5.3-flash"
         <el-form-item label="代理（国外厂商/中转站需要，国内直连不用管）">
           <ProxyConfigEditor v-model="vendorEdit.proxy" />
         </el-form-item>
+
+        <el-divider content-position="left">密钥管理（多账号自动轮换，额度耗尽自动冷却切换）</el-divider>
+        <div class="flex flex-col gap-1 mb-3">
+          <div
+            v-for="k in vendorEdit.keys"
+            :key="k.id"
+            class="flex items-center gap-2 py-1 px-2 rounded-md bg-surface-2 text-xs flex-wrap"
+          >
+            <span class="font-mono">{{ k.maskedKey }}</span>
+            <span class="text-secondary">{{ k.label || '（无备注）' }}</span>
+            <el-tag v-if="k.cooldown && k.cooldown.active" type="warning" size="small" effect="plain">冷却中</el-tag>
+            <span v-if="k.kind === 'env_ref'" class="text-3xs text-secondary">环境变量</span>
+            <span class="flex-1"></span>
+            <span class="text-3xs text-secondary shrink-0">优先级 {{ k.priority }}</span>
+            <el-button size="small" type="danger" link @click="handleRevokeGroupKey(k)">删除</el-button>
+          </div>
+          <div v-if="vendorEdit.keys.length === 0" class="text-xs text-secondary py-1">该分组还没有密钥，请在下方添加（也支持环境变量形态，见 Key 池页）</div>
+        </div>
+        <div class="flex flex-col gap-2 rounded-lg border border-default p-3">
+          <div class="text-xs text-secondary">添加新密钥（支持一次粘贴多个，每行一个）：</div>
+          <el-input v-model="vendorEdit.newKeyLabel" placeholder="备注（可选，例如：账号2）" maxlength="120" size="small" />
+          <el-input
+            v-model="vendorEdit.newKeysText"
+            type="textarea"
+            :rows="3"
+            placeholder="sk-xxxxxxxx（每行一个密钥）"
+            class="font-mono"
+            size="small"
+          />
+          <div class="flex items-center gap-2 flex-wrap">
+            <span class="text-xs text-secondary shrink-0">优先级</span>
+            <el-input-number v-model="vendorEdit.newKeyPriority" :min="0" :max="99" size="small" controls-position="right" class="!w-24" />
+            <span class="text-3xs text-secondary">数字小的先用</span>
+            <span class="flex-1"></span>
+            <el-button size="small" type="primary" plain :loading="vendorKeyAdding" @click="handleAddGroupKeys">添加密钥</el-button>
+          </div>
+        </div>
       </el-form>
       <template #footer>
         <el-button @click="showVendorEdit = false">取消</el-button>
@@ -626,7 +667,7 @@ import {
   getRequestLogDetail,
 } from '../../api/models.js';
 import { getSystemConfig } from '../../api/system.js';
-import { getCodexDefaultModel, setCodexDefaultModel, createChannelKey, listChannelKeys } from '../../api/channelKeys.js';
+import { getCodexDefaultModel, setCodexDefaultModel, createChannelKey, listChannelKeys, revokeChannelKey } from '../../api/channelKeys.js';
 import { prefixModelPlatform } from '../../api/models.js';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import AsyncContainer from '../../components/AsyncContainer.vue';
@@ -766,7 +807,10 @@ function vendorChannelsOf(group) {
 }
 
 function vendorPoolKeyTotal(group) {
-  return vendorChannelsOf(group).reduce((sum, ch) => sum + (poolKeyCounts[ch.name] || 0), 0);
+  // poolKeyCounts 是 ref：脚本作用域必须 .value 解包（模板内联才会自动解包），
+  // 否则恒为 0，分组头部的「Key 池」计数标签永远不渲染（2026-09-04 用户实锤）。
+  const counts = poolKeyCounts.value || {};
+  return vendorChannelsOf(group).reduce((sum, ch) => sum + (counts[ch.name] || 0), 0);
 }
 
 function selectedInGroup(group) {
@@ -799,26 +843,107 @@ async function refreshVendorGroups() {
   } catch { /* 路由状态不可用时分组级按钮自动隐藏 */ }
 }
 
-// ---- 编辑接口（分组级）：改 API 地址 = target.update（host/prefix/port） ----
+// ---- 编辑分组（分组级）：分组名称改名 + API 地址/协议/代理 + 密钥管理一站式 ----
 const showVendorEdit = ref(false);
 const vendorEditSaving = ref(false);
-const vendorEdit = ref({ name: '', targetRef: null, apiBase: '', wireApi: 'chat' });
+const vendorKeyAdding = ref(false);
+const vendorEdit = ref({ name: '', originalName: '', targetRef: null, apiBase: '', wireApi: 'chat', keys: [], newKeyLabel: '', newKeysText: '', newKeyPriority: 0 });
 
 function openVendorEdit(info) {
   vendorEdit.value = {
     name: info.name,
+    originalName: info.name,
     targetRef: info.targetRef,
     apiBase: info.apiBase,
     wireApi: info.wireApi || 'chat',
     proxy: editorValueFromTargetFields(info),
+    keys: [],
+    newKeyLabel: '',
+    newKeysText: '',
+    newKeyPriority: 0,
   };
   showVendorEdit.value = true;
+  loadGroupKeys(info.name);
+}
+
+async function loadGroupKeys(targetName) {
+  if (!targetName) { vendorEdit.value.keys = []; return; }
+  try {
+    const res = await listChannelKeys(targetName, { skipGlobalError: true });
+    vendorEdit.value.keys = Array.isArray(res?.entries) ? res.entries : [];
+  } catch { vendorEdit.value.keys = []; }
+}
+
+async function handleAddGroupKeys() {
+  const lines = String(vendorEdit.value.newKeysText || '')
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+  if (lines.length === 0) {
+    ElMessage.warning('请先粘贴至少一个密钥');
+    return;
+  }
+  if (!vendorEdit.value.name || vendorEdit.value.name !== vendorEdit.value.originalName) {
+    ElMessage.warning('请先保存分组名称，再添加密钥（密钥按分组名挂靠）');
+    return;
+  }
+  vendorKeyAdding.value = true;
+  let added = 0;
+  try {
+    for (const key of lines) {
+      try {
+        await createChannelKey({
+          target: vendorEdit.value.name,
+          kind: 'plaintext',
+          label: String(vendorEdit.value.newKeyLabel || '').trim(),
+          key,
+          priority: Number(vendorEdit.value.newKeyPriority) || 0,
+        });
+        added += 1;
+      } catch (err) {
+        ElMessage.error(`有一把密钥添加失败：${err?.response?.data?.error?.message || err?.message || '未知错误'}`);
+      }
+    }
+    if (added > 0) {
+      ElMessage.success(`已添加 ${added} 把密钥；额度耗尽时自动冷却并切换`);
+      vendorEdit.value.newKeysText = '';
+      await loadGroupKeys(vendorEdit.value.name);
+      await loadPoolKeyCounts();
+    }
+  } finally {
+    vendorKeyAdding.value = false;
+  }
+}
+
+async function handleRevokeGroupKey(row) {
+  try {
+    await ElMessageBox.confirm(
+      `删除密钥 ${row.maskedKey}（${row.label || '无备注'}）？正在使用它的请求不受影响，但之后不再参与轮换。`,
+      '删除密钥',
+      { confirmButtonText: '删除', cancelButtonText: '取消', type: 'warning' },
+    );
+  } catch { return; }
+  try {
+    await revokeChannelKey(row.id);
+    ElMessage.success('密钥已删除');
+    await loadGroupKeys(vendorEdit.value.name);
+    await loadPoolKeyCounts();
+  } catch { /* 错误提示由请求拦截器统一处理 */ }
 }
 
 async function handleSaveVendorEdit() {
   const endpoint = parseApiBase(vendorEdit.value.apiBase);
   if (!endpoint || !endpoint.host) {
     ElMessage.warning('请填写正确的 API 地址（例如 https://api.deepseek.com/v1）');
+    return;
+  }
+  const newName = String(vendorEdit.value.name || '').trim();
+  if (!newName) {
+    ElMessage.warning('分组名称不能为空');
+    return;
+  }
+  if (/[\\\u0000-\u001f\u007f-\u009f]/.test(newName) || newName.length > 128) {
+    ElMessage.warning('分组名称不能包含反斜杠或控制字符，且不超过 128 字符');
     return;
   }
   const patch = {
@@ -829,12 +954,16 @@ async function handleSaveVendorEdit() {
     ...proxyFieldsFromEditor(vendorEdit.value.proxy),
   };
   if (endpoint.port) patch.port = endpoint.port; else patch.port = null;
+  if (newName !== vendorEdit.value.originalName) patch.name = newName;
   vendorEditSaving.value = true;
   try {
     await commitModelOperations([
       { kind: 'target.update', targetRef: vendorEdit.value.targetRef, patch },
     ]);
-    ElMessage.success('接口地址已更新；重启路由后完全生效');
+    const renamedNow = newName !== vendorEdit.value.originalName;
+    ElMessage.success(renamedNow
+      ? '分组已更新：名称与接口配置已保存，密钥池已自动迁移到新名称；重启路由后完全生效'
+      : '分组接口配置已更新；重启路由后完全生效');
     showVendorEdit.value = false;
     await refreshVendorGroups();
     await loadModels();
