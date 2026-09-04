@@ -7,7 +7,14 @@
   -->
   <div class="app-shell bg-canvas">
     <!-- 桌面/平板：常驻侧栏（含折叠态） -->
-    <Sidebar v-if="!isMobile" :collapsed="isCompact" />
+    <Sidebar
+      v-if="!isMobile"
+      :collapsed="isCompact"
+      :version="update.version"
+      :has-update="update.hasUpdate"
+      :update-info="update.info"
+      @check-update="updateDialogOpen = true"
+    />
 
     <!-- 移动端：抽屉侧栏 -->
     <el-drawer
@@ -20,7 +27,14 @@
       @update:model-value="drawerOpen = $event"
       @close="drawerOpen = false"
     >
-      <Sidebar :collapsed="false" @navigate="drawerOpen = false" />
+      <Sidebar
+        :collapsed="false"
+        :version="update.version"
+        :has-update="update.hasUpdate"
+        :update-info="update.info"
+        @navigate="drawerOpen = false"
+        @check-update="handleOpenUpdate"
+      />
     </el-drawer>
 
     <el-container direction="vertical" class="flex-1 min-w-0 h-full">
@@ -36,6 +50,16 @@
         </div>
       </el-main>
     </el-container>
+
+    <!-- 全局更新弹窗：侧栏品牌区与设置页均可触发 -->
+    <UpdateDialog
+      v-model="update.dialogOpen"
+      :info="update.info"
+      :applying="update.applying"
+      :done="update.done"
+      @apply="handleApplyUpdate"
+      @reload="reloadPage"
+    />
   </div>
 </template>
 
@@ -43,10 +67,48 @@
 import { ref } from 'vue';
 import Sidebar from './Sidebar.vue';
 import Topbar from './Topbar.vue';
+import UpdateDialog from '../components/UpdateDialog.vue';
 import { useBreakpoint } from '../composables/useBreakpoint.js';
+import { checkForUpdate, applyUpdate } from '../api/system.js';
 
 const { isMobile, isCompact } = useBreakpoint();
 const drawerOpen = ref(false);
+
+// ---- 版本与更新（左上角品牌区展示真实版本号；有新版本时显示 NEW 徽标） ----
+const update = ref({ version: '', hasUpdate: false, info: null, dialogOpen: false, applying: false, done: false });
+
+async function refreshUpdateInfo() {
+  try {
+    const res = await checkForUpdate({ skipGlobalError: true });
+    update.value = {
+      version: res.current || '',
+      hasUpdate: res.hasUpdate === true,
+      info: res,
+      dialogOpen: false,
+      applying: false,
+      done: false,
+    };
+  } catch { /* 网络不可用时保持静默，不打扰首次使用 */ }
+}
+refreshUpdateInfo();
+
+async function handleApplyUpdate() {
+  update.value.applying = true;
+  try {
+    const res = await applyUpdate();
+    update.value.done = true;
+    update.value.applying = false;
+    setTimeout(() => window.location.reload(), 300);
+    return res;
+  } catch (err) {
+    update.value.applying = false;
+    throw err;
+  }
+}
+
+function handleOpenUpdate() {
+  update.value.dialogOpen = true;
+}
 </script>
 
 <style scoped>
