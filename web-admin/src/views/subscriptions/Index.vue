@@ -153,7 +153,7 @@
             <span class="text-xs text-secondary">额度消耗顺序</span>
             <el-input-number
               :model-value="accountPriorityValue(acc)"
-              :min="1"
+              :min="0"
               :max="99"
               size="small"
               controls-position="right"
