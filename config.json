@@ -166,7 +166,8 @@
       "protocol": "https",
       "wireApi": "chat",
       "viaProxy": true,
-      "proxyUrl": null
+      "proxyUrl": null,
+      "port": null
     },
     {
       "name": "google-gemini-3.1-flash-lite",
