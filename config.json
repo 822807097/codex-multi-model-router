@@ -526,6 +526,21 @@
       {
         "slug": "glm-5.3",
         "autoCompactTokenLimit": 100000
+      },
+      {
+        "slug": "glm-5.3-flash",
+        "contextWindow": 700000,
+        "autoCompactTokenLimit": 560000
+      },
+      {
+        "slug": "qwen3.8-flash",
+        "contextWindow": 700000,
+        "autoCompactTokenLimit": 560000
+      },
+      {
+        "slug": "mimo-v2.5",
+        "contextWindow": 700000,
+        "autoCompactTokenLimit": 560000
       }
     ]
   },
