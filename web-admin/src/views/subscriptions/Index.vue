@@ -78,9 +78,41 @@
                 {{ acc.metadata.planType }}
               </el-tag>
               <el-tag :type="statusMeta(acc).type" size="small" effect="plain">{{ statusMeta(acc).label }}</el-tag>
-              <el-tag type="info" size="small" effect="plain" class="max-w-full">
-                <span class="truncate">{{ acc.proxy?.enabled ? `代理: ${acc.proxy.url || '未填写'}` : '直连' }}</span>
-              </el-tag>
+              <el-popover placement="bottom" :width="420" trigger="click" popper-class="proxy-edit-popover">
+                <template #reference>
+                  <el-tag
+                    :type="acc.proxy?.enabled ? 'success' : 'info'"
+                    size="small"
+                    effect="plain"
+                    class="cursor-pointer max-w-full"
+                  >
+                    <span class="truncate">{{ acc.proxy?.enabled ? `代理: ${acc.proxy.url || '未填写'}` : '直连（点击配置代理）' }}</span>
+                  </el-tag>
+                </template>
+                <div class="space-y-2">
+                  <div class="text-xs font-semibold text-primary">账号独立代理</div>
+                  <el-input
+                    v-model="proxyEdit[acc.id]"
+                    size="small"
+                    class="font-mono"
+                    placeholder="http:// / socks5:// / ss:// / trojan:// / vless://…（留空 = 直连）"
+                    clearable
+                  />
+                  <div class="flex items-center justify-between">
+                    <el-checkbox
+                      :model-value="acc.proxy?.enabled === true"
+                      @change="(v) => { proxyEdit[acc.id] = proxyEdit[acc.id] ?? (acc.proxy?.url || ''); }"
+                    >启用</el-checkbox>
+                    <el-button
+                      size="small"
+                      type="primary"
+                      :loading="proxySavingId === acc.id"
+                      @click="handleSetProxy(acc)"
+                    >保存代理</el-button>
+                  </div>
+                  <div class="text-3xs text-secondary">谷歌订阅走 OAuth 账号授权，无需代理也可用；此代理仅作用于该账号的出站请求</div>
+                </div>
+              </el-popover>
             </div>
           </div>
 
@@ -258,7 +290,7 @@
 
 <script setup>
 import { ref, reactive, computed, onMounted } from 'vue';
-import { listAccounts, deleteAccount, fetchAccountModels, testAccountModel, setupGoogleChannel, setAccountPriority, switchCodexAccount, getCodexAuthIdentity, getAccountQuota } from '../../api/accounts.js';
+import { listAccounts, deleteAccount, fetchAccountModels, testAccountModel, setupGoogleChannel, setAccountPriority, setAccountProxy, switchCodexAccount, getCodexAuthIdentity, getAccountQuota } from '../../api/accounts.js';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import OAuthDialog from './components/OAuthDialog.vue';
 import AsyncContainer from '../../components/AsyncContainer.vue';
@@ -418,6 +450,28 @@ function accountPriorityValue(acc) {
   return (raw !== undefined && raw !== null && raw !== '' && Number.isFinite(num)) ? num : undefined;
 }
 const savingPriorityId = ref('');
+const proxyEdit = reactive({});
+const proxySavingId = ref('');
+
+async function handleSetProxy(acc) {
+  const url = String(proxyEdit[acc.id] ?? '').trim();
+  const enabled = url !== '';
+  if (enabled && !/^(http|socks5|ss|trojan|vless):\/\//.test(url)) {
+    ElMessage.warning('代理链接需以 http:// / socks5:// / ss:// / trojan:// / vless:// 开头');
+    return;
+  }
+  proxySavingId.value = acc.id;
+  try {
+    const res = await setAccountProxy(acc.id, enabled, url);
+    if (acc) acc.proxy = res.proxy;
+    ElMessage.success(res.message || '已更新账号代理');
+  } catch (err) {
+    ElMessage.error(err.response?.data?.error?.message || err.message || '更新代理失败');
+  } finally {
+    proxySavingId.value = '';
+  }
+}
+
 async function handleSetPriority(acc, value) {
   const priority = (value === undefined || value === null) ? null : Number(value);
   savingPriorityId.value = acc.id;

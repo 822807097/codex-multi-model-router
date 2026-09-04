@@ -81,6 +81,15 @@ export function setAccountPriority(id, priority) {
   });
 }
 
+/** 账号级独立代理：enabled=false 或 proxyUrl 空 = 清空（直连/跟随系统） */
+export function setAccountProxy(id, enabled, proxyUrl) {
+  return request({
+    url: '/accounts/set-proxy',
+    method: 'post',
+    data: { id, enabled, proxyUrl },
+  });
+}
+
 /**
  * 一键切换 Codex 桌面端登录的 ChatGPT 账号（替换 auth.json + 自动重启桌面端）。
  */
