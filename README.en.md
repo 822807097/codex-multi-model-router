@@ -92,7 +92,7 @@ When your ChatGPT subscription quota runs out, the task does not restart: pick a
 
 1. Install **Node.js 18 or newer** ([nodejs.org](https://nodejs.org), next-next-next is fine).
 2. Prepare **your own** vendor API keys (DeepSeek open platform, Alibaba Bailian, SiliconFlow, OpenRouter, …). This project ships **no built-in keys**.
-3. Download and extract this project's source to any directory, e.g. `D:\codex-multi-model-router`.
+3. Download and extract this project's source to any directory, e.g. `D:\codex-router`.
 
 No npm install needed (pure Node.js — `npm start` just runs).
 
@@ -101,14 +101,14 @@ No npm install needed (pure Node.js — `npm start` just runs).
 Windows:
 
 ```powershell
-cd D:\codex-multi-model-router
+cd D:\codex-router
 .\scripts\start-router.ps1
 ```
 
 macOS / Linux:
 
 ```bash
-cd ~/codex-multi-model-router
+cd ~/codex-router
 ./scripts/start-router.sh
 ```
 
@@ -238,7 +238,7 @@ Built-in mechanisms include multi-channel provider affinity per model, request b
 If this project helps you, please give it a Star. Feedback is welcome:
 
 - **WeChat**: `b6356120` (mention "router" when adding; I'll invite you to the user group)
-- **GitHub Issues**: [open an issue](https://github.com/822807097/codex-multi-model-router/issues)
+- **GitHub Issues**: [open an issue](https://github.com/822807097/codex-router/issues)
 
 When reporting, include: which model you used, the exact error text, and a screenshot of the relevant panel page — it makes things much faster.
 

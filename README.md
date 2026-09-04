@@ -94,7 +94,7 @@ ChatGPT 官方订阅额度耗尽时，任务不需要重来：在同一个会话
 
 1. 安装 **Node.js 18 或更高版本**（[nodejs.org](https://nodejs.org)，一路下一步即可）。
 2. 准备你**自己的**模型服务商 API Key（例如 DeepSeek 开放平台、阿里云百炼、硅基流动、OpenRouter 等）。本项目**自身不含任何内置密钥**。
-3. 下载并解压本项目源码到任意目录，例如 `D:\codex-multi-model-router`。
+3. 下载并解压本项目源码到任意目录，例如 `D:\codex-router`。
 
 不需要安装任何 npm 依赖（纯 Node.js 实现，`npm start` 直接跑）。
 
@@ -103,14 +103,14 @@ ChatGPT 官方订阅额度耗尽时，任务不需要重来：在同一个会话
 ### Windows
 
 ```powershell
-cd D:\codex-multi-model-router
+cd D:\codex-router
 .\scripts\start-router.ps1
 ```
 
 ### macOS / Linux
 
 ```bash
-cd ~/codex-multi-model-router
+cd ~/codex-router
 ./scripts/start-router.sh
 ```
 
@@ -246,7 +246,7 @@ cd web-admin && npm run build   # 重新构建管理面板前端
 用得好请点个 Star；遇到问题欢迎反馈：
 
 - **微信**：`b6356120`（添加请备注「路由器」，会拉交流群）
-- **GitHub Issues**：[提交 Issue](https://github.com/822807097/codex-multi-model-router/issues)
+- **GitHub Issues**：[提交 Issue](https://github.com/822807097/codex-router/issues)
 
 提问题时尽量附上：用的哪个模型、报错原文、管理面板对应页面的截图，定位更快。
 
