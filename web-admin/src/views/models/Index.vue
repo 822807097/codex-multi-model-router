@@ -793,6 +793,7 @@ async function refreshVendorGroups() {
         viaProxy: t.viaProxy === true,
         proxyUrl: t.proxyUrl || null,
         wireApi: t.wireApi || 'chat',
+        match: typeof t.match === 'string' ? t.match : '',
         apiBase: `${t.protocol || 'https'}://${t.host}${t.port ? `:${t.port}` : ''}${t.prefix || ''}`,
       }));
   } catch { /* 路由状态不可用时分组级按钮自动隐藏 */ }
@@ -909,11 +910,21 @@ async function handleAddModelsToGroup() {
   for (const m of fresh) {
     if (m.upstream && m.upstream !== m.slug) modelMapPatch[m.slug] = m.upstream;
   }
-  // match 扩展：新 slug 已被现规则覆盖则不动，否则追加精确分支
+  // match 扩展：新 slug 已被现规则覆盖则不动，否则追加精确分支。
+  // 独占语义：slug 若已被其他通道的锚定枚举独占，本组宽松覆盖拿不到流量，
+  // 不算已覆盖（否则提示成功但模型零流量——假成功）。
   const currentMatch = groupAddModels.value.currentMatch;
   let covered = null;
   try { covered = new RegExp(currentMatch); } catch { covered = null; }
-  const needsAdd = slugs.filter((slug) => !(covered && covered.test(slug)));
+  const anchoredElsewhere = vendorGroups.value
+    .filter((v) => v.match && v.match !== currentMatch && isAnchoredExactMatch(v.match))
+    .map((v) => { try { return new RegExp(v.match); } catch { return null; } })
+    .filter(Boolean);
+  const heldElsewhere = (slug) => {
+    if (!covered || !covered.test(slug)) return false;
+    return anchoredElsewhere.some((re) => { re.lastIndex = 0; return re.test(slug); });
+  };
+  const needsAdd = slugs.filter((slug) => !(covered && covered.test(slug)) || heldElsewhere(slug));
   const operations = fresh.map((m) => ({
     kind: 'model.create',
     model: { slug: m.slug, display_name: `${groupAddModels.value.groupName}/${m.slug}` },
@@ -1009,6 +1020,25 @@ function parseKeyLines(text) {
 
 function escapeRegex(value) {
   return String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+// 与后端 lib/provider-pool.mjs isAnchoredExactMatch 一致：判断 match 是否为精确
+// 枚举形态（^(?:a|b)$ 或单分支 ^a$，分支只含 slug 字面字符与转义对）。锚定通道
+// 命中的模型独占路由，宽松前缀通道既不优先也不做 failover 兜底。
+const ANCHORED_BRANCH_RE = /^(?:[A-Za-z0-9_-]|\\[!-/:-@[-`{-~])+$/;
+function isAnchoredExactMatch(match) {
+  const source = match instanceof RegExp ? match.source : String(match || '');
+  let body;
+  if (source.startsWith('^(?:') && source.endsWith(')$')) {
+    body = source.slice(4, -2);
+  } else if (source.startsWith('^') && source.endsWith('$')) {
+    body = source.slice(1, -1);
+    if (body.includes('|')) return false;
+  } else {
+    return false;
+  }
+  if (!body) return false;
+  return body.split('|').every((branch) => ANCHORED_BRANCH_RE.test(branch));
 }
 
 // ---- 自动拉取模型状态 ----
@@ -1597,15 +1627,21 @@ async function openFetchModal() {
   }
 }
 
-// 按 config.targets 顺序做正则匹配，预览模型将路由到的通道（与后端 binding 规则一致：首个命中者优先）
+// 预览模型将路由到的通道。与后端锚定独占语义一致：slug 被精确枚举通道
+// （^(?:a|b)$ / ^a$）命中时只在锚定通道间按声明序选择，宽松前缀通道不参与；
+// 无锚定命中时按声明序取首个宽松命中。
 function routeTargetFor(slug) {
+  const anchored = [];
+  const loose = [];
   for (const t of fetchTargets.value) {
     if (!t.match) continue;
     try {
-      if (new RegExp(t.match).test(slug)) return t.name;
+      if (!new RegExp(t.match).test(slug)) continue;
+      (isAnchoredExactMatch(t.match) ? anchored : loose).push(t.name);
     } catch { /* 忽略不可编译的正则 */ }
   }
-  return '';
+  const pool = anchored.length ? anchored : loose;
+  return pool[0] || '';
 }
 
 async function handleFetchTargetModels() {
