@@ -58,6 +58,7 @@
       :applying="update.applying"
       :done="update.done"
       @apply="handleApplyUpdate"
+      @skip="skipThisSession"
       @reload="reloadPage"
     />
   </div>
@@ -88,9 +89,25 @@ async function refreshUpdateInfo() {
       applying: false,
       done: false,
     };
+    // 打开/刷新面板检测到新版本：自动弹窗询问是否更新
+    // （用户点「暂不更新」后本次会话不再自动弹，侧栏仍保留 NEW 徽标）
+    if (res.hasUpdate && !sessionStorage.getItem('update-skipped-' + res.latest)) {
+      setTimeout(() => { update.value.dialogOpen = true; }, 600);
+    }
   } catch { /* 网络不可用时保持静默，不打扰首次使用 */ }
 }
 refreshUpdateInfo();
+// 每 30 分钟自动复查一次新版本（有更新时侧栏品牌区显示 NEW 徽标）
+setInterval(refreshUpdateInfo, 30 * 60 * 1000);
+// 每 30 分钟自动复查一次新版本（有更新时侧栏品牌区显示 NEW 徽标）
+setInterval(refreshUpdateInfo, 30 * 60 * 1000);
+
+function skipThisSession() {
+  // 本次会话不再自动弹（侧栏 NEW 徽标保留）；下次打开/刷新面板仍会提示
+  const latest = (update.value.info && update.value.info.latest) || '';
+  sessionStorage.setItem('update-skipped-' + latest, '1');
+  update.value.dialogOpen = false;
+}
 
 async function handleApplyUpdate() {
   update.value.applying = true;

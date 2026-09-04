@@ -39,7 +39,7 @@
       </div>
     </template>
     <template #footer>
-      <el-button @click="emit('update:modelValue', false)">关闭</el-button>
+      <el-button @click="emit('skip')">暂不更新</el-button>
       <el-button
         v-if="info?.hasUpdate && !done"
         type="primary"
@@ -58,5 +58,5 @@ defineProps({
   applying: { type: Boolean, default: false },
   done: { type: Boolean, default: false },
 });
-const emit = defineEmits(['update:modelValue', 'apply', 'reload']);
+const emit = defineEmits(['update:modelValue', 'apply', 'skip', 'reload']);
 </script>
