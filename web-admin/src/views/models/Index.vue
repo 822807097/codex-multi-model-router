@@ -594,6 +594,14 @@ my-model=real-vendor-name"
           </el-select>
           <div class="text-xs text-secondary mt-1">下拉选 128k / 272k / 1M 等常用档位；也可直接输入数字或 1M、272k 这类简写，保存时自动换算</div>
         </el-form-item>
+        <el-form-item v-if="!editForm.officialLimited" label="自动压缩阈值 (Tokens)">
+          <el-input
+            v-model="editForm.auto_compact_token_limit"
+            placeholder="留空 = 跟随默认策略；例如 560000 或 560k"
+            class="font-mono"
+          />
+          <div class="text-xs text-secondary mt-1">上下文用到这个数字时，客户端自动压缩历史（防止长任务撞上游上限）。留空表示不设置；官方模型按 Codex 默认策略，不在此修改</div>
+        </el-form-item>
         <template v-if="!editForm.officialLimited">
                 <el-form-item label="输入模态">
           <el-checkbox :model-value="true" disabled>文本 (text)</el-checkbox>
@@ -1249,6 +1257,7 @@ const editForm = ref({
   group: '',
   default_reasoning_level: '',
   context_window: null,
+  auto_compact_token_limit: null,
   supportsImage: false,
   supportedLevels: [],
   plugins: { tools: [], customTools: '', skills: false },
@@ -1435,6 +1444,7 @@ async function loadModels() {
         supportedLevels: Array.isArray(entry.supportedReasoningLevels) ? entry.supportedReasoningLevels : [],
         inputModalities: Array.isArray(entry.inputModalities) ? entry.inputModalities : ['text'],
         contextWindow: Number(entry.contextWindow) > 0 ? Number(entry.contextWindow) : null,
+        autoCompactTokenLimit: Number(entry.autoCompactTokenLimit) > 0 ? Number(entry.autoCompactTokenLimit) : null,
         // 工具能力实况回填（编辑面板复用，避免重存时把已声明的插件能力清空）
         supportedTools: Array.isArray(entry.supportedTools) ? entry.supportedTools : [],
         webSearchToolType: typeof entry.webSearchToolType === 'string' ? entry.webSearchToolType : '',
@@ -1549,6 +1559,7 @@ function openEdit(m) {
     group: groupOf(m.slug, m.displayName),
     default_reasoning_level: options.includes(rawLevel) ? rawLevel : '',
     context_window: m.contextWindow || null,
+    auto_compact_token_limit: m.autoCompactTokenLimit || null,
     supportsImage: Array.isArray(m.inputModalities) ? m.inputModalities.includes('image') : false,
     supportedLevels: levels,
     supportedTools,
@@ -1614,6 +1625,13 @@ async function handleSaveEdit() {
   }
   if (Number(editForm.value.context_window) > 0) {
     patch.context_window = parseContextTokens(editForm.value.context_window);
+  }
+  // 压缩阈值：留空提交 null（显式无值=客户端默认策略）；填了支持 k/M 简写
+  const compactRaw = String(editForm.value.auto_compact_token_limit ?? '').trim();
+  if (!compactRaw) {
+    patch.auto_compact_token_limit = null;
+  } else if (Number(compactRaw) > 0 || /^[0-9.]+[kKmM]$/.test(compactRaw)) {
+    patch.auto_compact_token_limit = parseContextTokens(compactRaw);
   }
   editSaving.value = true;
   try {

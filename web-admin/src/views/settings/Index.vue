@@ -20,6 +20,30 @@
       :min-height="260"
       @retry="loadConfig"
     >
+    <!-- 上下文压缩默认阈值 -->
+    <el-card shadow="never" class="setting-card">
+      <template #header>
+        <div class="flex items-center gap-2">
+          <span class="text-lg">📦</span>
+          <span class="font-bold text-primary text-sm">上下文压缩默认阈值（所有模型共用）</span>
+        </div>
+      </template>
+      <el-form label-position="top" class="max-w-xl">
+        <el-form-item label="默认自动压缩阈值 (Tokens)" class="mb-2">
+          <el-input
+            v-model="compactLimitInput"
+            placeholder="留空 = 不设置；例如 400000 或 400k"
+            class="font-mono"
+          />
+          <div class="text-xs text-secondary mt-1">
+            上下文用到这个数字时，客户端自动压缩会话历史，防止长任务超出上游真实上限。
+            这是所有模型的默认值；单个模型可在「分组自定义模型 → 编辑模型」里单独覆盖；
+            Codex 官方模型按官方策略（128k）固定，不受此项影响。保存后需重启路由生效。
+          </div>
+        </el-form-item>
+        <el-button size="small" type="primary" :loading="compactSaving" @click="saveCompactDefault">保存默认压缩阈值</el-button>
+      </el-form>
+    </el-card>
     <!-- 视觉中继状态 -->
     <el-card shadow="never" class="setting-card">
       <template #header>
@@ -333,7 +357,7 @@
 <script setup>
 import { ref, reactive, computed, onMounted } from 'vue';
 import {
-  getSystemConfig, saveSystemConfig, testVisionRelay, getCursorGatewayStatus, listCursorGatewayAccounts, addCursorGatewayAccount, removeCursorGatewayAccount, restartCursorGateway, startCursorGateway, listCursorGatewayModels, restartCodexDesktopApp, syncCodexSessionProviders, getCodexDesktopState, restoreCodexDesktopOfficial, applyCodexDesktopRouter, checkForUpdate, applyUpdate,
+  getSystemConfig, saveSystemConfig, testVisionRelay, getCursorGatewayStatus, listCursorGatewayAccounts, addCursorGatewayAccount, removeCursorGatewayAccount, restartCursorGateway, startCursorGateway, listCursorGatewayModels, restartCodexDesktopApp, syncCodexSessionProviders, getCodexDesktopState, restoreCodexDesktopOfficial, applyCodexDesktopRouter, checkForUpdate, applyUpdate, getModelContextDefaults, saveModelContextDefaults,
 } from '../../api/system.js';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import AsyncContainer from '../../components/AsyncContainer.vue';
@@ -347,6 +371,41 @@ const updateInfo = ref(null);
 const showUpdateDialog = ref(false);
 const updateApplying = ref(false);
 const updateDone = ref(false);
+
+// 全局默认压缩阈值
+const compactLimitInput = ref('');
+const compactSaving = ref(false);
+
+async function loadCompactDefault() {
+  try {
+    const res = await getModelContextDefaults({ skipGlobalError: true });
+    compactLimitInput.value = res?.autoCompactTokenLimit ? String(res.autoCompactTokenLimit) : '';
+  } catch { /* 读取失败保持留空 */ }
+}
+
+async function saveCompactDefault() {
+  const raw = String(compactLimitInput.value || '').trim();
+  let value = null;
+  if (raw) {
+    const m = /^([0-9]+(?:\.[0-9]+)?)([kKmM])?$/.exec(raw);
+    if (!m) {
+      ElMessage.warning('请填写正整数（支持 k / M 简写，如 400k、1M），或留空');
+      return;
+    }
+    value = Math.round(Number(m[1]) * (m[2]?.toLowerCase() === 'm' ? 1_000_000 : m[2]?.toLowerCase() === 'k' ? 1000 : 1));
+    if (!Number.isFinite(value) || value <= 0) {
+      ElMessage.warning('压缩阈值必须为正整数（tokens）');
+      return;
+    }
+  }
+  compactSaving.value = true;
+  try {
+    await saveModelContextDefaults({ autoCompactTokenLimit: value });
+    ElMessage.success('默认压缩阈值已保存；重启路由后写回模型目录生效');
+  } catch { /* 错误提示由请求拦截器统一处理 */ } finally {
+    compactSaving.value = false;
+  }
+}
 
 function reloadPage() {
   setTimeout(() => window.location.reload(), 300);
@@ -679,6 +738,7 @@ onMounted(() => {
   loadCursorGw();
   loadCursorModels();
   loadDesktopState();
+  loadCompactDefault();
 });
 
 // ---- Codex 桌面端接入（一键官方直连 / 一键接入路由 + 模型动态加载） ----

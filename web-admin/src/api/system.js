@@ -78,6 +78,25 @@ export function listCursorGatewayModels(config = {}) {
   });
 }
 
+// ---------- 模型上下文默认值（全局压缩阈值） ----------
+
+export function getModelContextDefaults(config = {}) {
+  return request({
+    url: '/model-context/defaults',
+    method: 'get',
+    ...config,
+  });
+}
+
+export function saveModelContextDefaults(data, config = {}) {
+  return request({
+    url: '/model-context/defaults',
+    method: 'post',
+    data,
+    ...config,
+  });
+}
+
 export function restartCodexDesktopApp() {
   return request({
     url: '/codex-desktop/restart-app',
