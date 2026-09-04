@@ -1,6 +1,6 @@
 <div align="center">
 
-# Codex Multi-Model Router
+# Codex Router
 
 **Local-First Multi-Model Router & Gateway**
 
@@ -59,7 +59,9 @@ Point your client's `base_url` at `http://127.0.0.1:15730/v1`; the router forwar
 | Vision relay ("borrowed eyes") | When a text-only model receives an image, a vision model describes it first; multi-endpoint with automatic failover |
 | ChatGPT subscription image generation | `/v1/images/generations` & `/v1/images/edits` translated into official Responses + image_generation calls, billed to your ChatGPT subscription (platform key as fallback) |
 | Multi-account subscription pool | Bind multiple Claude / Gemini / ChatGPT / Cursor accounts; automatic failover when quota runs dry; per-account drain order |
-| Channel key pools | Multiple API keys per vendor with priority rotation and persisted 429 cooldown |
+| Channel key pools | Multiple API keys per vendor: **same priority = load-balanced rotation**, different priorities = primary/backup chain; persisted 429 cooldown with automatic switchover |
+| **One-stop group editor** | The "Edit group" dialog on each vendor card: rename the group (keys migrate automatically), API base, wire protocol, proxy, and inline key management (bulk add / delete with upstream verification) |
+| **Dedicated-channel exclusive routing** | A model matched by a vendor's exact-enumeration channel stays on that channel only: when it rate-limits you get an honest error, **never a silent failover burning another vendor's quota** |
 | Free-form model groups | Model cards can be freely edited / deleted / regrouped |
 | Per-channel proxy | Each channel can go direct / via global proxy / via a custom node (paste ss / trojan / vless / socks5 / http links) |
 | **Resume any task with any model (no new chat)** | When the official quota runs out or you just want a different model, switch mid-task and hit "continue from breakpoint" in the same conversation: official subscription to a custom model, GLM to DeepSeek, etc. - protocol conversion (tool calls, reasoning format, session metadata) is handled by the router |
@@ -171,7 +173,8 @@ Full details in [docs/ADVANCED.en.md](docs/ADVANCED.en.md). Quick map of "what c
   - **Drain order**: each account card has a "drain order" number — lower numbers get drained first (empty = auto by plan tier, Pro first).
   - **One-click Codex switch**: on a ChatGPT account card, "switch Codex to this account" → signs out the current login (backed up) → writes that account's credentials → restarts the desktop app; bidirectional, usable ~10 seconds later.
   - Cursor Pro subscription: a built-in gateway converts subscription quota into an OpenAI-compatible API; add/remove `crsr_` keys to the account pool right in the panel.
-- **Channel key pools**: multiple keys per channel, priority rotation + persisted 429 cooldown; falls back to the env var once the whole pool cools down.
+- **Channel key pools**: multiple keys per channel. **Same priority = load-balanced rotation** (best for concurrency); different priorities = primary/backup chain. Persisted 429 cooldown with automatic switchover; bulk add / delete keys right inside the group's "Edit group" dialog.
+- **Check for updates & one-click self-update**: the panel header shows the current version — click it to check the latest GitHub release and update online, no manual pull needed.
 - **Free-form model groups**: cards are freely editable / deletable; type a new group name to create a group (browser-local, never written into the desktop catalog); "one-click vendor onboarding" can pull the real model list to pick from.
 - **Graceful restart**: the panel header's "graceful restart" swaps in new code without killing in-flight tasks.
 - **Usage stats**: daily token trends, activity heatmap, per-model breakdown.
