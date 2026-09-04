@@ -35,10 +35,6 @@
           <el-icon class="mr-1"><Download /></el-icon>
           自动拉取模型
         </el-button>
-        <el-button size="small" plain @click="showKeyPool = true">
-          <el-icon class="mr-1"><Key /></el-icon>
-          密钥池
-        </el-button>
         <el-button size="small" plain @click="showVendorPreset = true">
           <el-icon class="mr-1"><Shop /></el-icon>
           一键接入厂商
@@ -100,7 +96,7 @@
                 size="small"
                 effect="plain"
                 class="cursor-pointer"
-                @click="openKeyPoolFor(vendorChannelsOf(group)[0].name)"
+                @click="openVendorEdit(vendorChannelsOf(group)[0])"
               >🔑 Key 池 {{ vendorPoolKeyTotal(group) }} 把</el-tag>
               <el-button size="small" plain @click="openVendorEdit(vendorChannelsOf(group)[0])">
                 <el-icon class="mr-1"><Edit /></el-icon>
@@ -159,7 +155,7 @@
                 placement="top"
                 :show-after="100"
               >
-                <el-tag type="warning" size="small" effect="plain" class="cursor-pointer" @click="openKeyPoolFor(m.target)">密钥未配置</el-tag>
+                <el-tag type="warning" size="small" effect="plain" class="cursor-pointer" @click="openVendorEditByTarget(m.target)">密钥未配置</el-tag>
               </el-tooltip>
               <el-tag
                 v-if="latencies[m.slug] && latencies[m.slug].ok"
@@ -381,10 +377,13 @@ my-glm=glm-5.3-flash"
           <div class="flex items-center gap-2 flex-wrap">
             <span class="text-xs text-secondary shrink-0">优先级</span>
             <el-input-number v-model="vendorEdit.newKeyPriority" :min="0" :max="99" size="small" controls-position="right" class="!w-24" />
-            <span class="text-3xs text-secondary">数字小的先用</span>
+            <span class="text-3xs text-secondary">数字小的先用；全部填相同数字 = 负载均衡轮换</span>
             <span class="flex-1"></span>
             <el-button size="small" type="primary" plain :loading="vendorKeyAdding" @click="handleAddGroupKeys">添加密钥</el-button>
           </div>
+          <el-button size="small" link type="primary" class="self-start" @click="openKeyPoolFor(vendorEdit.originalName)">
+            高级管理：环境变量形态 Key / 清除冷却 / 改优先级 / 连通测试
+          </el-button>
         </div>
       </el-form>
       <template #footer>
@@ -690,6 +689,17 @@ function openKeyPoolFor(targetName) {
   keyPoolTarget.value = targetName || '';
   showKeyPool.value = true;
   loadPoolKeyCounts();
+}
+
+// 密钥日常管理已统一进「编辑分组」弹窗；此处兜底：
+// 按模型挂的通道名找对应厂商分组打开编辑弹窗，找不到才退回完整密钥池。
+function openVendorEditByTarget(targetName) {
+  const ch = vendorGroups.value.find((v) => v.name === targetName);
+  if (ch) {
+    openVendorEdit(ch);
+    return;
+  }
+  openKeyPoolFor(targetName);
 }
 
 async function loadPoolKeyCounts() {
