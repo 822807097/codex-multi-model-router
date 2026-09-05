@@ -109,7 +109,7 @@
         <template #header>
           <div class="text-sm font-semibold text-primary">按天 Token 趋势 (多模型堆叠)</div>
         </template>
-        <div ref="stackedChartRef" class="w-full h-72"></div>
+        <div ref="stackedChartRef" class="w-full h-96"></div>
       </el-card>
 
       <!-- 详细模型消耗表格 -->
@@ -273,7 +273,24 @@ function renderStackedChart() {
   const option = {
     backgroundColor: 'transparent',
     color: models.map((_, idx) => chartColorByIndex(idx)),
-    tooltip: { trigger: 'axis', axisPointer: { type: 'shadow' } },
+    grid: { left: '3%', right: '4%', bottom: '15%', top: '14%', containLabel: true },
+    tooltip: {
+      trigger: 'axis',
+      axisPointer: { type: 'shadow' },
+      // 多模型 tooltip 很高：限制在图表内并允许滚动，不遮标题也不被卡片裁剪
+      confine: true,
+      maxWidth: 360,
+      enterable: true,
+      order: 'valueDesc',
+      // 只列非零模型，避免几十个 0 值淹没重点；全部为 0 时显示总计 0
+      formatter(params) {
+        const list = (params || []).filter((p) => Number(p.value) > 0);
+        const rows = (list.length ? list : params.slice(0, 1)).map((p) => (
+          `${p.marker} ${p.seriesName}&nbsp;&nbsp;<b>${Number(p.value).toLocaleString()}</b>`
+        ));
+        return `<div style="font-size:12px">${params[0]?.axisValueLabel || ''}<br/>${rows.join('<br/>')}</div>`;
+      },
+    },
     legend: {
       bottom: 0,
       type: 'scroll',
