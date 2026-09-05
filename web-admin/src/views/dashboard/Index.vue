@@ -258,6 +258,15 @@ async function loadStats() {
   }
 }
 
+// token 数人性化：厂商惯例 k / M / B（1,537,436 → 1.5M；423,684,030 → 423.7M）
+function formatTokens(n) {
+  const v = Number(n) || 0;
+  if (v >= 1e9) return (v / 1e9).toFixed(v >= 1e10 ? 0 : 1) + 'B';
+  if (v >= 1e6) return (v / 1e6).toFixed(v >= 1e8 ? 0 : 1) + 'M';
+  if (v >= 1e3) return (v / 1e3).toFixed(v >= 1e4 ? 0 : 1) + 'k';
+  return String(v);
+}
+
 function renderStackedChart() {
   if (!stackedChartRef.value) return;
   const { days: chartDays, models } = stats.value.stackedChart;
@@ -265,7 +274,8 @@ function renderStackedChart() {
     name: m,
     type: 'bar',
     stack: 'total',
-    emphasis: { focus: 'series' },
+    // 不做 focus 淡化：悬停时其他柱保持实色（focus:'series' 会把同柱其他
+    // 段和邻近柱变半透明，观感像"图表坏了"）
     itemStyle: { color: chartColorByIndex(idx) },
     data: chartDays.map((d) => d.models[m] || 0),
   }));
@@ -286,7 +296,7 @@ function renderStackedChart() {
       formatter(params) {
         const list = (params || []).filter((p) => Number(p.value) > 0);
         const rows = (list.length ? list : params.slice(0, 1)).map((p) => (
-          `${p.marker} ${p.seriesName}&nbsp;&nbsp;<b>${Number(p.value).toLocaleString()}</b>`
+          `${p.marker} ${p.seriesName}&nbsp;&nbsp;<b>${formatTokens(p.value)}</b>`
         ));
         return `<div style="font-size:12px">${params[0]?.axisValueLabel || ''}<br/>${rows.join('<br/>')}</div>`;
       },
@@ -308,7 +318,7 @@ function renderStackedChart() {
       type: 'value',
       axisLine: { lineStyle: { color: cssVar('--border-default') } },
       splitLine: { lineStyle: { color: cssVar('--border-muted') } },
-      axisLabel: { color: cssVar('--text-secondary') },
+      axisLabel: { color: cssVar('--text-secondary'), formatter: (v) => formatTokens(v) },
     },
     series,
   };
