@@ -284,16 +284,22 @@
         <el-button size="small" text type="primary" @click="desktopSelectedModels = []">清空</el-button>
         <span class="text-xs text-secondary">已选 {{ desktopSelectedModels.length }} / {{ desktopState.models.length }}（当前已加载 {{ loadedCount }}）</span>
       </div>
-      <el-checkbox-group
-        v-model="desktopSelectedModels"
-        class="grid grid-cols-2 gap-1 max-h-72 overflow-y-auto border border-muted rounded-lg p-2"
-      >
-        <el-checkbox v-for="m in filteredDesktopModels" :key="m.slug" :value="m.slug">
-          <span class="font-mono text-xs">{{ m.slug }}</span>
-          <el-tag v-if="m.official" size="small" type="success" effect="plain" class="ml-1">官方</el-tag>
-          <el-tag v-if="m.loaded && !m.official" size="small" type="primary" effect="plain" class="ml-1">已加载</el-tag>
-        </el-checkbox>
-      </el-checkbox-group>
+      <div class="max-h-72 overflow-y-auto border border-muted rounded-lg p-2 space-y-2">
+        <el-checkbox-group v-model="desktopSelectedModels" class="grid grid-cols-2 gap-1">
+          <template v-for="group in groupedDesktopModels" :key="group.key">
+            <div class="col-span-2 text-3xs font-bold text-secondary uppercase tracking-wide mt-1 first:mt-0">
+              {{ group.label }}
+            </div>
+            <el-checkbox v-for="m in group.models" :key="m.slug" :value="m.slug">
+              <span class="font-mono text-xs">{{ m.displayName !== m.slug ? m.displayName : m.slug }}</span>
+              <span v-if="m.displayName !== m.slug" class="text-3xs text-secondary ml-1 font-mono">{{ m.slug }}</span>
+              <el-tag v-if="m.official" size="small" type="success" effect="plain" class="ml-1">官方</el-tag>
+              <el-tag v-else-if="m.channel" size="small" type="warning" effect="plain" class="ml-1">{{ m.channel }}</el-tag>
+              <el-tag v-if="m.loaded && !m.official" size="small" type="primary" effect="plain" class="ml-1">已加载</el-tag>
+            </el-checkbox>
+          </template>
+        </el-checkbox-group>
+      </div>
       <el-form label-position="top" class="mt-3">
         <el-form-item label="默认启动模型">
           <el-select v-model="desktopDefaultModel" filterable style="width: 280px" placeholder="选择默认模型">
@@ -761,7 +767,33 @@ const loadedCount = computed(
 const filteredDesktopModels = computed(() => {
   const q = desktopSearch.value.trim().toLowerCase();
   if (!q) return desktopState.models;
-  return desktopState.models.filter((m) => m.slug.toLowerCase().includes(q));
+  return desktopState.models.filter((m) => m.slug.toLowerCase().includes(q) || String(m.displayName || '').toLowerCase().includes(q));
+});
+
+// 接入弹窗按厂商分组：官方一组；其余按「上游 host」聚合（谷歌一键接入的 27 个
+// 同 host 通道归为一组），单通道 host 直接用通道名，同 host 多通道用 host 当组名。
+// 无通道信息的模型（历史遗留/路由状态不可用）落入「其他」组，保持可见。
+const groupedDesktopModels = computed(() => {
+  const official = [];
+  const byHost = new Map();
+  const other = [];
+  for (const m of filteredDesktopModels.value) {
+    if (m.official) official.push(m);
+    else if (m.channel || m.channelHost) {
+      const host = m.channelHost || m.channel;
+      if (!byHost.has(host)) byHost.set(host, []);
+      byHost.get(host).push(m);
+    } else other.push(m);
+  }
+  const groups = [];
+  if (official.length) groups.push({ key: '__official', label: '官方模型（账号自带，勾选即保留）', models: official });
+  for (const [host, models] of byHost) {
+    const channels = [...new Set(models.map((m) => m.channel).filter(Boolean))];
+    const label = channels.length === 1 ? `通道：${channels[0]}` : `${host}（${channels.length} 个通道）`;
+    groups.push({ key: `host:${host}`, label, models });
+  }
+  if (other.length) groups.push({ key: '__other', label: '其他（未绑定通道）', models: other });
+  return groups;
 });
 
 function openDesktopRouterDialog() {
