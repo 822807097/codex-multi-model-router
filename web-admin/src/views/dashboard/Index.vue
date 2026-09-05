@@ -222,20 +222,21 @@ const isEmpty = computed(() => {
 
 const statCards = computed(() => {
   const m = stats.value.metrics || {};
+  const windowLabel = `近 ${days.value} 天`;
   return [
-    { icon: '⚡', label: 'tokens 用量', value: m.totalTokensFormatted || '0', big: true },
-    { icon: '💬', label: '会话数量（估算）', value: m.totalSessions || 0, big: true },
-    { icon: '✉️', label: '调用次数', value: m.totalRounds || 0, big: true },
-    { icon: '📅', label: '活跃天数', value: m.activeDays || 0, big: true },
-    { icon: '📈', label: '当前连续天数', value: m.consecutiveDays || 0, big: true },
+    { icon: '⚡', label: 'tokens 用量', value: m.totalTokensFormatted || '0', big: true, hint: `${windowLabel}；官方通道 usage 缺失时按请求体量估算（数值偏高）` },
+    { icon: '💬', label: '会话数量（估算）', value: m.totalSessions || 0, big: true, hint: `${windowLabel}；按调用频次聚类估算的任务会话数` },
+    { icon: '✉️', label: '调用次数', value: m.totalRounds || 0, big: true, hint: `${windowLabel}；API 请求次数（智能体一轮任务含多次调用）` },
+    { icon: '📅', label: '活跃天数', value: m.activeDays || 0, big: true, hint: `${windowLabel}内有调用记录的天数` },
+    { icon: '📈', label: '当前连续天数', value: m.consecutiveDays || 0, big: true, hint: '连续每天都有调用的天数' },
     {
       icon: '🏆',
-      label: '最常用模型',
+      label: `最常用模型（${windowLabel}）`,
       value: m.topModel?.model || '暂无数据',
       big: false,
       suffix: m.topModel?.percent > 0 ? `${m.topModel.percent}%` : '',
       suffixClass: 'text-success-text text-base',
-      hint: '主力模型分流调度',
+      hint: '按窗口内 tokens 占比；切换 7 天 / 30 天看不同时段',
     },
   ];
 });
@@ -286,7 +287,7 @@ function renderStackedChart() {
     grid: { left: '3%', right: '4%', bottom: '15%', top: '14%', containLabel: true },
     tooltip: {
       trigger: 'axis',
-      axisPointer: { type: 'shadow' },
+      axisPointer: { type: 'line', lineStyle: { color: cssVar('--border-muted'), width: 1 } },
       // 多模型 tooltip 很高：限制在图表内并允许滚动，不遮标题也不被卡片裁剪
       confine: true,
       maxWidth: 360,
