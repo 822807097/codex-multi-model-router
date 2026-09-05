@@ -138,10 +138,21 @@
           <div class="flex gap-2">
             <el-button v-if="!cursorGw.running" type="primary" size="small" :loading="cursorGwStarting" @click="startCursorGw">启动网关</el-button>
             <el-button v-else size="small" :loading="cursorGwRestarting" @click="restartCursorGw">重启网关</el-button>
+            <el-button size="small" :loading="cursorGwUpstreamChecking" @click="checkGatewayUpstream">检查网关更新</el-button>
             <el-button size="small" :loading="cursorGwLoading" @click="loadCursorGw">刷新状态</el-button>
           </div>
         </div>
       </template>
+      <div v-if="cursorGwUpstream" class="text-xs mb-3 flex items-center gap-2 flex-wrap rounded-lg px-3 py-2 bg-surface-2/60">
+        <span>网关源码：</span>
+        <span class="font-mono">v{{ cursorGwUpstream.local.version || '?' }}</span>
+        <span class="text-secondary">（快照 {{ cursorGwUpstream.local.commit ? cursorGwUpstream.local.commit : '初始' }}）</span>
+        <el-tag v-if="cursorGwUpstream.upToDate" type="success" size="small" effect="plain">已是上游最新</el-tag>
+        <template v-else>
+          <el-tag type="warning" size="small" effect="plain">上游有更新：{{ cursorGwUpstream.latest.sha }} {{ cursorGwUpstream.latest.message?.slice(0, 40) }}</el-tag>
+          <el-button size="small" type="primary" plain :loading="cursorGwUpstreamUpdating" @click="updateGatewayUpstream">一键更新网关</el-button>
+        </template>
+      </div>
       <div class="text-xs text-secondary leading-relaxed mb-3">
         把 Cursor Pro 订阅额度转成 OpenAI 兼容接口的内置网关：多账号额度池、额度耗尽自动切换。
         在这里添加/删除 crsr_ key（Cursor 设置 → API KEY），模型自动在 Codex 下拉出现（<code>cursor/…</code>）。
@@ -366,6 +377,7 @@
 
 <script setup>
 import { ref, reactive, computed, onMounted } from 'vue';
+import request from '../../api/request.js';
 import {
   getSystemConfig, saveSystemConfig, testVisionRelay, getCursorGatewayStatus, listCursorGatewayAccounts, addCursorGatewayAccount, removeCursorGatewayAccount, restartCursorGateway, startCursorGateway, listCursorGatewayModels, restartCodexDesktopApp, syncCodexSessionProviders, getCodexDesktopState, restoreCodexDesktopOfficial, applyCodexDesktopRouter, checkForUpdate, applyUpdate, getModelContextDefaults, saveModelContextDefaults,
 } from '../../api/system.js';
@@ -557,11 +569,48 @@ const cursorGw = ref({ running: false, port: 6718, error: '' });
 const cursorGwLoading = ref(false);
 const cursorGwRestarting = ref(false);
 const cursorGwStarting = ref(false);
+const cursorGwUpstream = ref(null);
+const cursorGwUpstreamChecking = ref(false);
+const cursorGwUpstreamUpdating = ref(false);
 const cursorModels = ref([]);
 const cursorAccounts = ref([]);
 const cursorNewKey = ref('');
 const cursorNewLabel = ref('');
 const cursorAdding = ref(false);
+
+// 网关上游（NGLSG/cursor2api）版本检查与一键更新
+async function checkGatewayUpstream() {
+  cursorGwUpstreamChecking.value = true;
+  try {
+    const res = await request({ url: '/cursor-gateway/upstream-check', method: 'get', skipGlobalError: true });
+    cursorGwUpstream.value = res;
+    if (res?.upToDate) ElMessage.success('网关源码已是上游最新版本');
+  } catch (err) {
+    ElMessage.error(err.response?.data?.error?.message || '检查网关更新失败（需网络或全局代理可达 GitHub）');
+  } finally {
+    cursorGwUpstreamChecking.value = false;
+  }
+}
+
+async function updateGatewayUpstream() {
+  try {
+    await ElMessageBox.confirm(
+      '将从上游拉取最新网关源码并替换本地副本（node_modules / .env / 账号数据保留）。更新完成后建议点「重启网关」生效。确定？',
+      '更新 Cursor 网关',
+      { confirmButtonText: '更新', cancelButtonText: '取消', type: 'warning' },
+    );
+  } catch { return; }
+  cursorGwUpstreamUpdating.value = true;
+  try {
+    const res = await request({ url: '/cursor-gateway/upstream-update', method: 'post', data: {}, timeout: 180_000 });
+    ElMessage.success(res.message || '网关源码已更新');
+    await checkGatewayUpstream();
+  } catch (err) {
+    ElMessage.error(err.response?.data?.error?.message || '网关更新失败');
+  } finally {
+    cursorGwUpstreamUpdating.value = false;
+  }
+}
 
 // 网关可用模型清单（读路由目录，网关离线也能看）
 async function loadCursorModels() {
