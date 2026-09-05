@@ -271,7 +271,7 @@
     </el-card>
 
     <!-- 接入路由：模型选择弹窗（可单选/多选/全选） -->
-    <el-dialog v-model="desktopDialogOpen" title="接入路由：选择要加载到 Codex 的模型" width="640px" class="custom-dialog-pro" append-to-body>
+    <el-dialog v-model="desktopDialogOpen" title="接入路由：选择要加载到 Codex 的模型" :width="isMobile ? '96%' : '960px'" class="custom-dialog-pro" append-to-body>
       <div class="text-xs text-secondary mb-2">只勾选你用得到的模型——没勾的不会出现在 Codex 选择器里（官方模型始终保留）：</div>
       <div class="flex items-center gap-3 mb-2">
         <el-input
@@ -284,10 +284,10 @@
         <el-button size="small" text type="primary" @click="desktopSelectedModels = []">清空</el-button>
         <span class="text-xs text-secondary">已选 {{ desktopSelectedModels.length }} / {{ desktopState.models.length }}（当前已加载 {{ loadedCount }}）</span>
       </div>
-      <div class="max-h-72 overflow-y-auto border border-muted rounded-lg p-2 space-y-2">
-        <el-checkbox-group v-model="desktopSelectedModels" class="grid grid-cols-2 gap-x-3 gap-y-1">
+      <div class="max-h-80 overflow-y-auto border border-muted rounded-lg p-3 space-y-3">
+        <el-checkbox-group v-model="desktopSelectedModels" class="grid grid-cols-3 gap-x-4 gap-y-1.5">
           <template v-for="group in groupedDesktopModels" :key="group.key">
-            <div class="col-span-2 text-3xs font-bold text-secondary uppercase tracking-wide mt-1 first:mt-0">
+            <div class="col-span-3 text-sm font-bold text-primary mt-1 first:mt-0">
               {{ group.label }}
             </div>
             <el-checkbox
@@ -297,7 +297,7 @@
               :title="m.slug"
               class="!mr-0 min-w-0"
             >
-              <span class="text-xs truncate inline-block max-w-[15rem] align-middle">{{ m.displayName }}</span>
+              <span class="text-sm truncate inline-block max-w-[17rem] align-middle">{{ m.displayName }}</span>
               <el-tag v-if="m.official" size="small" type="success" effect="plain" class="ml-1">官方</el-tag>
               <el-tag v-if="m.loaded && !m.official" size="small" type="primary" effect="plain" class="ml-1">已加载</el-tag>
             </el-checkbox>
@@ -792,8 +792,10 @@ const groupedDesktopModels = computed(() => {
   const groups = [];
   if (official.length) groups.push({ key: '__official', label: '官方模型（账号自带，勾选即保留）', models: official });
   for (const [host, models] of byHost) {
-    const channels = [...new Set(models.map((m) => m.channel).filter(Boolean))];
-    const label = channels.length === 1 ? `通道：${channels[0]}` : `${host}（${channels.length} 个通道）`;
+    // 组名 = 分组名：取通道名「-」前段的厂商前缀（deepseek-responses → deepseek），
+    // 与「分组自定义模型」页的分组口径一致；不显示域名/通道数。
+    const prefixes = [...new Set(models.map((m) => String(m.channel || '').split('-')[0].trim()).filter(Boolean))];
+    const label = prefixes.length === 1 ? prefixes[0] : models[0]?.channelHost || prefixes.join(' / ');
     groups.push({ key: `host:${host}`, label, models });
   }
   if (other.length) groups.push({ key: '__other', label: '其他（未绑定通道）', models: other });
