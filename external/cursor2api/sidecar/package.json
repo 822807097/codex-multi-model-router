@@ -1,0 +1,12 @@
+{
+  "name": "cursor2api-sidecar",
+  "version": "0.2.0",
+  "private": true,
+  "type": "module",
+  "description": "Cross-platform OpenAI / Anthropic compatible HTTP gateway for Cursor.",
+  "scripts": {
+    "start": "bun run server.ts",
+    "test": "bun test",
+    "build:win": "bun build server.ts --compile --outfile ../desktop/src-tauri/binaries/api-for-cursor-server-x86_64-pc-windows-msvc.exe"
+  }
+}

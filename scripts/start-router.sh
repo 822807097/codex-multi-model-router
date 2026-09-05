@@ -5,6 +5,16 @@
 
 set -euo pipefail
 
+# Node 版本预检：路由使用 node:sqlite（内置模块，Node 23.4 起默认可用）。
+# 旧版 Node 会在 import 阶段直接崩（ERR_UNKNOWN_BUILTIN_MODULE），提前拦截给出指引。
+NODE_MAJOR="$(node -p 'process.versions.node.split(".")[0]' 2>/dev/null || echo 0)"
+if [ "$NODE_MAJOR" -lt 23 ]; then
+    echo "错误：当前 Node.js 版本 $(node -v 2>/dev/null || echo '未知') 过低。" >&2
+    echo "       本路由依赖 node:sqlite，需要 Node.js v23.4 或更高版本（推荐 LTS v24）。" >&2
+    echo "       请到 https://nodejs.org 安装最新 LTS 后重试：node -v 应显示 v23.4+。" >&2
+    exit 1
+fi
+
 # Codex 数据目录：优先 CODEX_HOME 环境变量，否则 ~/.codex
 export CODEX_HOME="${CODEX_HOME:-$HOME/.codex}"
 

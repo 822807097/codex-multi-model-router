@@ -32,8 +32,16 @@ Thumbs.db
 # 本地验证产物（Playwright 截图/脚本/日志）
 output/
 
-# 第三方依赖（cursor2api 等外部网关，运行库不入库）
-external/
+# 第三方依赖目录：默认不入库；例外——Cursor 内置网关（cursor2api，MIT）源码
+# 必须随仓库分发，否则开源用户 clone 后找不到网关、功能不可用。
+external/*
+!external/cursor2api/
+# cursor2api 自身的运行产物/依赖不入库
+external/cursor2api/node_modules/
+external/cursor2api/dist/
+external/cursor2api/*.log
+external/cursor2api/*.db
+external/cursor2api/.env
 
 # 运行时数据库（SQLite：含账号凭据/API Key/通道密钥，绝不提交）
 data/

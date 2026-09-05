@@ -1,0 +1,56 @@
+{
+  "name": "cursor2api",
+  "version": "0.2.0",
+  "private": false,
+  "type": "module",
+  "description": "OpenAI- and Anthropic-compatible API gateway for Cursor Composer models.",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/NGLSG/cursor2api.git"
+  },
+  "homepage": "https://github.com/NGLSG/cursor2api#readme",
+  "bugs": {
+    "url": "https://github.com/NGLSG/cursor2api/issues"
+  },
+  "scripts": {
+    "server": "node server.mjs",
+    "start:local": "node server.mjs start",
+    "stop:local": "node server.mjs stop",
+    "dev": "node server.mjs start",
+    "dev:worker": "vite --host 0.0.0.0",
+    "build": "vite build",
+    "build:client": "vite build --config vite.client.config.ts",
+    "preview": "vite preview --host 0.0.0.0",
+    "sdk:opencode-bridge": "node scripts/cursor-sdk-local-agent-bridge.mjs",
+    "sdk:responses": "node scripts/cursor-sdk-responses-proxy.mjs",
+    "test": "vitest run",
+    "test:sidecar": "cd sidecar && bun test",
+    "test:watch": "vitest",
+    "typecheck": "tsc --noEmit",
+    "deploy": "vite build && wrangler deploy",
+    "db:migrate:local": "wrangler d1 migrations apply composer-api --local",
+    "db:migrate:remote": "wrangler d1 migrations apply composer-api --remote"
+  },
+  "keywords": [
+    "cursor",
+    "composer",
+    "openai",
+    "chat-completions",
+    "responses-api",
+    "cloudflare-workers"
+  ],
+  "license": "MIT",
+  "dependencies": {
+    "@cloudflare/containers": "^0.3.4",
+    "@cursor/sdk": "^1.0.27",
+    "lucide": "^0.557.0"
+  },
+  "devDependencies": {
+    "@cloudflare/vite-plugin": "^1.37.2",
+    "@cloudflare/workers-types": "^4.20260520.0",
+    "typescript": "^5.9.3",
+    "vite": "^8.0.13",
+    "vitest": "^4.0.15",
+    "wrangler": "^4.93.0"
+  }
+}

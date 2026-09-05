@@ -1,0 +1,30 @@
+{
+  "name": "api-for-cursor-ui",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "tauri": "tauri"
+  },
+  "dependencies": {
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "@tauri-apps/api": "^2",
+    "@tauri-apps/plugin-shell": "^2",
+    "@tauri-apps/plugin-process": "^2",
+    "@tauri-apps/plugin-updater": "^2",
+    "@tauri-apps/plugin-clipboard-manager": "^2"
+  },
+  "devDependencies": {
+    "@aws-sdk/client-s3": "^3",
+    "@tauri-apps/cli": "^2",
+    "@vitejs/plugin-react": "^4",
+    "typescript": "^5",
+    "vite": "^6",
+    "@types/react": "^18",
+    "@types/react-dom": "^18"
+  }
+}

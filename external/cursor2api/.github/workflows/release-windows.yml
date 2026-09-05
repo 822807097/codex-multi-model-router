@@ -1,0 +1,162 @@
+name: Release Windows app
+
+# Builds the Windows (Tauri 2 + NSIS) port of "API for Cursor", optionally signs
+# and publishes it. Every signing/publish step is guarded so the build still
+# succeeds on a fork or before any secrets are configured.
+#
+# GitHub Secrets used by this workflow (all optional — build works without them):
+# | Secret                       | Purpose                                                        |
+# |------------------------------|----------------------------------------------------------------|
+# | TAURI_SIGNING_PRIVATE_KEY    | Tauri updater private key (signs the NSIS .exe -> .sig)        |
+# | TAURI_SIGNING_PRIVATE_KEY_PASSWORD | Password for the Tauri updater private key              |
+# | WINDOWS_CERTIFICATE          | Base64-encoded Authenticode code-signing cert (.pfx)          |
+# | WINDOWS_CERTIFICATE_PASSWORD | Password for the WINDOWS_CERTIFICATE .pfx                      |
+# | R2_ACCOUNT_ID                | Cloudflare account id for the R2 S3 endpoint                   |
+# | R2_ACCESS_KEY_ID             | R2 S3 access key id                                            |
+# | R2_SECRET_ACCESS_KEY         | R2 S3 secret access key                                        |
+
+on:
+  push:
+    tags:
+      - "v*.*.*-win"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "App version, for example 0.1.0"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+defaults:
+  run:
+    working-directory: desktop
+
+jobs:
+  build:
+    name: Build, sign, and publish Windows installer
+    runs-on: windows-latest
+    env:
+      TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+      TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+      # `secrets` is not available in step-level `if:` conditions, so presence is
+      # mirrored into env here and the conditional steps gate on these instead.
+      HAS_WINDOWS_CERT: ${{ secrets.WINDOWS_CERTIFICATE }}
+      HAS_R2_CREDS: ${{ secrets.R2_ACCESS_KEY_ID }}
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Set up Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - name: Cache Rust build
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: desktop/src-tauri
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+
+      - name: Install dependencies
+        run: bun install
+
+      - name: Resolve release version
+        id: version
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+            version="${GITHUB_REF_NAME#v}"
+            version="${version%-win}"
+          else
+            version="${{ inputs.version }}"
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "Resolved release version: $version"
+
+      - name: Generate app icons
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -f "app-icon.png" ]; then
+            bunx tauri icon app-icon.png
+          elif [ -f "src-tauri/icons/icon.png" ]; then
+            bunx tauri icon src-tauri/icons/icon.png
+          else
+            echo "No source icon found; skipping icon generation."
+          fi
+
+      - name: Build sidecar binary
+        run: bun build ../sidecar/server.ts --compile --outfile src-tauri/binaries/api-for-cursor-server-x86_64-pc-windows-msvc.exe
+
+      - name: Set up SDK bridge runtime (node + @cursor/sdk + script)
+        # The @cursor/sdk bridge runs under NODE (not bun): it can't be `bun --compile`d
+        # (sqlite3 native addon) AND Bun's HTTP/2 client breaks the SDK's gRPC calls to
+        # Cursor (NGHTTP2_FRAME_SIZE_ERROR). So — like the macOS app / prod container — we
+        # ship a node runtime + the raw .mjs + an on-disk node_modules (with the prebuilt
+        # sqlite3 binary) as Tauri resources. The bundled node.exe must match the node that
+        # installs node_modules so sqlite3's prebuilt ABI lines up (both come from setup-node).
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp ../scripts/cursor-sdk-local-agent-bridge.mjs src-tauri/bridge/cursor-sdk-local-agent-bridge.mjs
+          ( cd src-tauri/bridge && npm install --omit=dev )
+          cp "$(command -v node)" src-tauri/bridge/node.exe
+          ls -la src-tauri/bridge
+
+      - name: Build Tauri app (NSIS)
+        run: bun run tauri build --target x86_64-pc-windows-msvc
+
+      - name: Locate NSIS installer
+        id: installer
+        shell: bash
+        run: |
+          set -euo pipefail
+          dir="src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis"
+          exe="$(ls "$dir"/*.exe | head -n1)"
+          echo "path=$exe" >> "$GITHUB_OUTPUT"
+          echo "name=$(basename "$exe")" >> "$GITHUB_OUTPUT"
+          echo "Found installer: $exe"
+
+      - name: Sign installer with signtool
+        if: ${{ env.HAS_WINDOWS_CERT != '' }}
+        shell: pwsh
+        env:
+          WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}
+          WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
+        run: |
+          $pfxPath = Join-Path $env:RUNNER_TEMP "code-signing.pfx"
+          [IO.File]::WriteAllBytes($pfxPath, [Convert]::FromBase64String($env:WINDOWS_CERTIFICATE))
+          $signtool = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin" -Recurse -Filter signtool.exe `
+            | Where-Object { $_.FullName -like "*x64*" } | Select-Object -Last 1
+          & $signtool.FullName sign /f $pfxPath /p $env:WINDOWS_CERTIFICATE_PASSWORD `
+            /fd SHA256 /tr http://timestamp.digicert.com /td SHA256 "${{ steps.installer.outputs.path }}"
+          Remove-Item $pfxPath -Force
+
+      - name: Publish release to Cloudflare R2
+        if: ${{ env.HAS_R2_CREDS != '' }}
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+        run: bun run scripts/publish-windows.ts
+
+      - name: Upload installer artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: api-for-cursor-windows-${{ steps.version.outputs.version }}
+          if-no-files-found: error
+          path: |
+            ${{ steps.installer.outputs.path }}
+            ${{ steps.installer.outputs.path }}.sig

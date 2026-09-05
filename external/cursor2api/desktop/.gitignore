@@ -1,0 +1,36 @@
+# Dependencies
+node_modules/
+
+# Frontend build output
+dist/
+
+# Rust / Tauri build output
+src-tauri/target/
+
+# Generated Tauri schema/ACL files
+src-tauri/gen/schemas/
+
+# Bundled sidecar binaries (produced by `bun build --compile` in CI)
+src-tauri/binaries/*.exe
+
+# SDK bridge runtime resources (regenerated in CI: node runtime, copied script, deps).
+# Only src-tauri/bridge/package.json is committed.
+src-tauri/bridge/node.exe
+src-tauri/bridge/bun.exe
+src-tauri/bridge/cursor-sdk-local-agent-bridge.mjs
+src-tauri/bridge/node_modules/
+src-tauri/bridge/bun.lock
+src-tauri/bridge/bun.lockb
+src-tauri/bridge/package-lock.json
+
+# Local sidecar / bridge logs if written under the app tree
+*.log
+.local/
+.runtime/
+
+# Signing & release secrets
+*.key
+*.key.pub
+*.pem
+*.pfx
+*.p12

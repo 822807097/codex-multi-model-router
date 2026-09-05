@@ -1,0 +1,62 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "API for Cursor",
+  "version": "0.2.0",
+  "identifier": "ai.standardagents.api-for-cursor",
+  "build": {
+    "frontendDist": "../dist",
+    "devUrl": "http://localhost:1420",
+    "beforeDevCommand": "bun run dev",
+    "beforeBuildCommand": "bun run build"
+  },
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "API for Cursor",
+        "width": 380,
+        "height": 560,
+        "resizable": false,
+        "visible": false,
+        "skipTaskbar": true,
+        "decorations": true
+      }
+    ],
+    "trayIcon": {
+      "id": "main",
+      "iconPath": "icons/32x32.png",
+      "tooltip": "API for Cursor",
+      "menuOnLeftClick": false
+    },
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "createUpdaterArtifacts": true,
+    "targets": ["nsis"],
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "externalBin": ["binaries/api-for-cursor-server"],
+    "resources": ["bridge/**/*"],
+    "windows": {
+      "nsis": {
+        "installMode": "perMachine"
+      }
+    }
+  },
+  "plugins": {
+    "updater": {
+      "endpoints": [
+        "https://api-for-composer.standardagents.ai/releases/windows/appcast.json"
+      ],
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEJDQkY1QTc0NEZEMENBRDgKUldUWXl0QlBkRnEvdkdJK2tGVUR6ZkVxNGtpcjFnUXZPNU5kOEVKdGx0SS9SdVh5SjhLY0JzQ1MK"
+    }
+  }
+}

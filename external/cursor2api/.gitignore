@@ -1,0 +1,70 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+.wrangler/
+.mf/
+
+# Environment & secrets (never commit real keys)
+.env
+.env.*
+!.env.example
+!.env.docker.example
+.dev.vars
+*.key
+*.key.pub
+*.pem
+*.pfx
+*.p12
+*.p12.password
+*-password.txt
+apple-app-password.txt
+credentials.json
+**/secrets.json
+
+# Logs & local runtime (sidecar / bridge helpers)
+*.log
+.local/
+.runtime/
+.cursor2api/
+CursorApiBridge*/
+
+# Lab / working copies & agent config backups
+*.work
+*.work.*
+*.bak
+*.backup
+*api-for-cursor-backup*
+
+# Test & tooling cache
+coverage/
+.nyc_output/
+.vite/
+
+# Sample / scratch
+sample-projects/
+
+# OS
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Windows desktop app (Tauri) — see also desktop/.gitignore
+desktop/dist/
+desktop/src-tauri/target/
+desktop/src-tauri/gen/schemas/
+desktop/src-tauri/binaries/*.exe
+desktop/src-tauri/bridge/node.exe
+desktop/src-tauri/bridge/bun.exe
+desktop/src-tauri/bridge/cursor-sdk-local-agent-bridge.mjs
+desktop/src-tauri/bridge/node_modules/
+desktop/src-tauri/bridge/bun.lock
+desktop/src-tauri/bridge/bun.lockb
+desktop/src-tauri/bridge/package-lock.json

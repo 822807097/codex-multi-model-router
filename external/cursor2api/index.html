@@ -1,0 +1,100 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <link rel="stylesheet" href="/src/styles.css" />
+    <meta name="theme-color" content="#f5f3ef" />
+    <title>Cursor Gateway | 多账号 API 网关</title>
+    <meta name="description" content="一站式托管多个 Cursor 账号，提供统一的 OpenAI、Anthropic 和 Responses API 网关。" />
+    <meta property="og:type" content="website" />
+    <meta property="og:title" content="Cursor Gateway | 多账号 API 网关" />
+    <meta property="og:description" content="统一网关 Key，自动拉取模型交集并按模型路由多个 Cursor 账号。" />
+  </head>
+  <body>
+    <div class="aurora" aria-hidden="true">
+      <span class="aurora-blob aurora-blob--one"></span>
+      <span class="aurora-blob aurora-blob--two"></span>
+      <span class="aurora-blob aurora-blob--three"></span>
+      <span class="aurora-grain"></span>
+    </div>
+
+    <main id="landing">
+      <header class="site-header">
+        <div class="header-bar glass">
+          <a class="brand" href="/" aria-label="Cursor Gateway">
+            <img class="brand-icon" src="/api-for-cursor-icon.png" alt="" width="36" height="36" />
+            <span class="brand-text">Cursor Gateway</span>
+          </a>
+          <nav class="header-nav" aria-label="主导航">
+            <a href="#gateway">网关</a>
+            <a href="#routing">路由能力</a>
+            <a href="#protocols">接入协议</a>
+            <a href="/dashboard">管理后台</a>
+          </nav>
+          <a class="btn btn-pill" href="/dashboard"><i data-lucide="key-round" data-size="16"></i><span>管理 Key</span></a>
+        </div>
+      </header>
+
+      <section id="gateway" class="gateway-hero" aria-labelledby="gateway-title">
+        <div class="gateway-eyebrow"><span class="gateway-live-dot" aria-hidden="true"></span>本地运行 · 多账号统一网关</div>
+        <h1 id="gateway-title">一站式托管<br /><span>多个 Cursor 账号</span></h1>
+        <p class="gateway-lead">在控制台托管多个 Cursor API Key，为每个客户端创建独立的 <code>sk-...</code> 访问密钥。网关自动拉取模型交集、按请求模型选择账号，账单异常自动熔断并切换可用账号。</p>
+        <div class="gateway-actions">
+          <a class="btn btn-primary btn-lg" href="/dashboard"><i data-lucide="key-round" data-size="19"></i><span>打开管理后台</span><i data-lucide="arrow-right" data-size="17"></i></a>
+          <button class="btn btn-glass btn-lg" type="button" data-copy-base-url>
+            <span class="btn-stack"><strong class="copy-label">复制网关 Base URL</strong><small data-base-url>http://127.0.0.1:6718/v1</small></span>
+            <i data-lucide="copy" data-size="18" class="copy-icon"></i><i data-lucide="check" data-size="18" class="copied-icon"></i>
+          </button>
+        </div>
+        <div class="gateway-origin" aria-label="网关地址">
+          <span class="gateway-origin-label"><i data-lucide="server" data-size="16"></i>当前网关</span>
+          <code data-base-url>http://127.0.0.1:6718/v1</code>
+          <span class="gateway-status"><span class="gateway-live-dot" aria-hidden="true"></span>服务在线</span>
+        </div>
+      </section>
+
+      <section class="gateway-metrics" aria-label="网关特性">
+        <article class="gateway-metric" data-reveal><span class="metric-icon metric-icon--blue"><i data-lucide="key-round" data-size="21"></i></span><div><strong>多账号池</strong><p>加密托管多把 Cursor Key</p></div></article>
+        <article class="gateway-metric" data-reveal><span class="metric-icon metric-icon--green"><i data-lucide="refresh-cw" data-size="21"></i></span><div><strong>模型交集</strong><p>只暴露所有账号共同可用模型</p></div></article>
+        <article class="gateway-metric" data-reveal><span class="metric-icon metric-icon--purple"><i data-lucide="shield-check" data-size="21"></i></span><div><strong>自动容错</strong><p>账单错误禁用并切换备用账号</p></div></article>
+      </section>
+
+      <section id="routing" class="routing-section" aria-labelledby="routing-title">
+        <div class="section-heading" data-reveal><p class="kicker">Gateway workflow</p><h2 id="routing-title">从账号管理到请求路由，统一在一个入口</h2><p class="section-sub">后台管理 Cursor 凭据，为每个客户端创建独立 API Key；客户端只需要标准 API 地址和自己的 Key。</p></div>
+        <div class="routing-layout">
+          <div class="routing-steps">
+            <article class="routing-step" data-reveal><span class="step-number">01</span><div><h3>导入 Cursor Key</h3><p>在 Dashboard 添加或批量导入账号，凭据使用本地加密存储。</p></div></article>
+            <article class="routing-step" data-reveal><span class="step-number">02</span><div><h3>同步模型目录</h3><p>网关并行读取每个账号的模型，计算对外可用的模型交集。</p></div></article>
+            <article class="routing-step" data-reveal><span class="step-number">03</span><div><h3>按模型自动路由</h3><p>请求进入后选择支持该模型的账号；账单错误会标记账号模型并切换备用。</p></div></article>
+          </div>
+          <aside class="gateway-console glass" data-reveal aria-label="网关接口概览">
+            <div class="console-heading"><span class="console-dot"></span><span>Gateway API</span><code>ready</code></div>
+            <div class="console-row"><span>认证</span><code>Bearer sk-...</code></div>
+            <div class="console-row"><span>模型目录</span><code>GET /v1/models</code></div>
+            <div class="console-row"><span>对话请求</span><code>POST /v1/chat/completions</code></div>
+            <div class="console-row"><span>Responses</span><code>POST /v1/responses</code></div>
+            <div class="console-row"><span>Anthropic</span><code>POST /v1/messages</code></div>
+          </aside>
+        </div>
+      </section>
+
+      <section id="protocols" class="protocol-section" aria-labelledby="protocol-title">
+        <div class="protocol-heading" data-reveal><p class="kicker">Independent client keys</p><h2 id="protocol-title">兼容现有 AI 客户端</h2><p>OpenAI、Anthropic 和 Responses 协议共用同一个网关地址；在后台为不同客户端创建和撤销独立 API Key。</p></div>
+        <div class="protocol-list" data-reveal>
+          <div class="protocol-row"><span class="protocol-name">OpenAI Chat Completions</span><code>/v1/chat/completions</code><span class="protocol-state">可用</span></div>
+          <div class="protocol-row"><span class="protocol-name">OpenAI Responses</span><code>/v1/responses</code><span class="protocol-state">可用</span></div>
+          <div class="protocol-row"><span class="protocol-name">Anthropic Messages</span><code>/v1/messages</code><span class="protocol-state">可用</span></div>
+        </div>
+      </section>
+
+      <section class="gateway-cta" data-reveal aria-label="管理后台入口"><div><p class="kicker">Ready to configure</p><h2>现在就开始管理你的 Cursor 账号池</h2><p>登录控制台，导入账号并创建客户端使用的独立 <code>sk-...</code> API Key。</p></div><a class="btn btn-primary btn-lg" href="/dashboard"><i data-lucide="key-round" data-size="19"></i><span>进入控制台</span></a></section>
+
+      <footer class="site-footer"><div class="footer-inner glass"><a class="brand" href="/" aria-label="Cursor Gateway"><img class="brand-icon" src="/api-for-cursor-icon.png" alt="" width="30" height="30" /><span class="brand-text">Cursor Gateway</span></a><p class="footer-copy">本地运行的多账号 Cursor API 反代网关。</p><div class="footer-links"><a href="#routing">路由能力</a><a href="#protocols">接入协议</a><a href="/dashboard">管理后台</a></div></div></footer>
+    </main>
+
+    <div id="chat-root" hidden></div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

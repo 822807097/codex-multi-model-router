@@ -1,0 +1,9 @@
+{
+  "name": "api-for-cursor-bridge",
+  "private": true,
+  "type": "module",
+  "description": "Bundled @cursor/sdk runtime for the local SDK bridge (shipped as a Tauri resource).",
+  "dependencies": {
+    "@cursor/sdk": "^1.0.13"
+  }
+}

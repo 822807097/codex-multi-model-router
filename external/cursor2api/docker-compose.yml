@@ -1,0 +1,59 @@
+name: cursor2api
+
+services:
+  bridge:
+    image: ${CURSOR2API_BRIDGE_IMAGE:-docker.io/${CURSOR2API_IMAGE_NAMESPACE:-nglsg}/cursor2api-bridge:${CURSOR2API_IMAGE_TAG:-latest}}
+    build:
+      context: .
+      dockerfile: containers/cursor-sdk-bridge/Dockerfile
+    environment:
+      CURSOR_SDK_BRIDGE_HOST: 0.0.0.0
+      CURSOR_SDK_BRIDGE_PORT: 8792
+      CURSOR_SDK_BRIDGE_TOKEN: ${CURSOR_SDK_BRIDGE_TOKEN:?Set CURSOR_SDK_BRIDGE_TOKEN before starting Compose}
+      CURSOR_SDK_BRIDGE_RUN_TIMEOUT_MS: ${CURSOR_SDK_BRIDGE_RUN_TIMEOUT_MS:-180000}
+    expose:
+      - "8792"
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8792/health').then((r) => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      start_period: 10s
+      retries: 12
+    restart: unless-stopped
+
+  api:
+    image: ${CURSOR2API_API_IMAGE:-docker.io/${CURSOR2API_IMAGE_NAMESPACE:-nglsg}/cursor2api-api:${CURSOR2API_IMAGE_TAG:-latest}}
+    build:
+      context: .
+      dockerfile: containers/sidecar/Dockerfile
+    depends_on:
+      bridge:
+        condition: service_healthy
+    environment:
+      HOST: 0.0.0.0
+      PORT: 6718
+      CURSOR_API_KEY: ${CURSOR_API_KEY:-}
+      CURSOR_API_KEYS: ${CURSOR_API_KEYS:-}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:?Set ADMIN_PASSWORD before starting Compose}
+      PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-}
+      CURSOR_CLIENT_VERSION: ${CURSOR_CLIENT_VERSION:-2.6.22}
+      CURSOR_SDK_BRIDGE_URL: http://bridge:8792/sdk
+      CURSOR_SDK_BRIDGE_TOKEN: ${CURSOR_SDK_BRIDGE_TOKEN:?Set CURSOR_SDK_BRIDGE_TOKEN before starting Compose}
+      CURSOR_SDK_BRIDGE_RUN_TIMEOUT_MS: ${CURSOR_SDK_BRIDGE_RUN_TIMEOUT_MS:-180000}
+      ENCRYPTION_KEY: ${ENCRYPTION_KEY:?Set ENCRYPTION_KEY before starting Compose}
+      CURSOR_ROUTER_STATE_PATH: /var/lib/api-for-cursor/router-state.json
+      LOCAL_AUTH_STATE_PATH: /var/lib/api-for-cursor/auth-state.json
+    volumes:
+      - router-data:/var/lib/api-for-cursor
+    ports:
+      - "${API_PORT:-6718}:6718"
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "--silent", "http://127.0.0.1:6718/health"]
+      interval: 10s
+      timeout: 5s
+      start_period: 5s
+      retries: 12
+    restart: unless-stopped
+
+volumes:
+  router-data:
