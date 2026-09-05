@@ -271,13 +271,16 @@ function formatTokens(n) {
 function renderStackedChart() {
   if (!stackedChartRef.value) return;
   const { days: chartDays, models } = stats.value.stackedChart;
+  // 用户硬性要求：悬停绝不透明/淡化。echarts 5 在 axis tooltip 下仍会对
+  // 非 hover 系列套 blur（透明）状态——series 级禁用 emphasis + blur 强制
+  // opacity 1，双重保险保证柱子任何时刻都是实色。
   const series = models.map((m, idx) => ({
     name: m,
     type: 'bar',
     stack: 'total',
-    // 不做 focus 淡化：悬停时其他柱保持实色（focus:'series' 会把同柱其他
-    // 段和邻近柱变半透明，观感像"图表坏了"）
-    itemStyle: { color: chartColorByIndex(idx) },
+    emphasis: { disabled: true },
+    blur: { itemStyle: { opacity: 1 } },
+    itemStyle: { color: chartColorByIndex(idx), opacity: 1 },
     data: chartDays.map((d) => d.models[m] || 0),
   }));
 
