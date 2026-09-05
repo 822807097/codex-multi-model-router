@@ -247,12 +247,14 @@ async function loadStats() {
     // 错误态由 AsyncContainer 呈现，跳过全局 toast
     const res = await getDashboardStats(days.value, { skipGlobalError: true });
     stats.value = res;
-    await nextTick();
-    renderStackedChart();
   } catch (err) {
     loadError.value = err.response?.data?.error?.message || err.message || '请求失败';
   } finally {
+    // 必须先翻 loading 让 AsyncContainer 卸下骨架、图表容器挂载，再等一帧渲染。
+    // 之前在 loading 翻转前渲染——容器还在骨架里，ref 为 null 直接 return，趋势图永远空白。
     loading.value = false;
+    await nextTick();
+    renderStackedChart();
   }
 }
 

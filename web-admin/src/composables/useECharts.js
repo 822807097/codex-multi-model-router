@@ -15,10 +15,20 @@ export function useECharts(elRef) {
   let observer = null;
 
   function ensureInstance() {
-    if (instance || !elRef.value) return instance;
-    instance = echarts.init(elRef.value);
-    observer = new ResizeObserver(() => instance?.resize());
-    observer.observe(elRef.value);
+    if (!elRef.value) return instance;
+    // 容器 DOM 可能被 AsyncContainer 骨架↔内容切换或 KeepAlive 重建：
+    // 旧实例绑定的 DOM 已被弃用时必须 dispose 重建，否则 setOption 画在
+    // 已卸载的旧节点上，新容器永远空白（使用统计页趋势图实锤）。
+    if (instance && instance.getDom() !== elRef.value) {
+      observer?.disconnect();
+      instance.dispose();
+      instance = null;
+    }
+    if (!instance) {
+      instance = echarts.init(elRef.value);
+      observer = new ResizeObserver(() => instance?.resize());
+      observer.observe(elRef.value);
+    }
     return instance;
   }
 
