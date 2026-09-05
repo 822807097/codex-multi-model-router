@@ -285,16 +285,20 @@
         <span class="text-xs text-secondary">已选 {{ desktopSelectedModels.length }} / {{ desktopState.models.length }}（当前已加载 {{ loadedCount }}）</span>
       </div>
       <div class="max-h-72 overflow-y-auto border border-muted rounded-lg p-2 space-y-2">
-        <el-checkbox-group v-model="desktopSelectedModels" class="grid grid-cols-2 gap-1">
+        <el-checkbox-group v-model="desktopSelectedModels" class="grid grid-cols-2 gap-x-3 gap-y-1">
           <template v-for="group in groupedDesktopModels" :key="group.key">
             <div class="col-span-2 text-3xs font-bold text-secondary uppercase tracking-wide mt-1 first:mt-0">
               {{ group.label }}
             </div>
-            <el-checkbox v-for="m in group.models" :key="m.slug" :value="m.slug">
-              <span class="font-mono text-xs">{{ m.displayName !== m.slug ? m.displayName : m.slug }}</span>
-              <span v-if="m.displayName !== m.slug" class="text-3xs text-secondary ml-1 font-mono">{{ m.slug }}</span>
+            <el-checkbox
+              v-for="m in group.models"
+              :key="m.slug"
+              :value="m.slug"
+              :title="m.slug"
+              class="!mr-0 min-w-0"
+            >
+              <span class="text-xs truncate inline-block max-w-[15rem] align-middle">{{ m.displayName }}</span>
               <el-tag v-if="m.official" size="small" type="success" effect="plain" class="ml-1">官方</el-tag>
-              <el-tag v-else-if="m.channel" size="small" type="warning" effect="plain" class="ml-1">{{ m.channel }}</el-tag>
               <el-tag v-if="m.loaded && !m.official" size="small" type="primary" effect="plain" class="ml-1">已加载</el-tag>
             </el-checkbox>
           </template>
